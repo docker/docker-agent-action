@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0 # Need full history to get commits from past week
 
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/.github/actions/setup-credentials@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
 
 
       - name: Get commits from past week
@@ -114,7 +114,7 @@ jobs:
       - name: Run security scan
         id: scan
         if: steps.commits.outputs.has_commits == 'true'
-        uses: docker/cagent-action@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
         with:
           agent: agentcatalog/github-action-security-scanner
           prompt: ${{ steps.commits.outputs.prompt }}

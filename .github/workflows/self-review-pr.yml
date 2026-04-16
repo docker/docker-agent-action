@@ -49,7 +49,7 @@ jobs:
 
     steps:
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/.github/actions/setup-credentials@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
 
       # For workflow_run events (fork PRs), download the artifact saved by pr-review-trigger.yml
       # to get the PR number. For pull_request events, read it directly from the event payload.
@@ -184,7 +184,7 @@ jobs:
     steps:
 
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/.github/actions/setup-credentials@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
 
       - name: Check if commenter is org member
         id: membership

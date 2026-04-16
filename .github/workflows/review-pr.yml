@@ -126,7 +126,7 @@ jobs:
 
     steps:
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/.github/actions/setup-credentials@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
 
       - name: Get PR number
         id: get-pr
@@ -214,7 +214,7 @@ jobs:
         if: steps.membership.outputs.is_member == 'true'
         id: run-review
         continue-on-error: true # Don't fail the calling workflow if the review errors
-        uses: docker/cagent-action/review-pr@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/review-pr@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
         with:
           pr-number: ${{ steps.get-pr.outputs.pr-number }}
           additional-prompt: ${{ inputs.additional-prompt }}
@@ -251,7 +251,7 @@ jobs:
     steps:
 
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/.github/actions/setup-credentials@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
 
       - name: Check if commenter is org member
         id: membership
@@ -335,7 +335,7 @@ jobs:
         if: steps.membership.outputs.is_member == 'true'
         id: run-review
         continue-on-error: true # Don't fail the calling workflow if the review errors
-        uses: docker/cagent-action/review-pr@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/review-pr@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
         with:
           pr-number: ${{ inputs.pr-number || github.event.issue.number }}
           comment-id: ${{ inputs.comment-id || github.event.comment.id }}
@@ -450,7 +450,7 @@ jobs:
     steps:
 
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/.github/actions/setup-credentials@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
 
       - name: Check if reply is to agent comment
         id: check
@@ -676,7 +676,7 @@ jobs:
       - name: Run reply
         if: steps.check.outputs.is_agent == 'true' && steps.auth.outputs.authorized == 'true'
         continue-on-error: true
-        uses: docker/cagent-action/review-pr/reply@da2dc7600994ad04b19e927b6aaf6a1ab5da4984 # v1.4.0
+        uses: docker/cagent-action/review-pr/reply@ba32b67bcd0919f88cd881862e01f916a39a3f03 # v1.4.1
         with:
           thread-context: ${{ steps.thread.outputs.prompt }}
           comment-id: ${{ github.event.comment.id }}
