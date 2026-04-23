@@ -224,7 +224,7 @@ jobs:
         if: |
           steps.command.outputs.is_review != 'false' &&
           steps.draft.outputs.skip != 'true'
-        uses: docker/cagent-action/.github/actions/setup-credentials@d98096f432f2aea5091c811852c4da804e60623a # v1.4.1
+        uses: docker/cagent-action/.github/actions/setup-credentials@aa722bc163a356f612e4d63de2ca34a817f3edbf # v1.4.2
 
       - name: Check if org member
         id: membership
@@ -329,7 +329,7 @@ jobs:
           steps.draft.outputs.skip != 'true'
         id: run-review
         continue-on-error: true
-        uses: docker/cagent-action/review-pr@d98096f432f2aea5091c811852c4da804e60623a # v1.4.1
+        uses: docker/cagent-action/review-pr@aa722bc163a356f612e4d63de2ca34a817f3edbf # v1.4.2
         with:
           pr-number: ${{ steps.pr.outputs.number }}
           comment-id: ${{ inputs.comment-id || github.event.comment.id }}
@@ -496,7 +496,7 @@ jobs:
 
       - name: Setup credentials
         if: steps.bot-guard.outputs.is_bot != 'true' && steps.check.outputs.is_agent == 'true'
-        uses: docker/cagent-action/.github/actions/setup-credentials@d98096f432f2aea5091c811852c4da804e60623a # v1.4.1
+        uses: docker/cagent-action/.github/actions/setup-credentials@aa722bc163a356f612e4d63de2ca34a817f3edbf # v1.4.2
 
       - name: Check authorization
         if: steps.check.outputs.is_agent == 'true'
@@ -656,7 +656,7 @@ jobs:
       - name: Run reply
         if: steps.check.outputs.is_agent == 'true' && steps.auth.outputs.authorized == 'true'
         continue-on-error: true
-        uses: docker/cagent-action/review-pr/reply@d98096f432f2aea5091c811852c4da804e60623a # v1.4.1
+        uses: docker/cagent-action/review-pr/reply@aa722bc163a356f612e4d63de2ca34a817f3edbf # v1.4.2
         with:
           thread-context: ${{ steps.thread.outputs.prompt }}
           comment-id: ${{ steps.feedback.outputs.comment-id }}

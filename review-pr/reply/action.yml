@@ -73,7 +73,7 @@ runs:
     - name: Run reply agent
       id: run-reply
       continue-on-error: true
-      uses: docker/cagent-action@d98096f432f2aea5091c811852c4da804e60623a # v1.4.1
+      uses: docker/cagent-action@aa722bc163a356f612e4d63de2ca34a817f3edbf # v1.4.2
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
