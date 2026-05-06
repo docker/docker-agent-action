@@ -21,7 +21,7 @@ jobs:
       id-token: write
     steps:
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@2369328cd25777eb0a4ff959a399b6d1a5204fc7 # v1.4.4
+        uses: docker/cagent-action/.github/actions/setup-credentials@d2c00a4790c5224c469fbf647eadeecac2c014cf # v1.5.0
 
       - name: Create check run
         id: create-check
@@ -152,7 +152,7 @@ jobs:
 
       - name: Generate description with AI
         id: generate
-        uses: docker/cagent-action@2369328cd25777eb0a4ff959a399b6d1a5204fc7 # v1.4.4
+        uses: docker/cagent-action@d2c00a4790c5224c469fbf647eadeecac2c014cf # v1.5.0
         with:
           agent: agentcatalog/github-action-pr-description-generator
           prompt: |
