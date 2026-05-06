@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@2369328cd25777eb0a4ff959a399b6d1a5204fc7 # v1.4.4
+        uses: docker/cagent-action/.github/actions/setup-credentials@d9c7b2a39b3f2c14c1ace97a032aca7ccfe6e139 # v1.5.0-beta.5
 
       # ----------------------------------------------------------------
       # Download artifact from the triggering workflow run
@@ -313,7 +313,7 @@ jobs:
         if: steps.meta.outputs.proceed == 'true' && steps.auth.outputs.authorized == 'true' && steps.checkout.outcome == 'success' && steps.thread.outcome == 'success'
         id: run-reply
         continue-on-error: true
-        uses: docker/cagent-action/review-pr/reply@2369328cd25777eb0a4ff959a399b6d1a5204fc7 # v1.4.4
+        uses: docker/cagent-action/review-pr/reply@d9c7b2a39b3f2c14c1ace97a032aca7ccfe6e139 # v1.5.0-beta.5
         with:
           thread-context: ${{ steps.thread.outputs.prompt }}
           comment-id: ${{ steps.meta.outputs.comment_id }}
