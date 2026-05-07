@@ -37,8 +37,32 @@ import { writeJobSummary } from './summary.js';
 
 // ── Paths ────────────────────────────────────────────────────────────────────
 
+/**
+ * Resolve the action root directory.
+ *
+ * In production (GitHub Actions), GITHUB_ACTION_PATH is set by the runner to the
+ * directory containing action.yml — the canonical and most reliable source.
+ *
+ * In test/dev environments (Vitest running TypeScript source directly),
+ * import.meta.dirname is src/main/ and GITHUB_ACTION_PATH is not set, so we
+ * walk up looking for DOCKER_AGENT_VERSION (present at the project root).
+ * This handles both the bundle layout (dist/) and the source layout (src/main/).
+ */
+function resolveActionRoot(): string {
+  if (process.env.GITHUB_ACTION_PATH) {
+    return process.env.GITHUB_ACTION_PATH;
+  }
+  for (const rel of ['..', '../..']) {
+    const candidate = path.resolve(import.meta.dirname, rel);
+    if (fs.existsSync(path.join(candidate, 'DOCKER_AGENT_VERSION'))) {
+      return candidate;
+    }
+  }
+  throw new Error(`Cannot locate action root from ${import.meta.dirname}`);
+}
+
 /** Absolute path to the directory containing this action's files. */
-const ACTION_PATH = path.join(import.meta.dirname, '..', '..');
+const ACTION_PATH = resolveActionRoot();
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
