@@ -574,12 +574,6 @@ agents:
         required: ["findings", "summary", "review_complete"]
         additionalProperties: false
 
-    hooks:
-      before_llm_call:
-        - type: builtin
-          command: max_iterations
-          args: ["40"]
-
     toolsets:
       - type: filesystem
         tools: [read_file, list_directory]
@@ -588,11 +582,6 @@ agents:
     model: sonnet
     description: Hypothesis Verifier
     add_date: true
-    hooks:
-      before_llm_call:
-        - type: builtin
-          command: max_iterations
-          args: ["40"]
     instruction: |
       Verify a batch of bug hypotheses using inline code context.
 
