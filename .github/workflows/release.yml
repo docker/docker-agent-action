@@ -510,7 +510,7 @@ jobs:
         id: slack-summary
         # Pinned to a SHA — automatically updated by the update-self-refs job after each release.
         # GitHub Actions requires static `uses:` values, so we can't pin dynamically.
-        uses: docker/cagent-action@e6c2dfd5c315bbfa8a8f23639af5f5c6c2e11d08 # v1.5.1-beta.3
+        uses: docker/cagent-action@63aaa2c2502d6ce995d3068214f9c81b272bf1ba # v1.5.1-beta.3
         with:
           agent: agentcatalog/github-action-release-notes
           prompt: |
