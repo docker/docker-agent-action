@@ -120,9 +120,16 @@ jobs:
           echo "New version: $NEW_VERSION (previous: ${LATEST_TAG:-none})"
 
       # CI cannot push commits to main (branch protection). Instead, we create
-      # a detached release commit with pinned refs, reachable only via tags.
-      # main keeps SHA-pinned self-refs; the release commit updates them to the
-      # HEAD SHA so the tagged commit is fully self-contained.
+      # a 3-commit chain reachable only via tags.
+      #
+      # PREP_SHA  – dist/ only (inherits main's YAML with old self-refs)
+      # TEMP_SHA  – YAML files pinned to PREP_SHA
+      # RELEASE_SHA – YAML files re-pinned to TEMP_SHA (the tagged commit)
+      #
+      # When a consumer uses RELEASE_SHA's reusable workflow:
+      #   RELEASE_SHA's review-pr.yml → uses: …@TEMP_SHA
+      #   TEMP_SHA's review-pr/action.yml → uses: …@PREP_SHA
+      #   PREP_SHA has the correct dist/ and DOCKER_AGENT_VERSION ✅
       - name: Create release commit with pinned refs
         id: release-commit
         working-directory: ${{ github.workspace }}
@@ -133,8 +140,10 @@ jobs:
           set -e
 
           # ── Pass 1: Stage dist/ ──────────────────────────────────────────────
-          # Enumerate all dist/ files (credentials and signed-commit)
-          echo "Pass 1: staging dist/ and creating temp commit..."
+          # PREP_SHA: contains the built dist/ files from this run (base-ref: main).
+          # Inherits main's YAML files (old self-refs still intact — that's fine;
+          # no workflow resolves PREP_SHA's YAML directly).
+          echo "Pass 1: staging dist/ and creating PREP commit..."
           if [ ! -f "$GITHUB_WORKSPACE/dist/credentials.js" ]; then
             echo "::error::dist/credentials.js is missing — build may have failed"
             exit 1
@@ -152,38 +161,38 @@ jobs:
             exit 1
           fi
 
-          # Create temp branch and first commit (staging dist/)
+          # Create staging branch and PREP commit (dist/ only)
           STAGING_BRANCH="release-staging/${VERSION}"
           trap 'gh api -X DELETE "repos/docker/cagent-action/git/refs/heads/${STAGING_BRANCH}" >/dev/null 2>&1 || true' EXIT
           # NOTE: use `find dist/ -type f` (relative path) NOT `find "$GITHUB_WORKSPACE/dist/" -type f`.
           # signed-commit uses the paths verbatim as git file paths in the GitHub API, which
           # requires repo-root-relative paths.  Absolute paths cause a cryptic
           # "A path was requested for deletion which does not exist" GraphQL error.
-          TEMP_SHA=$(find dist/ -type f 2>/dev/null | \
+          PREP_SHA=$(find dist/ -type f 2>/dev/null | \
             GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
               --repo docker/cagent-action \
               --branch "$STAGING_BRANCH" \
               --base-ref main \
               --force \
-              --message "release(temp): stage dist/ for ${VERSION}" \
+              --message "release(prep): stage dist/ for ${VERSION}" \
               --add-stdin)
 
-          echo "TEMP_SHA=${TEMP_SHA}"
+          echo "PREP_SHA=${PREP_SHA}"
 
-          # ── Pass 2: Pin refs ─────────────────────────────────────────────────
-          # (sed pinning logic stays exactly as-is — pins to TEMP_SHA)
-          echo "Pass 2: pinning refs to ${TEMP_SHA} # ${VERSION}..."
-
+          # ── Pass 2: Pin self-refs → PREP_SHA ─────────────────────────────────
+          # TEMP_SHA: YAML files have all self-refs pinned to PREP_SHA.
           # Replace all docker/cagent-action*@<any-ref> refs (SHA, tag, branch, SHA+comment)
-          # with TEMP_SHA and the new version.
+          # with PREP_SHA and the new version.
           # Uses a capture group so any sub-path (e.g., /review-pr, /review-pr/reply) is preserved.
           # Automatically covers new sub-actions without needing to update this workflow.
           # Only targets `uses:` lines to avoid pinning refs in comments or documentation.
+          echo "Pass 2: pinning refs to ${PREP_SHA} # ${VERSION}..."
+
           OLD_PIN_PATTERN='uses: *docker/cagent-action[^@]*@'
-          PIN_PATTERN='s|^\([^#]*uses: *docker/cagent-action\)\([^@]*\)@.*|\1\2@'"${TEMP_SHA}"' # '"${VERSION}"'|g'
+          PIN_PATTERN_TO_PREP='s|^\([^#]*uses: *docker/cagent-action\)\([^@]*\)@.*|\1\2@'"${PREP_SHA}"' # '"${VERSION}"'|g'
           PINNED_FILES=()
           while IFS= read -r file; do
-            sed -i "$PIN_PATTERN" "$file"
+            sed -i "$PIN_PATTERN_TO_PREP" "$file"
             PINNED_FILES+=("$file")
             echo "  Pinned: $file"
           done < <(grep -rl "$OLD_PIN_PATTERN" --include='*.yml' --include='*.yaml' \
@@ -195,19 +204,53 @@ jobs:
             exit 1
           fi
 
-          # Verify no refs with the old pattern remain (other than those already on TEMP_SHA)
-          REMAINING=$(grep -n '^[^#]*uses: *docker/cagent-action[^@]*@' "${PINNED_FILES[@]}" 2>/dev/null | grep -v "@${TEMP_SHA} # ${VERSION}" || true)
+          # Verify all refs now point to PREP_SHA (no old refs remain)
+          REMAINING=$(grep -n '^[^#]*uses: *docker/cagent-action[^@]*@' "${PINNED_FILES[@]}" 2>/dev/null | grep -v "@${PREP_SHA} # ${VERSION}" || true)
           if [ -n "$REMAINING" ]; then
-            echo "::error::Old SHA refs remain after pinning:"
+            echo "::error::Old SHA refs remain after Pass 2 pinning:"
             echo "$REMAINING"
             exit 1
           fi
 
-          echo "Pinned refs:"
+          echo "Pinned refs after Pass 2 (→ PREP_SHA):"
           grep -rn "cagent-action@" "${PINNED_FILES[@]}"
 
-          # Create second commit on the staging branch (pinned refs)
-          RELEASE_SHA=$(printf '%s\n' "${PINNED_FILES[@]}" DOCKER_AGENT_VERSION | \
+          # Create TEMP commit on the staging branch (YAML files pinned to PREP_SHA)
+          TEMP_SHA=$(printf '%s\n' "${PINNED_FILES[@]}" DOCKER_AGENT_VERSION | \
+            GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+              --repo docker/cagent-action \
+              --branch "$STAGING_BRANCH" \
+              --message "release(temp): pin self-refs to ${PREP_SHA} for ${VERSION}" \
+              --add-stdin)
+
+          echo "TEMP_SHA=${TEMP_SHA}"
+
+          # ── Pass 3: Re-pin self-refs PREP_SHA → TEMP_SHA ─────────────────────
+          # RELEASE_SHA: YAML files have all self-refs updated from PREP_SHA to TEMP_SHA.
+          # When consumers use RELEASE_SHA's reusable workflow, they call TEMP_SHA's
+          # review-pr/action.yml, which in turn calls PREP_SHA's root action.yml.
+          # PREP_SHA has the updated dist/ and DOCKER_AGENT_VERSION, completing the chain.
+          echo "Pass 3: re-pinning refs from ${PREP_SHA} to ${TEMP_SHA} # ${VERSION}..."
+
+          PIN_PATTERN_TO_TEMP='s|^\([^#]*uses: *docker/cagent-action\)\([^@]*\)@'"${PREP_SHA}"'.*|\1\2@'"${TEMP_SHA}"' # '"${VERSION}"'|g'
+          for file in "${PINNED_FILES[@]}"; do
+            sed -i "$PIN_PATTERN_TO_TEMP" "$file"
+            echo "  Re-pinned: $file"
+          done
+
+          # Verify no PREP_SHA refs remain after Pass 3
+          REMAINING=$(grep -n '^[^#]*uses: *docker/cagent-action[^@]*@'"${PREP_SHA}" "${PINNED_FILES[@]}" 2>/dev/null || true)
+          if [ -n "$REMAINING" ]; then
+            echo "::error::PREP_SHA refs remain after Pass 3 re-pinning:"
+            echo "$REMAINING"
+            exit 1
+          fi
+
+          echo "Pinned refs after Pass 3 (→ TEMP_SHA):"
+          grep -rn "cagent-action@" "${PINNED_FILES[@]}"
+
+          # Create RELEASE commit on the staging branch (YAML files pinned to TEMP_SHA)
+          RELEASE_SHA=$(printf '%s\n' "${PINNED_FILES[@]}" | \
             GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
               --repo docker/cagent-action \
               --branch "$STAGING_BRANCH" \
