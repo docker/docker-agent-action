@@ -14,7 +14,7 @@ jobs:
     if: |
       github.event_name == 'issue_comment' ||
       github.event.workflow_run.conclusion == 'success'
-    uses: docker/cagent-action/.github/workflows/review-pr.yml@e7de3aa91fd014f30d49c3bb68d14735b0c956cc # v1.5.1
+    uses: docker/cagent-action/.github/workflows/review-pr.yml@db555b0a409b50f8d4d1ae6869a8900e22c0ea5f # v1.5.1
     permissions:
       contents: read # Read repository files and PR diffs
       pull-requests: write # Post review comments
