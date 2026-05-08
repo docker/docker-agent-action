@@ -48,7 +48,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
 
       - name: Verify token for cross-run artifact download
         shell: bash
@@ -206,7 +206,7 @@ jobs:
         if: |
           steps.command.outputs.is_review != 'false' &&
           steps.draft.outputs.skip != 'true'
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
 
       - name: Check if org member
         id: membership
@@ -376,7 +376,7 @@ jobs:
 
       - name: Setup credentials
         if: github.event_name == 'workflow_run'
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
 
       - name: Verify token for cross-run artifact download
         if: github.event_name == 'workflow_run'
@@ -495,7 +495,7 @@ jobs:
 
       - name: Setup credentials
         if: steps.check.outputs.is_agent == 'true'
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
 
       - name: Check authorization
         if: steps.check.outputs.is_agent == 'true'
@@ -732,7 +732,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
 
       - name: Run mention-reply handler
         id: mention-context

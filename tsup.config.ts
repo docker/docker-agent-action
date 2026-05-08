@@ -3,15 +3,17 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'tsup';
 
 // Explicit entry list: only modules that back an actual action.yml entrypoint.
-// Library sub-modules (add-reaction, check-org-membership, get-pr-meta,
-// post-comment) are imported by mention-reply but have no standalone action,
-// so they don't get their own top-level dist bundle.
+// Pure library sub-modules (add-reaction, get-pr-meta, post-comment) are imported
+// by mention-reply but have no standalone action, so they don't get their own
+// top-level dist bundle. check-org-membership is both a library and a standalone
+// node24 action, so it IS in the entry map.
 const src = (name: string) => {
   const p = resolve(import.meta.dirname, 'src', name, 'index.ts');
   if (!existsSync(p)) throw new Error(`tsup entry not found: ${p}`);
   return p;
 };
 const entry = {
+  'check-org-membership': src('check-org-membership'),
   credentials: src('credentials'),
   'filter-diff': src('filter-diff'),
   main: src('main'),

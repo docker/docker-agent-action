@@ -30,8 +30,8 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   ├── add-reaction/                # Adds emoji reactions to issue/PR comments.
 │   │   ├── index.ts                 # Entry → bundled to dist/add-reaction.js
 │   │   └── __tests__/
-│   ├── check-org-membership/        # Verifies a user belongs to a GitHub org (used by org-membership auth tier).
-│   │   ├── index.ts                 # Entry → bundled to dist/check-org-membership.js
+│   ├── check-org-membership/        # Verifies a user belongs to a GitHub org; also resolves PR author via pulls.get.
+│   │   ├── index.ts                 # Entry → bundled to dist/check-org-membership.js (standalone CLI + library).
 │   │   └── __tests__/
 │   ├── credentials/                 # Fetches AWS secrets via OIDC, exports PAT and AI keys.
 │   │   ├── index.ts                 # Entry → bundled to dist/credentials.js
@@ -83,15 +83,16 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │       ├── refs/                    # Reference docs passed to agents (posting format, code-review style).
 │       └── evals/                   # cagent eval JSON files (success-*, security-*, marlin-*, etc.).
 │
+├── setup-credentials/               # Composite action: fetches AWS creds via OIDC, exports GITHUB_APP_TOKEN +
+│   └── action.yml                   #   ORG_MEMBERSHIP_TOKEN. At root so consumers can use
+│                                    #   docker/cagent-action/setup-credentials@VERSION directly.
+│                                    #   Also exports CAGENT_ACTION_ROOT (repo root of the downloaded action copy)
+│                                    #   for subsequent run: steps that need to invoke dist/ bundles.
+│
 ├── .github/
 │   ├── actions/
-│   │   ├── mention-reply/           # Internal JS action (using: node20). main = dist/mention-reply.js.
-│   │   │   └── action.yml           #   Note: unlike setup-credentials (composite + shell run:), this uses
-│   │   │                            #   the native node20 runner form — a difference contributors will notice.
-│   │   └── setup-credentials/       # Internal composite action: runs dist/credentials.js via a bash run: step.
-│   │       │                        #   Uses OIDC → AWS to read docker-agent-action/github-app from Secrets Manager;
-│   │       │                        #   exports GITHUB_APP_TOKEN (PAT) and ORG_MEMBERSHIP_TOKEN. No longer mints a GitHub App installation token.
-│   │       └── action.yml
+│   │   └── mention-reply/           # Internal-only JS action (node24). main = dist/mention-reply.js.
+│   │       └── action.yml           #   Only used by review-pr.yml; not intended for external consumers.
 │   ├── workflows/                   # CI + self-test + release workflows (see "Workflows" below).
 │   └── CODEOWNERS
 │

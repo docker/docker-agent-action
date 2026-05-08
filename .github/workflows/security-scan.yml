@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0 # Need full history to get commits from past week
 
       - name: Setup credentials
-        uses: docker/cagent-action/.github/actions/setup-credentials@c22076b8856ee12d9b4c4685bb49cf26eb974079 # v1.5.0
+        uses: docker/cagent-action/setup-credentials@c22076b8856ee12d9b4c4685bb49cf26eb974079 # v1.5.0
 
 
       - name: Get commits from past week

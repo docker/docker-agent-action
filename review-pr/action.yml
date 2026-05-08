@@ -262,7 +262,7 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
       run: |
-        node "$ACTION_PATH/dist/filter-diff.js" pr.diff "$EXCLUDE_PATHS"
+        node "$ACTION_PATH/../dist/filter-diff.js" pr.diff "$EXCLUDE_PATHS"
 
     - name: Split diff into chunks
       if: hashFiles('pr.diff') != ''
@@ -343,7 +343,7 @@ runs:
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
       run: |
         set -euo pipefail
-        node "$ACTION_PATH/dist/score-risk.js" pr.diff "$EXCLUDE_PATHS"
+        node "$ACTION_PATH/../dist/score-risk.js" pr.diff "$EXCLUDE_PATHS"
         echo "✅ File risk scores: $(jq -c . /tmp/file_risk_scores.json)"
 
     - name: Generate file history

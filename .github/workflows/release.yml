@@ -59,7 +59,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
 
       - name: Calculate new version
         id: version
@@ -325,7 +325,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup credentials
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
 
       - name: Checkout cagent-action
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -447,7 +447,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup credentials
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
 
       - name: Fetch release notes from GitHub
         id: release-notes

@@ -96,7 +96,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: ./.github/actions/setup-credentials
+        uses: ./setup-credentials
         continue-on-error: true
 
       - name: Run integration tests

@@ -10,7 +10,7 @@ runs:
 
     - name: Fetch credentials
       shell: bash
-      run: node "$GITHUB_ACTION_PATH/../../../dist/credentials.js"
+      run: node "$GITHUB_ACTION_PATH/../dist/credentials.js"
 
     - name: Verify credentials were obtained
       shell: bash
@@ -19,3 +19,5 @@ runs:
           echo "::error::GITHUB_APP_TOKEN was not set — setup-credentials failed silently."
           exit 1
         fi
+        # Export the repo root so callers can reach dist/ bundles via $CAGENT_ACTION_ROOT
+        echo "CAGENT_ACTION_ROOT=$(cd "$GITHUB_ACTION_PATH/.." && pwd)" >> "$GITHUB_ENV"
