@@ -626,7 +626,7 @@ runs:
     - name: Process pending feedback
       if: steps.lock-check.outputs.skip != 'true' && steps.pending-feedback.outputs.has_feedback == 'true'
       continue-on-error: true
-      uses: docker/cagent-action@c22076b8856ee12d9b4c4685bb49cf26eb974079 # v1.5.0
+      uses: docker/cagent-action@57c5c7f5d025d683720b22ac11102fc13e9f2707 # v1.5.1-beta.4
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
@@ -740,7 +740,7 @@ runs:
     - name: Run PR Review
       if: steps.lock-check.outputs.skip != 'true'
       id: run-review
-      uses: docker/cagent-action@c22076b8856ee12d9b4c4685bb49cf26eb974079 # v1.5.0
+      uses: docker/cagent-action@57c5c7f5d025d683720b22ac11102fc13e9f2707 # v1.5.1-beta.4
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
