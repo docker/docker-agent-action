@@ -284,7 +284,7 @@ runs:
           echo "chunk_manifest=$(jq -nc --argjson f "$FILES" '{"1": $f}')" >> $GITHUB_OUTPUT
           echo "✅ Single chunk ($TOTAL_LINES lines)"
         else
-          # Large diff — split at file boundaries, targeting ~1000 lines per chunk
+          # Large diff — split at file boundaries, targeting ~600 lines per chunk
           CHUNK=1
           CHUNK_LINES=0
           CURRENT_FILE=""
@@ -301,9 +301,9 @@ runs:
               DIR=$(dirname "$FILE")
 
               # Start new chunk if:
-              #   - over soft limit (1000 lines) and directory changed, OR
+              #   - over soft limit (600 lines) and directory changed, OR
               #   - over hard limit (2000 lines) regardless of directory
-              if ([ "$CHUNK_LINES" -gt 1000 ] && [ "$DIR" != "$CURRENT_DIR" ]) || [ "$CHUNK_LINES" -gt 2000 ]; then
+              if ([ "$CHUNK_LINES" -gt 600 ] && [ "$DIR" != "$CURRENT_DIR" ]) || [ "$CHUNK_LINES" -gt 2000 ]; then
                 # Save current chunk's file list to manifest
                 MANIFEST=$(echo "$MANIFEST" | jq --argjson files "$CHUNK_FILES" --arg k "$CHUNK" '.[$k] = $files')
                 CHUNK=$((CHUNK + 1))
@@ -326,7 +326,7 @@ runs:
 
           echo "chunk_count=$CHUNK" >> $GITHUB_OUTPUT
           echo "chunk_manifest=$(echo "$MANIFEST" | jq -c .)" >> $GITHUB_OUTPUT
-          echo "✅ Split into $CHUNK chunks (target ~1000 lines each)"
+          echo "✅ Split into $CHUNK chunks (target ~600 lines each)"
 
           for i in $(seq 1 $CHUNK); do
             LINES=$(wc -l < /tmp/drafter_chunk_${i}.diff | tr -d ' ')
@@ -806,6 +806,7 @@ runs:
       run: |
         REVIEW_URL="https://github.com/$REPOSITORY/pull/$PR_NUMBER"
         echo "review-url=$REVIEW_URL" >> $GITHUB_OUTPUT
+        TIMEOUT_NOTE=""
 
         if [ "$SKIP_REASON" = "concurrent" ]; then
           # Stay silent — the 👀 reaction on the triggering comment (added by the
@@ -814,6 +815,17 @@ runs:
           STATUS="⏭️ **Review skipped** — another review is already in progress"
         elif [ -z "$EXIT_CODE" ]; then
           STATUS="⏭️ **Review skipped** — agent did not run"
+        elif [ "$EXIT_CODE" = "124" ]; then
+          # Timeout (SIGKILL after 1800 s) — provide actionable guidance
+          STATUS="⏱️ **Review timed out** (exit code: 124, limit: 1800 s)"
+          TIMEOUT_NOTE="- **Exit code:** 124 (SIGKILL — 1800 s timeout)
+- **Timeout limit:** 1800 s
+- Verbose log artifact (${VERBOSE_LOG_FILE}) uploaded for debugging."
+          if ! gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
+            -f body="⏱️ **PR Review Timed Out** — The review agent hit the 1800 s time limit before completing. This usually happens on large or complex diffs. You can re-trigger with \`/review\` — if it times out again, consider splitting the PR into smaller pieces." \
+            2>&1; then
+            echo "::warning::Failed to post timeout comment to PR"
+          fi
         elif [ "$EXIT_CODE" != "0" ]; then
           # Check if agent actually posted a review despite the error exit code.
           # This happens when a sub-agent fails (e.g., API overload) but the root
@@ -841,6 +853,10 @@ runs:
           echo "## PR Review Summary"
           echo ""
           echo "$STATUS"
+          if [ -n "$TIMEOUT_NOTE" ]; then
+            echo ""
+            printf '%s\n' "$TIMEOUT_NOTE"
+          fi
           echo ""
           echo "📝 [View Pull Request #$PR_NUMBER]($REVIEW_URL)"
         } >> $GITHUB_STEP_SUMMARY

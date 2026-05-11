@@ -155,7 +155,8 @@ agents:
          c. Delegate to the drafter once with the path `./pr-review.diff`.
 
          **Both modes**:
-         d. Merge all findings arrays into a single list before proceeding.
+         d. Merge all findings arrays into a single list before proceeding. Each finding
+            object uses fields `category`, `issue`, `details`, `in_diff` — not `title`/`body`.
          e. Include any relevant learned patterns from memory in each delegation.
 
          ## CRITICAL: How to delegate to the drafter
@@ -170,12 +171,26 @@ agents:
          - File history: relevant entries from `/tmp/file_history.txt` (CI mode only — skip in console mode)
          - Available files: run `ls` on directories of changed files so drafter knows real paths
          - Learned patterns: any relevant memories
+
+         **CRITICAL — drafter response schema (schema-validated, strict):**
+         The drafter returns a JSON object with these exact top-level fields:
+         - `findings`: array of objects with fields `file`, `line`, `severity`, `category`,
+           `issue` (one-line summary), `details` (trigger + impact), `in_diff` (boolean)
+         - `summary`: string — overall assessment
+         - `review_complete`: boolean — true if the full chunk was reviewed
+
+         **NEVER mention `title` or `body` as finding field names in the delegation
+         message.** Those fields do not exist in the drafter schema. If the task string
+         asks for `title`/`body`, the schema validator rejects every emit attempt and the
+         drafter enters an infinite file-read retry loop. Always use `issue` and `details`.
       5. Parse the drafter's JSON response. Check `review_complete`:
          - If `review_complete` is `true` AND zero findings → skip directly to step 8 (Decision Rules).
          - If `review_complete` is `false` AND zero findings → the drafter likely exhausted its context.
            Post a COMMENT review noting the review was incomplete and do NOT approve.
-         - Otherwise, collect all findings with severity "high" or "medium"
-         and delegate them to the `verifier` in a single batch. Skip verification for "low" findings.
+         - Otherwise, collect all findings with severity "high" or "medium" — reference
+           each finding's one-line summary via the `issue` field and its explanation via
+           the `details` field (not `title`/`body`) — and delegate them to the `verifier`
+           in a single batch. Skip verification for "low" findings.
          Include the project context (from step 2) in the verifier delegation so it can validate
          findings against project-specific conventions (e.g., language version, available APIs).
          **The verifier has no file access — you must provide all code context inline.**
@@ -194,7 +209,9 @@ agents:
          `in_changed_code == false` or `in_diff == false`.
       7. **Verify line numbers** before posting (see below)
       8. Apply the Decision Rules (see below) to determine the review verdict
-      9. Build inline comments from CONFIRMED/LIKELY issues and post the review
+      9. Build inline comments from CONFIRMED/LIKELY issues using each finding's `issue`
+         (one-line summary), `details` (full explanation), `severity`, `category`, `file`,
+         and `line` fields. Post the review.
       10. Always report ALL HIGH severity bugs. Limit MEDIUM/LOW to 5 comments max.
 
       Find **real bugs in the changed code**, not style issues. If the changed code works correctly, approve it.
