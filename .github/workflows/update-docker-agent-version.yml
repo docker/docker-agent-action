@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup credentials
-        uses: docker/cagent-action/setup-credentials@a793f1ad1f634c4793296e31f3e0227091b35613 # v1.5.2
+        uses: docker/cagent-action/setup-credentials@2f85a38bf4baa0fa30e7f309b5210bb7a67603ab # v1.5.2
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
