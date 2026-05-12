@@ -88,7 +88,7 @@ jobs:
       comment-author-type: ${{ steps.read.outputs.comment-author-type }}
     steps:
       - name: Setup credentials
-        uses: docker/cagent-action/setup-credentials@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/setup-credentials@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
 
       - name: Verify token for cross-run artifact download
         shell: bash
@@ -264,7 +264,7 @@ jobs:
         if: |
           steps.command.outputs.is_review != 'false' &&
           steps.draft.outputs.skip != 'true'
-        uses: docker/cagent-action/setup-credentials@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/setup-credentials@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
 
       - name: Check if org member
         id: membership
@@ -326,7 +326,7 @@ jobs:
           steps.draft.outputs.skip != 'true'
         id: run-review
         continue-on-error: true
-        uses: docker/cagent-action/review-pr@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/review-pr@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
         with:
           pr-number: ${{ steps.pr.outputs.number }}
           comment-id: ${{ inputs.comment-id || github.event.comment.id }}
@@ -386,7 +386,7 @@ jobs:
 
       - name: Setup credentials
         if: inputs.trigger-run-id != ''
-        uses: docker/cagent-action/setup-credentials@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/setup-credentials@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
 
       - name: Verify token for cross-run artifact download
         if: inputs.trigger-run-id != ''
@@ -505,7 +505,7 @@ jobs:
 
       - name: Setup credentials
         if: steps.check.outputs.is_agent == 'true'
-        uses: docker/cagent-action/setup-credentials@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/setup-credentials@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
 
       - name: Check authorization
         if: steps.check.outputs.is_agent == 'true'
@@ -664,7 +664,7 @@ jobs:
       - name: Run reply
         if: steps.check.outputs.is_agent == 'true' && steps.auth.outputs.authorized == 'true'
         continue-on-error: true
-        uses: docker/cagent-action/review-pr/reply@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/review-pr/reply@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
         with:
           thread-context: ${{ steps.thread.outputs.prompt }}
           comment-id: ${{ steps.feedback.outputs.comment-id }}
@@ -739,7 +739,7 @@ jobs:
 
     steps:
       - name: Setup credentials
-        uses: docker/cagent-action/setup-credentials@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/setup-credentials@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
 
       - name: Download trigger context
         if: inputs.trigger-run-id != ''
@@ -805,7 +805,7 @@ jobs:
       - name: Run mention-reply handler
         id: mention-context
         if: steps.resolve-event.outputs.path != ''
-        uses: docker/cagent-action/.github/actions/mention-reply@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/.github/actions/mention-reply@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
         env:
           GITHUB_EVENT_PATH: ${{ steps.resolve-event.outputs.path }}
           GITHUB_EVENT_NAME: ${{ steps.resolve-event.outputs.name }}
@@ -817,7 +817,7 @@ jobs:
         if: steps.mention-context.outputs.should-reply == 'true'
         id: run-reply
         continue-on-error: true
-        uses: docker/cagent-action/review-pr/mention-reply@2a43a3882401f45e3114df7f6d66eca184993a90 # v1.5.2
+        uses: docker/cagent-action/review-pr/mention-reply@f208610469d69f20983cad64c577949a132caa33 # v1.5.3
         with:
           mention-context: ${{ steps.mention-context.outputs.prompt }}
           anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM || secrets.ANTHROPIC_API_KEY }}
