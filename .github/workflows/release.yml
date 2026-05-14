@@ -295,6 +295,10 @@ jobs:
           # Docker Agent version bumps ("update Docker Agent to v*") are intentionally kept.
           NOTES=$(gh release view "$VERSION" --repo docker/cagent-action --json body --jq '.body')
           FILTERED=$(printf '%s' "$NOTES" | grep -v 'update cagent-action to v')
+          if [ -z "$FILTERED" ]; then
+            echo "ℹ️ All lines were self-referential — leaving release notes unchanged to avoid blank notes."
+            exit 0
+          fi
           if [ "$FILTERED" = "$NOTES" ]; then
             echo "No self-referential update entry found — release notes unchanged."
             exit 0
