@@ -283,6 +283,30 @@ jobs:
           fi
           gh release create "$VERSION" "${ARGS[@]}"
 
+      - name: Filter release notes
+        if: ${{ !inputs.pre_release }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN }}
+        run: |
+          # Strip the self-referential "chore: update cagent-action to vX.Y.Z" bullet that
+          # the update-self-refs job creates after each release. It always appears in the
+          # *next* release's auto-generated notes and is noise for readers.
+          # Docker Agent version bumps ("update Docker Agent to v*") are intentionally kept.
+          NOTES=$(gh release view "$VERSION" --repo docker/cagent-action --json body --jq '.body')
+          FILTERED=$(printf '%s' "$NOTES" | grep -v 'update cagent-action to v' || true)
+          if [ -z "$FILTERED" ]; then
+            echo "ℹ️ All lines were self-referential — leaving release notes unchanged to avoid blank notes."
+            exit 0
+          fi
+          if [ "$FILTERED" = "$NOTES" ]; then
+            echo "ℹ️ No self-referential lines found — release notes unchanged."
+            exit 0
+          fi
+          printf '%s' "$FILTERED" > /tmp/release-notes-filtered.md
+          gh release edit "$VERSION" --repo docker/cagent-action --notes-file /tmp/release-notes-filtered.md
+          echo "✅ Release notes filtered and updated."
+
   publish-agent:
     name: Push review-pr agent to Docker Hub
     needs: release
