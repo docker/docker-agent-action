@@ -82,7 +82,7 @@ runs:
     - name: Run mention reply agent
       id: run-mention-reply
       continue-on-error: true
-      uses: docker/cagent-action@b78f64edd71085d7663190f84d542d7e248f7a2a # v1.5.4
+      uses: docker/cagent-action@bec1eb10e0de86d49fb1f0223b48dd29861d4e17 # v1.5.4
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
