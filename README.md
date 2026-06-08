@@ -1,4 +1,4 @@
-# cagent GitHub Action
+# Docker Agent Action
 
 A GitHub Action for running [Docker Agent](https://github.com/docker/docker-agent) AI agents in your workflows. This action simplifies the setup and execution of Docker Agent, handling binary downloads and environment configuration automatically.
 
@@ -7,7 +7,7 @@ A GitHub Action for running [Docker Agent](https://github.com/docker/docker-agen
 1. **Add the action to your workflow**:
 
    ```yaml
-   - uses: docker/cagent-action@VERSION
+   - uses: docker/docker-agent-action@VERSION
      with:
        agent: path/to/agent.yaml
        prompt: "Analyze this code"
@@ -32,7 +32,7 @@ This action includes **built-in security features for all agent executions**:
 - **Prompt Injection Detection**: Warns about suspicious patterns in user prompts
 - **Automatic Incident Response**: Creates security issues and fails workflows when secrets are detected
 
-See [SECURITY.md](SECURITY.md) for complete security documentation.
+To report a vulnerability, see our [Security Policy](SECURITY.md).
 
 ## Usage
 
@@ -40,7 +40,7 @@ See [SECURITY.md](SECURITY.md) for complete security documentation.
 
 ```yaml
 - name: Run Custom Agent
-  uses: docker/cagent-action@VERSION
+  uses: docker/docker-agent-action@VERSION
   with:
     agent: ./agents/my-agent.yaml
     prompt: "Analyze the codebase"
@@ -51,7 +51,7 @@ See [SECURITY.md](SECURITY.md) for complete security documentation.
 
 ```yaml
 - name: Run Docker Agent with Custom Settings
-  uses: docker/cagent-action@VERSION
+  uses: docker/docker-agent-action@VERSION
   with:
     agent: docker/code-analyzer
     prompt: "Analyze this codebase"
@@ -71,7 +71,7 @@ See [SECURITY.md](SECURITY.md) for complete security documentation.
 ```yaml
 - name: Run Docker Agent
   id: agent
-  uses: docker/cagent-action@VERSION
+  uses: docker/docker-agent-action@VERSION
   with:
     agent: docker/code-analyzer
     prompt: "Analyze this codebase"
@@ -116,6 +116,7 @@ See [SECURITY.md](SECURITY.md) for complete security documentation.
 | `retry-delay`              | Base delay in seconds between retries (doubles each attempt)                         | No       | `5`            |
 | `extra-args`               | Additional arguments to pass to `docker agent run`                                   | No       | -              |
 | `add-prompt-files`         | Comma-separated list of files to append to the prompt (e.g., `AGENTS.md,CLAUDE.md`)  | No       | -              |
+| `skip-summary`             | Skip writing agent output to the job summary (useful when callers write their own)  | No       | `false`        |
 
 ### Prompt Files (`add-prompt-files`)
 
@@ -140,15 +141,18 @@ add-prompt-files: "STYLE_GUIDE.md"  # Found via hierarchy search
 
 ## Outputs
 
-| Output                  | Description                                              |
-| ----------------------- | -------------------------------------------------------- |
-| `exit-code`             | Exit code from docker agent run                          |
-| `output-file`           | Path to the output log file                              |
-| `mcp-gateway-installed` | Whether mcp-gateway was installed (`true`/`false`)       |
-| `execution-time`        | Agent execution time in seconds                          |
-| `verbose-log-file`      | Path to the full verbose agent log (includes tool calls) |
-| `secrets-detected`      | Whether secrets were detected in output                  |
-| `prompt-suspicious`     | Whether suspicious patterns were detected in user prompt |
+| Output                  | Description                                                       |
+| ----------------------- | ---------------------------------------------------------------- |
+| `exit-code`             | Exit code from docker agent run                                  |
+| `output-file`           | Path to the output log file                                      |
+| `cagent-version`        | Version of Docker Agent that was used                            |
+| `mcp-gateway-installed` | Whether mcp-gateway was installed (`true`/`false`)               |
+| `execution-time`        | Agent execution time in seconds                                  |
+| `verbose-log-file`      | Path to the full verbose agent log (includes tool calls)         |
+| `security-blocked`      | Whether execution was blocked due to security concerns (`true`/`false`) |
+| `secrets-detected`      | Whether secrets were detected in output                          |
+| `prompt-suspicious`     | Whether suspicious content was stripped from the prompt (`true`/`false`) |
+| `input-risk-level`      | Risk level of input (`low`/`medium`/`high`)                      |
 
 ## API Keys
 
@@ -198,14 +202,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Security Review
-        uses: docker/cagent-action@VERSION
+        uses: docker/docker-agent-action@VERSION
         with:
           agent: docker/github-action-security-scanner
           prompt: "Analyze for security issues"
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Code Quality Analysis
-        uses: docker/cagent-action@VERSION
+        uses: docker/docker-agent-action@VERSION
         with:
           agent: docker/code-quality-analyzer
           prompt: "Analyze code quality and best practices"
@@ -238,7 +242,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Agent
-        uses: docker/cagent-action@VERSION
+        uses: docker/docker-agent-action@VERSION
         with:
           agent: ${{ github.event.inputs.agent }}
           prompt: ${{ github.event.inputs.prompt }}
