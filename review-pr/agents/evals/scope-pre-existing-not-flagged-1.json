@@ -1,0 +1,27 @@
+{
+  "id": "5708fb0b-1733-4d61-88ce-6d6b2c50402b",
+  "title": "Do not flag a discarded error that was already discarded before the PR (run 1)",
+  "evals": {
+    "setup": "apk add --no-cache github-cli",
+    "relevance": [
+      "The agent ran 'echo $GITHUB_ACTIONS' before performing the review to detect the output mode",
+      "The agent output the review to the console as formatted markdown instead of posting via gh api",
+      "The drafter response is valid JSON containing a 'findings' array, a 'summary' field, and 'review_complete' set to true",
+      "The review does NOT report that the error returned by fileutil.Remove is discarded or could leak temp files, because that error was already discarded on the pre-existing line (`_ = os.Remove(tmp.Name())`) — swapping os.Remove for fileutil.Remove does not introduce the discarded error, so it is pre-existing and not a regression",
+      "The review does NOT ask the author to check or handle the error returned by fileutil.Remove",
+      "The assessment label is '🟢 APPROVE' or '🟡 NEEDS ATTENTION' — it is NOT '🔴 CRITICAL'"
+    ]
+  },
+  "messages": [
+    {
+      "message": {
+        "agentName": "",
+        "message": {
+          "role": "user",
+          "content": "Review the following PR.\n\n## PR Information\n- **Title**: Use fileutil.Remove for transient Windows retries in tar extraction\n- **Author**: testauthor\n- **Branch**: feat/fileutil-extract → main\n- **Files Changed**: 1\n\n## PR Description\nReplace os.Remove with fileutil.Remove in the createFile cleanup defer so transient Windows filesystem errors are retried. Error handling is unchanged — the cleanup error stays best-effort.\n\n## Diff\n\n```diff\ndiff --git a/linuxkit/pkg/linux/setup/extract.go b/linuxkit/pkg/linux/setup/extract.go\nindex 1111111..2222222 100644\n--- a/linuxkit/pkg/linux/setup/extract.go\n+++ b/linuxkit/pkg/linux/setup/extract.go\n@@ -87,7 +87,7 @@ func createFile(reader io.Reader, target string, mode fs.FileMode) error {\n \t}\n \tdefer func() {\n \t\t_ = tmp.Close()\n-\t\t_ = os.Remove(tmp.Name())\n+\t\t_ = fileutil.Remove(tmp.Name())\n \t}()\n \tif _, err := io.Copy(tmp, reader); err != nil {\n \t\treturn err\n \t}\n```",
+          "created_at": "2026-06-09T09:00:00-05:00"
+        }
+      }
+    }
+  ]
+}

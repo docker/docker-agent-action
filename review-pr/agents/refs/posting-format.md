@@ -71,3 +71,11 @@ jq -n \
 
 The `<!-- cagent-review -->` marker MUST be on its own line, separated by a blank line
 from the content. Do NOT include it in console output mode.
+
+# Comment Scope (REQUIRED)
+
+Each comment must address a problem this PR **introduces** — one that would not exist if
+the PR were reverted. Do NOT comment on pre-existing issues, even when a changed line
+touches the area or the new code depends on them. A concrete suggestion for addressing an
+in-scope finding is welcome; just keep both the finding and the suggestion anchored to the
+code this PR actually introduced.

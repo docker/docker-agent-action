@@ -216,6 +216,28 @@ agents:
 
       Find **real bugs in the changed code**, not style issues. If the changed code works correctly, approve it.
 
+      ## CRITICAL: Only flag problems this PR introduces
+
+      The test is whether the PROBLEM is new, not whether the line is new. A finding is in
+      scope only if the PR's `+` lines introduce or cause it — ask: would the problem still
+      exist if this PR were reverted? If yes, it is pre-existing: drop it, even when the new
+      code sits next to it, calls into it, or depends on it.
+
+      Editing a line does NOT pull its pre-existing behavior into scope. Canonical example
+      (the false positive that motivated this rule): swapping `os.Remove(x)` for
+      `_ = fileutil.Remove(x)` is a `+` line, but the error was already discarded before, so
+      the swap does not introduce the discarded error — do NOT flag it. Likewise a refactor
+      that moves, renames, or wraps code without changing what it does introduces nothing.
+
+      A finding IS in scope when the change itself creates the problem — e.g. a brand-new
+      file referencing an undefined identifier so it will not compile; reverting the PR
+      removes that problem.
+
+      Offering a concrete suggestion for how to address an in-scope finding is welcome and
+      encouraged — the author asked for actionable feedback. The constraint is scope, not
+      tone: keep every finding (and any suggestion) anchored to code this PR actually
+      introduced, and never ask the author to fix pre-existing issues outside the diff.
+
       ## CRITICAL: File Reading Guardrails
 
       The root agent MUST NOT exhaustively explore the repository. Follow these rules strictly:
@@ -458,6 +480,18 @@ agents:
 
       If you find a bug in existing code, ignore it - that's not what this PR review is for.
 
+      **Regression test (apply to every candidate finding):** would this problem still exist
+      if the PR were reverted? If yes, it is pre-existing — do NOT report it. The test is
+      whether the PROBLEM is new, not whether the line is new: a `+` line is NOT automatically
+      in scope. Swapping `os.Remove(x)` for `_ = fileutil.Remove(x)` does not introduce a
+      discarded error (it was already discarded), and a refactor that moves/renames/wraps code
+      without changing its behavior introduces nothing. Report a finding only when the change
+      itself creates the problem (e.g. brand-new code that will not compile).
+
+      When a finding IS in scope, you may include a concrete suggestion for addressing it in
+      `details`. Actionable feedback on newly introduced code is wanted — the scope rule is
+      the constraint, not the phrasing.
+
       ## Focus Areas (for `+` lines only)
 
       - Logic errors, edge cases, off-by-one errors
@@ -504,6 +538,8 @@ agents:
       `line` (exact, 1-indexed — see algorithm below), `severity`, `category` (one of:
       security, logic_error, resource_leak, concurrency, error_handling, data_integrity, other),
       `issue` (one-line summary), `details` (trigger + impact), `in_diff` (true if on a `+` line).
+      `details` describes the trigger path and impact, and may include a concrete suggestion
+      for addressing an in-scope finding.
       Also include a `summary` field with a brief overall assessment.
       Set `review_complete` to `true` if you finished reviewing the entire diff chunk.
       Set it to `false` if you had to stop early for any reason (context limits, errors, etc.).
@@ -617,7 +653,9 @@ agents:
       Verify each one independently.
       Your job is to verify findings, not to filter them out. Default to LIKELY unless you have
       concrete evidence to DISMISS. For each finding:
-      - **THE CODE IS ACTUALLY CHANGED IN THIS PR** (if not, DISMISS immediately)
+      - **THE PROBLEM IS INTRODUCED BY THIS PR's `+` LINES** — it would not exist after
+        reverting the PR (if it is pre-existing, or the `+` line only moves/renames/wraps/
+        re-indents code that already behaved this way, DISMISS immediately)
       - Can you find explicit safeguards in the provided code snippet that prevent the bug?
         Vague reasoning like "the caller probably validates" is NOT grounds for dismissal.
       - Do tests in the diff specifically cover this edge case? General test existence is not enough.
@@ -637,9 +675,9 @@ agents:
       bugs. The drafter's Ignore list excludes test files, so these should not reach you —
       but if they do, dismiss them.
 
-      CRITICAL: If the bug is in existing code that was NOT changed by this PR,
-      set `in_changed_code: false` and `verdict: "DISMISSED"`.
-      We only review code that was added/modified in this PR.
+      CRITICAL: If the problem is pre-existing — it would still exist after reverting this
+      PR — set `in_changed_code: false` and `verdict: "DISMISSED"`, even if a `+` line
+      touches the area. We only flag problems this PR's changes introduce.
 
       **You MUST produce one verdict per finding** — an empty `verdicts` array is never
       correct when findings were provided. If the provided snippet is insufficient to fully
@@ -663,7 +701,7 @@ agents:
           depends on runtime behavior you can't see, OR the code has a comment suggesting
           the author considered the issue, OR the finding involves framework/library behavior.
         - DISMISSED: Proven not a bug — you can cite the specific code in the snippet that
-          prevents it, OR the finding is not in code changed by this PR
+          prevents it, OR the problem is pre-existing (would still exist after reverting the PR)
       - `file`: Preserve the file path from the drafter's finding
       - `line`: Preserve or correct the line number from the drafter's finding
       - `severity`: You may adjust severity from what the drafter assigned based on full context
@@ -672,8 +710,13 @@ agents:
       - `issue`: Preserve or refine the one-line summary
       - `details`: Full explanation including WHY you confirmed, considered likely, or dismissed.
         Include specifics about surrounding code, safeguards, or test coverage you found.
-      - `in_changed_code`: Set to `true` if the issue is in code actually changed by this PR,
-        `false` if the issue is in existing/unchanged code.
+        You may include a concrete suggestion for addressing an in-scope finding.
+      - `in_changed_code`: Set to `true` only if this PR's `+` lines INTRODUCE the problem —
+        i.e. it would not exist after reverting the PR. Set `false` (and DISMISS) when the
+        problem is pre-existing, including when a `+` line only rewrites how something is
+        expressed without changing its behavior (e.g. `os.Remove(x)` → `_ = fileutil.Remove(x)`
+        does not introduce the discarded error; a move/rename/wrap refactor introduces
+        nothing). "Touched by the diff" is not the same as "introduced by the diff."
 
     structured_output:
       name: verification_verdicts
