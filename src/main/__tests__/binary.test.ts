@@ -145,7 +145,7 @@ describe('setupBinaries — local tool-cache hit', () => {
     expect(mockDownloadTool).not.toHaveBeenCalled();
     expect(mockRestoreCache).not.toHaveBeenCalled();
     expect(result.dockerAgentPath).toContain('docker-agent');
-    expect(result.cagentVersion).toBe('v1.54.0');
+    expect(result.dockerAgentVersion).toBe('v1.54.0');
     expect(result.mcpInstalled).toBe(false);
   });
 });
@@ -179,7 +179,7 @@ describe('setupBinaries — remote cache restore', () => {
 
     expect(mockDownloadTool).not.toHaveBeenCalled();
     expect(mockCacheDir).toHaveBeenCalled(); // populates local cache
-    expect(result.cagentVersion).toBe('v1.54.0');
+    expect(result.dockerAgentVersion).toBe('v1.54.0');
   });
 });
 
@@ -209,7 +209,7 @@ describe('setupBinaries — full download (no cache)', () => {
     expect(mockDownloadTool.mock.calls[0][2]).toBe('token ghs_token');
     expect(mockSaveCache).toHaveBeenCalledOnce();
     expect(mockCacheDir).toHaveBeenCalledOnce();
-    expect(result.cagentVersion).toBe('v1.54.0');
+    expect(result.dockerAgentVersion).toBe('v1.54.0');
     expect(result.dockerAgentPath).toContain('docker-agent');
   });
 
@@ -231,7 +231,7 @@ describe('setupBinaries — full download (no cache)', () => {
       mcpGatewayVersion: 'v0.22.0',
     });
 
-    expect(result.cagentVersion).toBe('v1.54.0');
+    expect(result.dockerAgentVersion).toBe('v1.54.0');
     // warning was emitted (not a failure)
     const { warning } = await import('@actions/core');
     expect(vi.mocked(warning)).toHaveBeenCalledWith(

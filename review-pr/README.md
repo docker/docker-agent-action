@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   review:
-    uses: docker/cagent-action/.github/workflows/review-pr.yml@VERSION
+    uses: docker/docker-agent-action/.github/workflows/review-pr.yml@VERSION
     permissions:
       contents: read # Read repository files and PR diffs
       pull-requests: write # Post review comments
@@ -60,6 +60,8 @@ jobs:
       github.event.comment.user.login != 'docker-agent' &&
       github.event.comment.user.login != 'docker-agent[bot]' &&
       github.event.comment.user.type != 'Bot' &&
+      !contains(github.event.comment.body, '<!-- docker-agent-review -->') &&
+      !contains(github.event.comment.body, '<!-- docker-agent-review-reply -->') &&
       !contains(github.event.comment.body, '<!-- cagent-review -->') &&
       !contains(github.event.comment.body, '<!-- cagent-review-reply -->')
     runs-on: ubuntu-latest
@@ -107,10 +109,12 @@ jobs:
        github.event.comment.user.login != 'docker-agent' &&
        github.event.comment.user.login != 'docker-agent[bot]' &&
        github.event.comment.user.type != 'Bot' &&
+       !contains(github.event.comment.body, '<!-- docker-agent-review -->') &&
+       !contains(github.event.comment.body, '<!-- docker-agent-review-reply -->') &&
        !contains(github.event.comment.body, '<!-- cagent-review -->') &&
        !contains(github.event.comment.body, '<!-- cagent-review-reply -->')) ||
       github.event.workflow_run.conclusion == 'success'
-    uses: docker/cagent-action/.github/workflows/review-pr.yml@VERSION
+    uses: docker/docker-agent-action/.github/workflows/review-pr.yml@VERSION
     permissions:
       contents: read # Read repository files and PR diffs
       pull-requests: write # Post review comments
@@ -224,7 +228,7 @@ docker agent run agentcatalog/review-pr --prompt-file CONTRIBUTING.md "Review my
 
 ### Reusable Workflow
 
-When using `docker/cagent-action/.github/workflows/review-pr.yml`:
+When using `docker/docker-agent-action/.github/workflows/review-pr.yml`:
 
 | Input               | Description                                                            | Default |
 | ------------------- | ---------------------------------------------------------------------- | ------- |
@@ -273,7 +277,7 @@ but the error check happens after this line accesses `user.ID`.
 
 Consider moving the nil check before accessing user properties.
 
-<!-- cagent-review -->
+<!-- docker-agent-review -->
 ```
 
 When no issues are found:
@@ -294,7 +298,7 @@ AGENTS.md + PR Diff → Drafter (hypotheses) → Verifier (confirm) → Post Com
 
 When you reply to a review comment:
 
-1. The `reply-to-feedback` job checks if the reply is to an agent comment (via `<!-- cagent-review -->` marker)
+1. The `reply-to-feedback` job checks if the reply is to an agent comment (via the `<!-- docker-agent-review -->` marker; the legacy `<!-- cagent-review -->` marker is still recognized during the rename transition)
 2. Verifies the author is an org member/collaborator (authorization gate)
 3. Builds the full thread context (original comment + all replies in chronological order)
 4. Runs a Sonnet-powered reply agent that posts a contextual response in the same thread
@@ -318,7 +322,7 @@ The reviewer supports true multi-turn conversation in PR review threads. When yo
 - **Disagree** — the agent engages thoughtfully, discusses trade-offs, and considers your perspective
 - **Add context** — the agent thanks you, reassesses its finding, and stores the insight
 
-Agent replies are marked with `<!-- cagent-review-reply -->` (distinct from `<!-- cagent-review -->` on original review comments) to prevent infinite loops. Multi-turn threading works automatically because GitHub's `in_reply_to_id` always points to the root comment.
+Agent replies are marked with `<!-- docker-agent-review-reply -->` (distinct from `<!-- docker-agent-review -->` on original review comments) to prevent infinite loops. Multi-turn threading works automatically because GitHub's `in_reply_to_id` always points to the root comment.
 
 **Memory persistence:** The memory database is stored in GitHub Actions cache. Each review run restores the previous cache, processes any pending feedback, runs the review, and saves with a unique key. Old caches are automatically cleaned up (keeping the 5 most recent).
 
@@ -331,7 +335,7 @@ Evals verify that the reviewer produces consistent, correct results across multi
 ### Run all evals
 
 ```bash
-cd cagent-action
+cd docker-agent-action
 docker agent eval review-pr/agents/pr-review.yaml review-pr/agents/evals/ \
   -e GITHUB_TOKEN -e GH_TOKEN
 ```

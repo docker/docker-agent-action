@@ -247,7 +247,7 @@ beforeEach(async () => {
   process.env.GITHUB_RUN_ID = '12345';
   process.env.GITHUB_RUN_ATTEMPT = '1';
   process.env.GITHUB_JOB = 'test-job';
-  process.env.GITHUB_REPOSITORY = 'docker/cagent-action';
+  process.env.GITHUB_REPOSITORY = 'docker/docker-agent-action';
   process.env.GITHUB_WORKFLOW = 'Test';
 
   // Reset all mock state
@@ -289,7 +289,12 @@ describe('happy path — agent succeeds', () => {
     expect(outputCalls.authorized).toBe('skipped-by-caller');
     expect(outputCalls['prompt-suspicious']).toBe('false');
     expect(outputCalls['input-risk-level']).toBe('low');
+    expect(outputCalls['docker-agent-version']).toBe(DOCKER_AGENT_VERSION);
     expect(outputCalls['cagent-version']).toBe(DOCKER_AGENT_VERSION);
+    // The deprecated alias must emit a migration warning.
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining("'cagent-version' output is deprecated"),
+    );
     expect(outputCalls['mcp-gateway-installed']).toBe('false');
     expect(outputCalls['exit-code']).toBe('0');
     expect(outputCalls['secrets-detected']).toBe('false');

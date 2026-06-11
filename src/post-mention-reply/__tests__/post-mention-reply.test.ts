@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const MARKER = '<!-- cagent-review-reply -->';
+const MARKER = '<!-- docker-agent-review-reply -->';
+const LEGACY_MARKER = '<!-- cagent-review-reply -->';
 
 // ---------------------------------------------------------------------------
 // Hoist mock functions and MockOctokit class before vi.mock() calls
@@ -124,6 +125,16 @@ describe('guard: marker absent from output file', () => {
     await run({ ...BASE_CONFIG, outputFile, isInline: false });
 
     expect(mockCreateIssueComment).not.toHaveBeenCalled();
+  });
+
+  it('still recognizes the legacy marker during the rename transition', async () => {
+    writeFileSync(outputFile, `Some agent reply.\n\n${LEGACY_MARKER}\n`);
+
+    await run({ ...BASE_CONFIG, outputFile, isInline: false });
+
+    expect(mockCreateIssueComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining(LEGACY_MARKER) }),
+    );
   });
 });
 

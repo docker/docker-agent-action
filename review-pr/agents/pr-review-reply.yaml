@@ -67,7 +67,7 @@ agents:
       jq -n \
         --arg body "YOUR RESPONSE
 
-      <!-- cagent-review-reply -->" \
+      <!-- docker-agent-review-reply -->" \
         --argjson reply_to ROOT_COMMENT_ID \
         '{body: $body, in_reply_to_id: $reply_to}' | \
       gh api repos/{owner}/{repo}/pulls/{pr}/comments --input -
@@ -84,7 +84,7 @@ agents:
       - Reference specific code when it helps (use `read_file` to check source files)
       - When discussing trade-offs, present both sides fairly
       - Never repeat the original finding verbatim — the developer already read it
-      - End with `<!-- cagent-review-reply -->` marker (distinct from `<!-- cagent-review -->`)
+      - End with `<!-- docker-agent-review-reply -->` marker (distinct from `<!-- docker-agent-review -->`)
         for identification. This marker MUST be on its own line, separated by a blank line
 
       ## Learning

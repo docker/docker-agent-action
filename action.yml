@@ -1,5 +1,5 @@
-name: "cagent Runner"
-description: "Run a cagent AI agent with a single line"
+name: "Docker Agent Runner"
+description: "Run a Docker AI agent with a single line"
 author: "Docker"
 branding:
   icon: "cpu"
@@ -98,8 +98,10 @@ outputs:
     description: "Exit code from docker agent run"
   output-file:
     description: "Path to the output log file"
-  cagent-version:
+  docker-agent-version:
     description: "Version of Docker Agent that was used"
+  cagent-version:
+    description: "DEPRECATED alias for docker-agent-version. Will be removed in a future release; use docker-agent-version instead."
   mcp-gateway-installed:
     description: "Whether mcp-gateway was installed (true/false)"
   execution-time:

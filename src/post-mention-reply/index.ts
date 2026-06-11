@@ -17,7 +17,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { Octokit } from '@octokit/rest';
 
-export const MARKER = '<!-- cagent-review-reply -->';
+export const MARKER = '<!-- docker-agent-review-reply -->';
+// Legacy marker, still recognized during the repo-rename transition so replies
+// posted before the switch are deduped/detected correctly. Drop once aged out.
+export const LEGACY_MARKER = '<!-- cagent-review-reply -->';
+const REPLY_MARKERS = [MARKER, LEGACY_MARKER];
+
+function hasReplyMarker(text: string): boolean {
+  return REPLY_MARKERS.some((m) => text.includes(m));
+}
 
 export interface PostMentionReplyConfig {
   secretsDetected: string;
@@ -65,8 +73,8 @@ export async function run(config: PostMentionReplyConfig): Promise<void> {
 
   // Guard 3: output file must contain the reply marker
   const fileContent = readFileSync(outputFile, 'utf-8');
-  if (!fileContent.includes(MARKER)) {
-    log('⏭️ Output file does not contain <!-- cagent-review-reply --> marker — skipping');
+  if (!hasReplyMarker(fileContent)) {
+    log('⏭️ Output file does not contain a reply marker — skipping');
     return;
   }
 
@@ -91,7 +99,7 @@ export async function run(config: PostMentionReplyConfig): Promise<void> {
 
   // Extract body: everything up to and including the marker line
   const lines = fileContent.split('\n');
-  const markerIndex = lines.findIndex((line) => line.includes(MARKER));
+  const markerIndex = lines.findIndex((line) => hasReplyMarker(line));
   const body = lines.slice(0, markerIndex + 1).join('\n');
 
   const octokit = new Octokit({ auth: token });
@@ -110,7 +118,7 @@ export async function run(config: PostMentionReplyConfig): Promise<void> {
         per_page: 100,
       });
       isDuplicate = allComments.some(
-        (c) => c.in_reply_to_id === inReplyToIdNum && (c.body ?? '').includes(MARKER),
+        (c) => c.in_reply_to_id === inReplyToIdNum && hasReplyMarker(c.body ?? ''),
       );
     } catch (err) {
       log(

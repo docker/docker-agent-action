@@ -520,7 +520,7 @@ describe('run() — non-member', () => {
       'docker',
       'myrepo',
       42,
-      expect.stringContaining('<!-- cagent-review-reply -->'),
+      expect.stringContaining('<!-- docker-agent-review-reply -->'),
     );
     expect(core.setOutput).toHaveBeenCalledWith('should-reply', 'false');
     expect(core.setFailed).not.toHaveBeenCalled();
@@ -724,7 +724,7 @@ describe('run() — pull_request_review_comment', () => {
       'myrepo',
       42,
       77,
-      expect.stringContaining('<!-- cagent-review-reply -->'),
+      expect.stringContaining('<!-- docker-agent-review-reply -->'),
     );
     expect(mockPostComment).not.toHaveBeenCalled();
     expect(core.setOutput).toHaveBeenCalledWith('should-reply', 'false');

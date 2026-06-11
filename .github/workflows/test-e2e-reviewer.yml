@@ -84,7 +84,7 @@ jobs:
 
       - name: Setup credentials
         if: steps.fork-check.outputs.is_fork != 'true'
-        uses: docker/cagent-action/setup-credentials@3f5dc9969f307d3c76acb7e9ccaefdd96bd62f4b # v1.5.4
+        uses: docker/docker-agent-action/setup-credentials@3f5dc9969f307d3c76acb7e9ccaefdd96bd62f4b # v1.5.4
 
       - name: Write synthetic issue_comment event
         if: steps.fork-check.outputs.is_fork != 'true'
@@ -96,7 +96,7 @@ jobs:
               "action": "created",
               "issue": {
                 "number": $pr_number,
-                "pull_request": { "url": ("https://api.github.com/repos/docker/cagent-action/pulls/" + ($pr_number | tostring)) }
+                "pull_request": { "url": ("https://api.github.com/repos/docker/docker-agent-action/pulls/" + ($pr_number | tostring)) }
               },
               "comment": {
                 "id": 9999999901,
@@ -105,7 +105,7 @@ jobs:
               },
               "repository": {
                 "owner": { "login": "docker" },
-                "name": "cagent-action"
+                "name": "docker-agent-action"
               },
               "sender": { "login": $actor, "type": "User" }
             }' > /tmp/test-event-toplevel.json
@@ -188,7 +188,7 @@ jobs:
 
       - name: Setup credentials
         if: steps.fork-check.outputs.is_fork != 'true'
-        uses: docker/cagent-action/setup-credentials@3f5dc9969f307d3c76acb7e9ccaefdd96bd62f4b # v1.5.4
+        uses: docker/docker-agent-action/setup-credentials@3f5dc9969f307d3c76acb7e9ccaefdd96bd62f4b # v1.5.4
 
       - name: Create anchor review comment
         if: steps.fork-check.outputs.is_fork != 'true'
@@ -197,10 +197,10 @@ jobs:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
-          HEAD_SHA=$(gh api "repos/docker/cagent-action/pulls/$PR_NUMBER" --jq '.head.sha')
-          DIFF_FILE=$(gh api "repos/docker/cagent-action/pulls/$PR_NUMBER/files" --jq '.[0].filename')
+          HEAD_SHA=$(gh api "repos/docker/docker-agent-action/pulls/$PR_NUMBER" --jq '.head.sha')
+          DIFF_FILE=$(gh api "repos/docker/docker-agent-action/pulls/$PR_NUMBER/files" --jq '.[0].filename')
           echo "Using diff file: $DIFF_FILE"
-          COMMENT_ID=$(gh api "repos/docker/cagent-action/pulls/$PR_NUMBER/comments" \
+          COMMENT_ID=$(gh api "repos/docker/docker-agent-action/pulls/$PR_NUMBER/comments" \
             -X POST \
             --input - <<< $(jq -n \
               --arg sha "$HEAD_SHA" \
@@ -232,7 +232,7 @@ jobs:
               },
               "repository": {
                 "owner": { "login": "docker" },
-                "name": "cagent-action"
+                "name": "docker-agent-action"
               },
               "sender": { "login": $actor, "type": "User" }
             }' > /tmp/test-event-inline.json
@@ -280,10 +280,10 @@ jobs:
         run: |
           if [ -z "$ANCHOR_ID" ]; then exit 0; fi
           # Delete thread replies first
-          gh api "repos/docker/cagent-action/pulls/${{ inputs.pr_number }}/comments" \
+          gh api "repos/docker/docker-agent-action/pulls/${{ inputs.pr_number }}/comments" \
             | jq --argjson id "$ANCHOR_ID" '[.[] | select(.in_reply_to_id == $id)] | .[].id' \
             | while read -r reply_id; do
-                gh api "repos/docker/cagent-action/pulls/comments/$reply_id" -X DELETE || true
+                gh api "repos/docker/docker-agent-action/pulls/comments/$reply_id" -X DELETE || true
               done
           # Delete anchor
-          gh api "repos/docker/cagent-action/pulls/comments/$ANCHOR_ID" -X DELETE || true
+          gh api "repos/docker/docker-agent-action/pulls/comments/$ANCHOR_ID" -X DELETE || true

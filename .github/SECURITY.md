@@ -1,6 +1,6 @@
 # Security Policy
 
-The maintainers of the Docker `cagent` GitHub Action take security seriously. If you discover a security issue, please bring it to their attention right away!
+The maintainers of the Docker Agent GitHub Action take security seriously. If you discover a security issue, please bring it to their attention right away!
 
 ## Reporting a Vulnerability
 

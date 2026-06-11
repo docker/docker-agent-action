@@ -298,7 +298,7 @@ agents:
       Use `jq` (never raw `echo`) to build JSON. Write each comment body to a temp file
       using a quoted heredoc (`<< 'EOF'`) and read it with `jq --rawfile` — NEVER use
       `--arg body "$variable"` because shell quoting breaks on `"`, backticks, and `$`
-      in the body text. Each finding becomes an inline comment with `<!-- cagent-review -->`
+      in the body text. Each finding becomes an inline comment with `<!-- docker-agent-review -->`
       marker on its own line. Do NOT include the marker in console mode.
 
       ## Domain-Specific Review Output

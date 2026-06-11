@@ -24,7 +24,7 @@ const TOKEN = 'fake-token';
 const OWNER = 'docker';
 const REPO = 'myrepo';
 const ISSUE_NUMBER = 42;
-const BODY = 'Hello from the agent.\n\n<!-- cagent-review-reply -->';
+const BODY = 'Hello from the agent.\n\n<!-- docker-agent-review-reply -->';
 
 describe('postComment', () => {
   it('calls createComment with the correct parameters', async () => {

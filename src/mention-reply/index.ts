@@ -1,5 +1,5 @@
 /**
- * Mention-reply handler for the cagent-action review pipeline.
+ * Mention-reply handler for the docker-agent-action review pipeline.
  *
  * Invoked by `.github/actions/mention-reply/action.yml` once per
  * issue_comment or pull_request_review_comment event that mentions
@@ -260,7 +260,7 @@ export async function run(): Promise<void> {
   const isMember = await checkOrgMembership(orgToken, 'docker', ctx.commentAuthor);
   if (!isMember) {
     core.info(`⏭️  ${ctx.commentAuthor} is not a docker org member — posting rejection`);
-    const rejectionBody = `Sorry @${ctx.commentAuthor}, I can only respond to Docker org members.\n\n<!-- cagent-review-reply -->`;
+    const rejectionBody = `Sorry @${ctx.commentAuthor}, I can only respond to Docker org members.\n\n<!-- docker-agent-review-reply -->`;
     try {
       // Reply in the same inline thread when triggered from an inline comment;
       // fall back to a PR-level Issues comment otherwise.

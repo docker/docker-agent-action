@@ -145,7 +145,8 @@ add-prompt-files: "STYLE_GUIDE.md"  # Found via hierarchy search
 | ----------------------- | ---------------------------------------------------------------- |
 | `exit-code`             | Exit code from docker agent run                                  |
 | `output-file`           | Path to the output log file                                      |
-| `cagent-version`        | Version of Docker Agent that was used                            |
+| `docker-agent-version`  | Version of Docker Agent that was used                            |
+| `cagent-version`        | **Deprecated** alias for `docker-agent-version`; will be removed in a future release |
 | `mcp-gateway-installed` | Whether mcp-gateway was installed (`true`/`false`)               |
 | `execution-time`        | Agent execution time in seconds                                  |
 | `verbose-log-file`      | Path to the full verbose agent log (includes tool calls)         |
@@ -263,8 +264,8 @@ Please also read our [Code of Conduct](CODE_OF_CONDUCT.md).
 ## Support
 
 - 📖 [Documentation](README.md)
-- 🐛 [Report Issues](https://github.com/docker/cagent-action/issues)
-- 💬 [Discussions](https://github.com/docker/cagent-action/discussions)
+- 🐛 [Report Issues](https://github.com/docker/docker-agent-action/issues)
+- 💬 [Discussions](https://github.com/docker/docker-agent-action/discussions)
 - 🔒 [Security Policy](SECURITY.md)
 
 ## License
