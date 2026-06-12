@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (c) Docker, Inc.
+# Copyright The Docker Agent Action authors
 # SPDX-License-Identifier: Apache-2.0
 
 # Test output extraction logic from action.yml

@@ -1,4 +1,4 @@
-// Copyright (c) Docker, Inc.
+// Copyright The Docker Agent Action authors
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'vitest';

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright (c) Docker, Inc.
+# Copyright The Docker Agent Action authors
 # SPDX-License-Identifier: Apache-2.0
 
 # act-local.sh — Run GitHub Actions workflows locally with `act`.
