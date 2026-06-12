@@ -29,6 +29,7 @@ const entry = {
   'filter-diff': src('filter-diff'),
   main: src('main'),
   'mention-reply': src('mention-reply'),
+  'migrate-consumer-refs': src('migrate-consumer-refs'),
   'post-mention-reply': src('post-mention-reply'),
   'score-risk': src('score-risk'),
   security: src('security'),

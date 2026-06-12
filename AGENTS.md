@@ -178,6 +178,7 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 | `security-scan.yml`               | Periodic security scanning.                                          |
 | `update-docker-agent-version.yml` | Bumps `DOCKER_AGENT_VERSION` automatically.                          |
 | `update-consumers.yml`            | Pushes version updates to downstream consumer repos.                 |
+| `migrate-consumers.yml`           | Consumer migration to the new repo: opens PRs across consumer repos rewriting `docker/cagent-action` refs to `docker/docker-agent-action` (incremental, no deadline — old repo stays live; dry-run by default, `repos` allowlist for pilots). |
 | `manual-test-pirate-agent.yml`    | Manual smoke test with a toy agent.                                  |
 
 ## Common tasks (cheat sheet)
