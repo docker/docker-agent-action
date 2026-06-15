@@ -43,7 +43,8 @@ jobs:
       - name: Run actionlint
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@latest
-          "$(go env GOPATH)/bin/actionlint" -color
+          # Disable shellcheck integration to match previous behavior (shellcheck: false)
+          "$(go env GOPATH)/bin/actionlint" -color -shellcheck ''
 
   test:
     name: Unit Tests
