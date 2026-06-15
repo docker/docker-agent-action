@@ -41,12 +41,9 @@ jobs:
         run: pnpm biome ci .
 
       - name: Run actionlint
-        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
-        with:
-          fail-on-error: true
-          # Disable shellcheck - it reports info/style warnings as errors
-          # We care about YAML structure and action syntax, not shell style
-          shellcheck: false
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+          "$(go env GOPATH)/bin/actionlint" -color
 
   test:
     name: Unit Tests
