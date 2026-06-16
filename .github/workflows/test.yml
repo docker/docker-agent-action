@@ -41,12 +41,9 @@ jobs:
         run: pnpm biome ci .
 
       - name: Run actionlint
-        uses: raven-actions/actionlint@e01d1ea33dd6a5ed517d95b4c0c357560ac6f518 # v2.1.1
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # v1.7.12
         with:
-          fail-on-error: true
-          # Disable shellcheck - it reports info/style warnings as errors
-          # We care about YAML structure and action syntax, not shell style
-          shellcheck: false
+          args: -shellcheck= -color
 
   test:
     name: Unit Tests
