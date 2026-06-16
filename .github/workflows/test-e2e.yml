@@ -56,41 +56,24 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check if fork PR
-        id: fork-check
-        run: |
-          # Use default empty string to handle edge cases (deleted branches, malformed events)
-          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name || '' }}"
-          if [[ "${{ github.event_name }}" == "pull_request" && "$HEAD_REPO" != "${{ github.repository }}" && -n "$HEAD_REPO" ]]; then
-            echo "⏭️ Skipping - fork PR (secrets not available)"
-            echo "is_fork=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_fork=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Checkout code
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup pnpm
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
         with:
           run_install: false
 
       - name: Setup Node.js
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: pnpm
 
       - name: Build action
-        if: steps.fork-check.outputs.is_fork != 'true'
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Run test
-        if: steps.fork-check.outputs.is_fork != 'true'
         id: pirate
         uses: ./
         with:
@@ -99,7 +82,6 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Validate output and exit code
-        if: steps.fork-check.outputs.is_fork != 'true'
         run: |
           OUTPUT_FILE="${{ steps.pirate.outputs.output-file }}"
 
@@ -205,45 +187,27 @@ jobs:
     env:
       TEST_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
     steps:
-      - name: Check if fork PR
-        id: fork-check
-        run: |
-          # Use default empty string to handle edge cases (deleted branches, malformed events)
-          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name || '' }}"
-          if [[ "${{ github.event_name }}" == "pull_request" && "$HEAD_REPO" != "${{ github.repository }}" && -n "$HEAD_REPO" ]]; then
-            echo "⏭️ Skipping - fork PR (secrets not available)"
-            echo "is_fork=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_fork=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Checkout code
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup pnpm
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
         with:
           run_install: false
 
       - name: Setup Node.js
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: pnpm
 
       - name: Build action
-        if: steps.fork-check.outputs.is_fork != 'true'
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: docker/cagent-action/setup-credentials@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
 
       - name: Create anchor issue comment on current PR
-        if: steps.fork-check.outputs.is_fork != 'true'
         id: create-anchor
         env:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
@@ -256,7 +220,6 @@ jobs:
           echo "test_comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
 
       - name: Write synthetic issue_comment event
-        if: steps.fork-check.outputs.is_fork != 'true'
         run: |
           COMMENT_ID="${{ steps.create-anchor.outputs.test_comment_id }}"
           jq -n \
@@ -282,7 +245,6 @@ jobs:
             }' > /tmp/test-event-toplevel.json
 
       - name: Run mention-reply handler
-        if: steps.fork-check.outputs.is_fork != 'true'
         id: mention-handler
         env:
           INPUT_GITHUB-TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
@@ -293,7 +255,6 @@ jobs:
           node "$GITHUB_WORKSPACE/dist/mention-reply.js"
 
       - name: Assert should-reply output
-        if: steps.fork-check.outputs.is_fork != 'true'
         run: |
           SHOULD_REPLY="${{ steps.mention-handler.outputs.should-reply }}"
           echo "should-reply=$SHOULD_REPLY"
@@ -307,7 +268,7 @@ jobs:
           fi
 
       - name: Run mention reply
-        if: steps.fork-check.outputs.is_fork != 'true' && steps.mention-handler.outputs.should-reply == 'true'
+        if: steps.mention-handler.outputs.should-reply == 'true'
         id: run-reply
         uses: ./review-pr/mention-reply
         with:
@@ -323,7 +284,7 @@ jobs:
           skip-auth: "true"
 
       - name: Verify reply was posted
-        if: steps.fork-check.outputs.is_fork != 'true' && steps.mention-handler.outputs.should-reply == 'true'
+        if: steps.mention-handler.outputs.should-reply == 'true'
         env:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
         run: |
@@ -336,7 +297,7 @@ jobs:
           echo "✅ Reply posted successfully ($FOUND comment(s) found)"
 
       - name: Cleanup test comments
-        if: always() && steps.fork-check.outputs.is_fork != 'true'
+        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
@@ -366,44 +327,27 @@ jobs:
     env:
       TEST_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
     steps:
-      - name: Check if fork PR
-        id: fork-check
-        run: |
-          HEAD_REPO="${{ github.event.pull_request.head.repo.full_name || '' }}"
-          if [[ "${{ github.event_name }}" == "pull_request" && "$HEAD_REPO" != "${{ github.repository }}" && -n "$HEAD_REPO" ]]; then
-            echo "⏭️ Skipping - fork PR (secrets not available)"
-            echo "is_fork=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_fork=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Checkout code
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup pnpm
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
         with:
           run_install: false
 
       - name: Setup Node.js
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: pnpm
 
       - name: Build action
-        if: steps.fork-check.outputs.is_fork != 'true'
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        if: steps.fork-check.outputs.is_fork != 'true'
         uses: docker/cagent-action/setup-credentials@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
 
       - name: Create anchor review comment on current PR
-        if: steps.fork-check.outputs.is_fork != 'true'
         id: create-anchor
         env:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
@@ -428,7 +372,6 @@ jobs:
           echo "test_comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
 
       - name: Write synthetic pull_request_review_comment event
-        if: steps.fork-check.outputs.is_fork != 'true'
         run: |
           COMMENT_ID="${{ steps.create-anchor.outputs.test_comment_id }}"
           jq -n \
@@ -455,7 +398,6 @@ jobs:
             }' > /tmp/test-event-inline.json
 
       - name: Run mention-reply handler
-        if: steps.fork-check.outputs.is_fork != 'true'
         id: mention-handler
         env:
           INPUT_GITHUB-TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
@@ -466,7 +408,6 @@ jobs:
           node "$GITHUB_WORKSPACE/dist/mention-reply.js"
 
       - name: Assert should-reply output
-        if: steps.fork-check.outputs.is_fork != 'true'
         run: |
           SHOULD_REPLY="${{ steps.mention-handler.outputs.should-reply }}"
           echo "should-reply=$SHOULD_REPLY"
@@ -478,7 +419,7 @@ jobs:
           fi
 
       - name: Assert inline outputs
-        if: steps.fork-check.outputs.is_fork != 'true' && steps.mention-handler.outputs.should-reply == 'true'
+        if: steps.mention-handler.outputs.should-reply == 'true'
         run: |
           IS_INLINE="${{ steps.mention-handler.outputs.is-inline }}"
           IN_REPLY_TO_ID="${{ steps.mention-handler.outputs.in-reply-to-id }}"
@@ -495,7 +436,7 @@ jobs:
           echo "✅ in-reply-to-id=$IN_REPLY_TO_ID (matches anchor comment)"
 
       - name: Run mention reply
-        if: steps.fork-check.outputs.is_fork != 'true' && steps.mention-handler.outputs.should-reply == 'true'
+        if: steps.mention-handler.outputs.should-reply == 'true'
         id: run-reply
         uses: ./review-pr/mention-reply
         with:
@@ -511,7 +452,7 @@ jobs:
           skip-auth: "true"
 
       - name: Verify inline reply was posted in thread
-        if: steps.fork-check.outputs.is_fork != 'true' && steps.mention-handler.outputs.should-reply == 'true'
+        if: steps.mention-handler.outputs.should-reply == 'true'
         env:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
           ANCHOR_ID: ${{ steps.create-anchor.outputs.test_comment_id }}
@@ -526,7 +467,7 @@ jobs:
           echo "✅ Inline reply posted successfully"
 
       - name: Cleanup anchor comment and thread replies
-        if: always() && steps.fork-check.outputs.is_fork != 'true'
+        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
