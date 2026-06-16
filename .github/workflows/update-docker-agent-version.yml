@@ -124,11 +124,11 @@ jobs:
           echo "✅ Signed commit: $COMMIT_OID"
 
           # Check if a PR already exists for this branch
-          EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          EXISTING_PR=$(gh pr list --repo docker/docker-agent-action --head "$BRANCH" --state open --json number --jq '.[0].number')
 
           if [ -n "$EXISTING_PR" ]; then
             echo "Updating existing PR #$EXISTING_PR"
-            gh pr edit "$EXISTING_PR" \
+            gh pr edit "$EXISTING_PR" --repo docker/docker-agent-action \
               --title "chore: update Docker Agent to $VERSION" \
               --body "$(cat <<EOF
           ## Summary
@@ -141,6 +141,7 @@ jobs:
           else
             echo "Creating new PR"
             gh pr create \
+              --repo docker/docker-agent-action \
               --head "$BRANCH" \
               --title "chore: update Docker Agent to $VERSION" \
               --body "$(cat <<EOF
