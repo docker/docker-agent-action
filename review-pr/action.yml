@@ -503,11 +503,11 @@ runs:
         TOTAL_THREADS=$(echo "$ALL_THREADS" | jq 'length')
         echo "📋 Fetched $TOTAL_THREADS review threads (across $PAGE page(s))"
 
-        # C. Filter to unresolved bot threads (containing <!-- cagent-review --> marker)
+        # C. Filter to unresolved bot threads (containing <!-- docker-agent-review --> marker)
         BOT_THREADS=$(echo "$ALL_THREADS" | jq '[
           .[] | select(
             .isResolved == false and
-            (.comments.nodes | any(.body | contains("<!-- cagent-review -->")))
+            (.comments.nodes | any(.body | contains("<!-- docker-agent-review -->")))
           )
         ]')
 
@@ -642,7 +642,7 @@ runs:
     - name: Process pending feedback
       if: steps.lock-check.outputs.skip != 'true' && steps.pending-feedback.outputs.has_feedback == 'true'
       continue-on-error: true
-      uses: docker/cagent-action@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
+      uses: docker/docker-agent-action@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
@@ -751,12 +751,12 @@ runs:
         cp "$ACTION_PATH"/agents/refs/*.md /tmp/refs/
 
     # ========================================
-    # RUN REVIEW using root cagent-action
+    # RUN REVIEW using root docker-agent-action
     # ========================================
     - name: Run PR Review
       if: steps.lock-check.outputs.skip != 'true'
       id: run-review
-      uses: docker/cagent-action@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
+      uses: docker/docker-agent-action@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:

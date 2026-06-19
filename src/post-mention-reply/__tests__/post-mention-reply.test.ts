@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const MARKER = '<!-- cagent-review-reply -->';
+const MARKER = '<!-- docker-agent-review-reply -->';
 
 // ---------------------------------------------------------------------------
 // Hoist mock functions and MockOctokit class before vi.mock() calls
@@ -112,7 +112,7 @@ describe('guard: output file missing', () => {
 // ---------------------------------------------------------------------------
 
 describe('guard: marker absent from output file', () => {
-  it('skips when output file has no <!-- cagent-review-reply --> marker', async () => {
+  it('skips when output file has no <!-- docker-agent-review-reply --> marker', async () => {
     writeFileSync(outputFile, 'Some agent content with no marker.');
 
     await run({ ...BASE_CONFIG, outputFile });

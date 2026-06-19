@@ -67,7 +67,7 @@ agents:
 
       ## Posting Your Reply
 
-      Write your reply as your final text output. End with `<!-- cagent-review-reply -->` on
+      Write your reply as your final text output. End with `<!-- docker-agent-review-reply -->` on
       its own line, separated by a blank line. Do NOT call `gh api` — the framework will post
       your reply to the correct thread automatically.
 
@@ -76,7 +76,7 @@ agents:
       ```
       Your helpful reply here.
 
-      <!-- cagent-review-reply -->
+      <!-- docker-agent-review-reply -->
       ```
 
       ## Response Guidelines
@@ -87,7 +87,7 @@ agents:
       - If asked about a review finding, explain your reasoning clearly
       - If asked to clarify something, provide a concrete explanation
       - If the question is outside your scope, say so briefly and politely
-      - Always end your reply with `<!-- cagent-review-reply -->` on its own line, separated by a blank line
+      - Always end your reply with `<!-- docker-agent-review-reply -->` on its own line, separated by a blank line
 
       ## Learning
 

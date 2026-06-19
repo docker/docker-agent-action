@@ -21,7 +21,7 @@ export interface WriteSummaryOptions {
   agent: string;
   exitCode: number;
   executionTime: number;
-  cagentVersion: string;
+  dockerAgentVersion: string;
   mcpInstalled: boolean;
   timeout: number;
   /** Path to the cleaned output file (may not exist if agent failed early). */
@@ -35,7 +35,7 @@ export interface WriteSummaryOptions {
  * Safe to call when outputFile is absent — will skip the output section.
  */
 export async function writeJobSummary(opts: WriteSummaryOptions): Promise<void> {
-  const { agent, exitCode, executionTime, cagentVersion, mcpInstalled, timeout, outputFile } = opts;
+  const { agent, exitCode, executionTime, dockerAgentVersion, mcpInstalled, timeout, outputFile } = opts;
 
   let statusLine: string;
   if (exitCode === 0) {
@@ -50,7 +50,7 @@ export async function writeJobSummary(opts: WriteSummaryOptions): Promise<void> 
     `| Agent | \`${agent}\` |`,
     `| Exit Code | ${exitCode} |`,
     `| Execution Time | ${executionTime}s |`,
-    `| Docker Agent Version | ${cagentVersion} |`,
+    `| Docker Agent Version | ${dockerAgentVersion} |`,
     `| MCP Gateway | ${mcpInstalled} |`,
   ];
   if (timeout > 0) {

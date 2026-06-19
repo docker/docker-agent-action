@@ -42,7 +42,7 @@ jobs:
       - name: Checkout for composite actions
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: docker/cagent-action
+          repository: docker/docker-agent-action
           ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
@@ -166,14 +166,14 @@ jobs:
 
           # Create staging branch and PREP commit (dist/ only)
           STAGING_BRANCH="release-staging/${VERSION}"
-          trap 'gh api -X DELETE "repos/docker/cagent-action/git/refs/heads/${STAGING_BRANCH}" >/dev/null 2>&1 || true' EXIT
+          trap 'gh api -X DELETE "repos/docker/docker-agent-action/git/refs/heads/${STAGING_BRANCH}" >/dev/null 2>&1 || true' EXIT
           # NOTE: use `find dist/ -type f` (relative path) NOT `find "$GITHUB_WORKSPACE/dist/" -type f`.
           # signed-commit uses the paths verbatim as git file paths in the GitHub API, which
           # requires repo-root-relative paths.  Absolute paths cause a cryptic
           # "A path was requested for deletion which does not exist" GraphQL error.
           PREP_SHA=$(find dist/ -type f 2>/dev/null | \
-            GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
-              --repo docker/cagent-action \
+            GITHUB_TOKEN="${GH_TOKEN}" GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+              --repo docker/docker-agent-action \
               --branch "$STAGING_BRANCH" \
               --base-ref main \
               --force \
@@ -184,15 +184,15 @@ jobs:
 
           # ── Pass 2: Pin self-refs → PREP_SHA ─────────────────────────────────
           # TEMP_SHA: YAML files have all self-refs pinned to PREP_SHA.
-          # Replace all docker/cagent-action*@<any-ref> refs (SHA, tag, branch, SHA+comment)
+          # Replace all docker/docker-agent-action*@<any-ref> refs (SHA, tag, branch, SHA+comment)
           # with PREP_SHA and the new version.
           # Uses a capture group so any sub-path (e.g., /review-pr, /review-pr/reply) is preserved.
           # Automatically covers new sub-actions without needing to update this workflow.
           # Only targets `uses:` lines to avoid pinning refs in comments or documentation.
           echo "Pass 2: pinning refs to ${PREP_SHA} # ${VERSION}..."
 
-          OLD_PIN_PATTERN='uses: *docker/cagent-action[^@]*@'
-          PIN_PATTERN_TO_PREP='s|^\([^#]*uses: *docker/cagent-action\)\([^@]*\)@.*|\1\2@'"${PREP_SHA}"' # '"${VERSION}"'|g'
+          OLD_PIN_PATTERN='uses: *docker/docker-agent-action[^@]*@'
+          PIN_PATTERN_TO_PREP='s|^\([^#]*uses: *docker/docker-agent-action\)\([^@]*\)@.*|\1\2@'"${PREP_SHA}"' # '"${VERSION}"'|g'
           PINNED_FILES=()
           while IFS= read -r file; do
             sed -i "$PIN_PATTERN_TO_PREP" "$file"
@@ -203,12 +203,12 @@ jobs:
             review-pr/ .github/workflows/ .github/actions/)
 
           if [ ${#PINNED_FILES[@]} -eq 0 ]; then
-            echo "::error::No SHA-pinned self-refs found to update — expected at least one. Check that review-pr/ actions still reference docker/cagent-action with a SHA pin."
+            echo "::error::No SHA-pinned self-refs found to update — expected at least one. Check that review-pr/ actions still reference docker/docker-agent-action with a SHA pin."
             exit 1
           fi
 
           # Verify all refs now point to PREP_SHA (no old refs remain)
-          REMAINING=$(grep -n '^[^#]*uses: *docker/cagent-action[^@]*@' "${PINNED_FILES[@]}" 2>/dev/null | grep -v "@${PREP_SHA} # ${VERSION}" || true)
+          REMAINING=$(grep -n '^[^#]*uses: *docker/docker-agent-action[^@]*@' "${PINNED_FILES[@]}" 2>/dev/null | grep -v "@${PREP_SHA} # ${VERSION}" || true)
           if [ -n "$REMAINING" ]; then
             echo "::error::Old SHA refs remain after Pass 2 pinning:"
             echo "$REMAINING"
@@ -216,12 +216,12 @@ jobs:
           fi
 
           echo "Pinned refs after Pass 2 (→ PREP_SHA):"
-          grep -rn "cagent-action@" "${PINNED_FILES[@]}"
+          grep -rn "docker-agent-action@" "${PINNED_FILES[@]}"
 
           # Create TEMP commit on the staging branch (YAML files pinned to PREP_SHA)
           TEMP_SHA=$(printf '%s\n' "${PINNED_FILES[@]}" DOCKER_AGENT_VERSION | \
-            GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
-              --repo docker/cagent-action \
+            GITHUB_TOKEN="${GH_TOKEN}" GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+              --repo docker/docker-agent-action \
               --branch "$STAGING_BRANCH" \
               --message "release(temp): pin self-refs to ${PREP_SHA} for ${VERSION}" \
               --add-stdin)
@@ -235,14 +235,14 @@ jobs:
           # PREP_SHA has the updated dist/ and DOCKER_AGENT_VERSION, completing the chain.
           echo "Pass 3: re-pinning refs from ${PREP_SHA} to ${TEMP_SHA} # ${VERSION}..."
 
-          PIN_PATTERN_TO_TEMP='s|^\([^#]*uses: *docker/cagent-action\)\([^@]*\)@'"${PREP_SHA}"'.*|\1\2@'"${TEMP_SHA}"' # '"${VERSION}"'|g'
+          PIN_PATTERN_TO_TEMP='s|^\([^#]*uses: *docker/docker-agent-action\)\([^@]*\)@'"${PREP_SHA}"'.*|\1\2@'"${TEMP_SHA}"' # '"${VERSION}"'|g'
           for file in "${PINNED_FILES[@]}"; do
             sed -i "$PIN_PATTERN_TO_TEMP" "$file"
             echo "  Re-pinned: $file"
           done
 
           # Verify no PREP_SHA refs remain after Pass 3
-          REMAINING=$(grep -n '^[^#]*uses: *docker/cagent-action[^@]*@'"${PREP_SHA}" "${PINNED_FILES[@]}" 2>/dev/null || true)
+          REMAINING=$(grep -n '^[^#]*uses: *docker/docker-agent-action[^@]*@'"${PREP_SHA}" "${PINNED_FILES[@]}" 2>/dev/null || true)
           if [ -n "$REMAINING" ]; then
             echo "::error::PREP_SHA refs remain after Pass 3 re-pinning:"
             echo "$REMAINING"
@@ -250,12 +250,12 @@ jobs:
           fi
 
           echo "Pinned refs after Pass 3 (→ TEMP_SHA):"
-          grep -rn "cagent-action@" "${PINNED_FILES[@]}"
+          grep -rn "docker-agent-action@" "${PINNED_FILES[@]}"
 
           # Create RELEASE commit on the staging branch (YAML files pinned to TEMP_SHA)
           RELEASE_SHA=$(printf '%s\n' "${PINNED_FILES[@]}" | \
-            GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
-              --repo docker/cagent-action \
+            GITHUB_TOKEN="${GH_TOKEN}" GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+              --repo docker/docker-agent-action \
               --branch "$STAGING_BRANCH" \
               --message "release: ${VERSION}" \
               --add-stdin)
@@ -264,12 +264,12 @@ jobs:
           echo "Release commit: $RELEASE_SHA"
 
           # ── Create tag via API (no git push needed) ──────────────────────────
-          gh api "repos/docker/cagent-action/git/refs" \
+          gh api "repos/docker/docker-agent-action/git/refs" \
             -f "ref=refs/tags/${VERSION}" \
             -f "sha=${RELEASE_SHA}" > /dev/null
 
           # ── Clean up staging branch ──────────────────────────────────────────
-          gh api -X DELETE "repos/docker/cagent-action/git/refs/heads/${STAGING_BRANCH}" > /dev/null 2>&1 || true
+          gh api -X DELETE "repos/docker/docker-agent-action/git/refs/heads/${STAGING_BRANCH}" > /dev/null 2>&1 || true
 
           echo "✅ Tag ${VERSION} created pointing to ${RELEASE_SHA}"
 
@@ -292,12 +292,12 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN }}
         run: |
-          # Strip the self-referential "chore: update cagent-action to vX.Y.Z" bullet that
+          # Strip the self-referential "chore: update docker-agent-action to vX.Y.Z" bullet that
           # the update-self-refs job creates after each release. It always appears in the
           # *next* release's auto-generated notes and is noise for readers.
           # Docker Agent version bumps ("update Docker Agent to v*") are intentionally kept.
-          NOTES=$(gh release view "$VERSION" --repo docker/cagent-action --json body --jq '.body')
-          FILTERED=$(printf '%s' "$NOTES" | grep -v 'update cagent-action to v' || true)
+          NOTES=$(gh release view "$VERSION" --repo docker/docker-agent-action --json body --jq '.body')
+          FILTERED=$(printf '%s' "$NOTES" | grep -v 'update docker-agent-action to v' || true)
           if [ -z "$FILTERED" ]; then
             echo "ℹ️ All lines were self-referential — leaving release notes unchanged to avoid blank notes."
             exit 0
@@ -307,7 +307,7 @@ jobs:
             exit 0
           fi
           printf '%s' "$FILTERED" > /tmp/release-notes-filtered.md
-          gh release edit "$VERSION" --repo docker/cagent-action --notes-file /tmp/release-notes-filtered.md
+          gh release edit "$VERSION" --repo docker/docker-agent-action --notes-file /tmp/release-notes-filtered.md
           echo "✅ Release notes filtered and updated."
 
   publish-agent:
@@ -358,7 +358,7 @@ jobs:
           TELEMETRY_ENABLED=false docker-agent share push pr-review.yaml "${HUB_ORG}/review-pr"
 
   update-self-refs:
-    name: Update self-refs in cagent-action main
+    name: Update self-refs in docker-agent-action main
     needs: release
     if: success() && !inputs.pre_release
     runs-on: ubuntu-latest
@@ -370,17 +370,17 @@ jobs:
       - name: Checkout for composite actions
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: docker/cagent-action
+          repository: docker/docker-agent-action
           ref: ${{ needs.release.outputs.sha }}
           persist-credentials: false
 
       - name: Setup credentials
         uses: ./setup-credentials
 
-      - name: Checkout cagent-action
+      - name: Checkout docker-agent-action
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: docker/cagent-action
+          repository: docker/docker-agent-action
           token: ${{ env.GITHUB_APP_TOKEN }}
 
       - name: Setup pnpm
@@ -408,9 +408,9 @@ jobs:
             exit 1
           fi
 
-          OLD_PATTERN='docker/cagent-action[^@]*@'
+          OLD_PATTERN='docker/docker-agent-action[^@]*@'
           # YAML sed: anchored on `uses:` to avoid false matches in comments
-          YAML_PIN_PATTERN='s|\(uses: *docker/cagent-action\)\([^@]*\)@.*|\1\2@'"${SHA}"' # '"${VERSION}"'|g'
+          YAML_PIN_PATTERN='s|\(uses: *docker/docker-agent-action\)\([^@]*\)@.*|\1\2@'"${SHA}"' # '"${VERSION}"'|g'
 
           UPDATED_FILES=()
 
@@ -442,16 +442,16 @@ jobs:
           VERSION: ${{ needs.release.outputs.version }}
           SHA: ${{ needs.release.outputs.sha }}
         run: |
-          BRANCH="auto/update-cagent-action"
-          RELEASE_URL="https://github.com/docker/cagent-action/releases/tag/$VERSION"
+          BRANCH="auto/update-docker-agent-action"
+          RELEASE_URL="https://github.com/docker/docker-agent-action/releases/tag/$VERSION"
 
           # Create signed commit
-          COMMIT_OID=$(GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
-              --repo docker/cagent-action \
+          COMMIT_OID=$(GITHUB_TOKEN="${GH_TOKEN}" GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+              --repo docker/docker-agent-action \
               --branch "$BRANCH" \
               --base-ref main \
               --force \
-              --message "chore: update cagent-action to $VERSION" \
+              --message "chore: update docker-agent-action to $VERSION" \
               --add-stdin < /tmp/updated-files.txt)
 
           echo "✅ Signed commit: $COMMIT_OID"
@@ -460,7 +460,7 @@ jobs:
 
           PR_BODY="$(cat <<EOF
           ## Summary
-          Updates \`cagent-action\` reference in \`pr-review.yml\` to [$VERSION]($RELEASE_URL).
+          Updates \`docker-agent-action\` reference in \`pr-review.yml\` to [$VERSION]($RELEASE_URL).
           - **Commit**: \`${SHA}\`
           - **Version**: \`${VERSION}\`
           > Auto-generated by the [release](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow.
@@ -470,14 +470,14 @@ jobs:
           if [ -n "$EXISTING_PR" ]; then
             echo "Updating existing PR #$EXISTING_PR"
             gh pr edit "$EXISTING_PR" \
-              --title "chore: update cagent-action to $VERSION" \
+              --title "chore: update docker-agent-action to $VERSION" \
               --body "$PR_BODY" \
               --add-reviewer "derekmisler"
           else
             echo "Creating new PR"
             gh pr create \
               --head "$BRANCH" \
-              --title "chore: update cagent-action to $VERSION" \
+              --title "chore: update docker-agent-action to $VERSION" \
               --body "$PR_BODY" \
               --reviewer "derekmisler"
           fi
@@ -492,7 +492,7 @@ jobs:
       - name: Checkout for composite actions
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: docker/cagent-action
+          repository: docker/docker-agent-action
           ref: ${{ needs.release.outputs.sha }}
           persist-credentials: false
 
@@ -505,7 +505,7 @@ jobs:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN }}
           VERSION: ${{ needs.release.outputs.version }}
         run: |
-          if ! NOTES=$(gh release view "$VERSION" --repo docker/cagent-action --json body --jq '.body'); then
+          if ! NOTES=$(gh release view "$VERSION" --repo docker/docker-agent-action --json body --jq '.body'); then
             echo "::warning::Failed to fetch release notes, using fallback"
             NOTES="Release ${VERSION} — see GitHub for details."
           fi
@@ -517,14 +517,14 @@ jobs:
         id: slack-summary
         # Pinned to a SHA — automatically updated by the update-self-refs job after each release.
         # GitHub Actions requires static `uses:` values, so we can't pin dynamically.
-        uses: docker/cagent-action@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
+        uses: docker/docker-agent-action@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
         with:
           agent: agentcatalog/github-action-release-notes
           prompt: |
             Convert these release notes to a SHORT plain text Slack message.
 
             VERSION: ${{ needs.release.outputs.version }}
-            RELEASE URL: https://github.com/docker/cagent-action/releases/tag/${{ needs.release.outputs.version }}
+            RELEASE URL: https://github.com/docker/docker-agent-action/releases/tag/${{ needs.release.outputs.version }}
 
             ORIGINAL RELEASE NOTES:
             ${{ steps.release-notes.outputs.notes }}
@@ -544,7 +544,7 @@ jobs:
             - Skip the "Platforms" line — this is a GitHub Action, not a binary
 
             EXAMPLE FORMAT:
-            :tada: cagent-action v1.3.0 Released
+            :tada: docker-agent-action v1.3.0 Released
 
             :package: WHAT'S NEW
             • New feature one
@@ -556,7 +556,7 @@ jobs:
             :bug: BUG FIXES
             • Fix description
 
-            :inbox_tray: Release: https://github.com/docker/cagent-action/releases/tag/v1.3.0
+            :inbox_tray: Release: https://github.com/docker/docker-agent-action/releases/tag/v1.3.0
           anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM }}
 
       - name: Send Slack notification
@@ -570,14 +570,14 @@ jobs:
             exit 0
           fi
 
-          RELEASE_URL="https://github.com/docker/cagent-action/releases/tag/${VERSION}"
+          RELEASE_URL="https://github.com/docker/docker-agent-action/releases/tag/${VERSION}"
 
           # Use the AI-generated Slack summary
           if [ -f "$SLACK_SUMMARY_FILE" ] && [ -s "$SLACK_SUMMARY_FILE" ]; then
             MESSAGE_TEXT=$(cat "$SLACK_SUMMARY_FILE")
           else
             # Fallback message if summary generation failed
-            MESSAGE_TEXT=$(printf ':tada: cagent-action %s Released\n\n:package: See the full release notes for details.\n\n:inbox_tray: Release: %s' "$VERSION" "$RELEASE_URL")
+            MESSAGE_TEXT=$(printf ':tada: docker-agent-action %s Released\n\n:package: See the full release notes for details.\n\n:inbox_tray: Release: %s' "$VERSION" "$RELEASE_URL")
           fi
 
           # Create payload with text and release_url fields (matching Slack Workflow Builder webhook)

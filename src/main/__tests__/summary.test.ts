@@ -51,7 +51,7 @@ const BASE_OPTS = {
   agent: 'docker/test-agent',
   exitCode: 0,
   executionTime: 42,
-  cagentVersion: 'v1.54.0',
+  dockerAgentVersion: 'v1.54.0',
   mcpInstalled: false,
   timeout: 0,
 };

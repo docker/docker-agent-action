@@ -34,18 +34,18 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             VERSION="$INPUT_VERSION"
           else
-            VERSION=$(gh release view --repo docker/cagent-action --json tagName --jq .tagName)
+            VERSION=$(gh release view --repo docker/docker-agent-action --json tagName --jq .tagName)
           fi
           if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
             echo "::error::Invalid version format: '$VERSION' (expected vX.Y.Z)"
             exit 1
           fi
-          OBJ_TYPE=$(gh api "repos/docker/cagent-action/git/ref/tags/$VERSION" --jq .object.type)
+          OBJ_TYPE=$(gh api "repos/docker/docker-agent-action/git/ref/tags/$VERSION" --jq .object.type)
           if [ "$OBJ_TYPE" = "tag" ]; then
-            SHA=$(gh api "repos/docker/cagent-action/git/ref/tags/$VERSION" --jq '.object.url' \
+            SHA=$(gh api "repos/docker/docker-agent-action/git/ref/tags/$VERSION" --jq '.object.url' \
               | xargs gh api --jq .object.sha)
           else
-            SHA=$(gh api "repos/docker/cagent-action/git/ref/tags/$VERSION" --jq .object.sha)
+            SHA=$(gh api "repos/docker/docker-agent-action/git/ref/tags/$VERSION" --jq .object.sha)
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "sha=$SHA" >> $GITHUB_OUTPUT
@@ -54,7 +54,7 @@ jobs:
       - name: Checkout for composite actions
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: docker/cagent-action
+          repository: docker/docker-agent-action
           ref: ${{ steps.resolve.outputs.sha }}
           persist-credentials: false
 
@@ -64,7 +64,7 @@ jobs:
       - name: Checkout source for build
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: docker/cagent-action
+          repository: docker/docker-agent-action
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
@@ -96,12 +96,12 @@ jobs:
             exit 1
           fi
 
-          # Discover repos that use the cagent-action reusable workflow.
+          # Discover repos that use the docker-agent-action reusable workflow.
           # Uses GitHub code search API — results may have eventual consistency lag
           # for very recently created repos, but this is fine for release automation.
           echo "Searching for consumer repos..."
           REPOS=$(gh api --method GET --paginate '/search/code?per_page=100' \
-            -f q='org:docker "docker/cagent-action/.github/workflows/review-pr.yml@" language:YAML path:.github/workflows' \
+            -f q='org:docker "docker/docker-agent-action/.github/workflows/review-pr.yml@" language:YAML path:.github/workflows' \
             --jq '[.items[] | {repo: .repository.full_name, path: .path}] | unique_by(.repo) | .[] | "\(.repo) \(.path)"')
 
           if [ -z "$REPOS" ]; then
@@ -113,11 +113,11 @@ jobs:
           echo "$REPOS"
           echo ""
 
-          # Pattern to match any cagent-action workflow ref (SHA, tag, branch, SHA+comment)
-          OLD_PATTERN='cagent-action/\.github/workflows/review-pr\.yml@'
+          # Pattern to match any docker-agent-action workflow ref (SHA, tag, branch, SHA+comment)
+          OLD_PATTERN='docker-agent-action/\.github/workflows/review-pr\.yml@'
 
-          BRANCH="auto/update-cagent-action"
-          RELEASE_URL="https://github.com/docker/cagent-action/releases/tag/$VERSION"
+          BRANCH="auto/update-docker-agent-action"
+          RELEASE_URL="https://github.com/docker/docker-agent-action/releases/tag/$VERSION"
 
           while IFS=' ' read -r REPO FILE_PATH; do
             echo "=========================================="
@@ -154,7 +154,7 @@ jobs:
             # Apply the sed replacement
             SAFE_VERSION=$(printf '%s' "$VERSION" | sed 's/[|&\]/\\&/g')
             SAFE_SHA=$(printf '%s' "$SHA" | sed 's/[|&\]/\\&/g')
-            sed -i 's|\(docker/cagent-action/\.github/workflows/review-pr\.yml@\).*|\1'"${SAFE_SHA}"' # '"${SAFE_VERSION}"'|g' "$FILE_PATH"
+            sed -i 's|\(docker/docker-agent-action/\.github/workflows/review-pr\.yml@\).*|\1'"${SAFE_SHA}"' # '"${SAFE_VERSION}"'|g' "$FILE_PATH"
 
             if git diff --quiet "$FILE_PATH"; then
               echo "No changes after sed — already up to date"
@@ -171,7 +171,7 @@ jobs:
               --branch "$BRANCH" \
               --base-ref main \
               --force \
-              --message "chore: update cagent-action to $VERSION" \
+              --message "chore: update docker-agent-action to $VERSION" \
               --add "$FILE_PATH") || {
               echo "::warning::Failed to create signed commit in $REPO (may lack write access)"
               cd /
@@ -188,7 +188,7 @@ jobs:
             # FILE_PATH comes from GitHub API and could theoretically contain shell metacharacters
             printf -v PR_BODY '%s\n%s\n%s\n%s\n%s' \
               "## Summary" \
-              "Updates \`cagent-action\` reference in \`${FILE_PATH}\` to [${VERSION}](${RELEASE_URL})." \
+              "Updates \`docker-agent-action\` reference in \`${FILE_PATH}\` to [${VERSION}](${RELEASE_URL})." \
               "- **Commit**: \`${SHA}\`" \
               "- **Version**: \`${VERSION}\`" \
               "> Auto-generated by the [release](${RUN_URL}) workflow."
@@ -196,14 +196,14 @@ jobs:
             if [ -n "$EXISTING_PR" ]; then
               echo "Updating existing PR #$EXISTING_PR in $REPO"
               gh pr edit "$EXISTING_PR" --repo "$REPO" \
-                --title "chore: update cagent-action to $VERSION" \
+                --title "chore: update docker-agent-action to $VERSION" \
                 --body "$PR_BODY" \
                 --add-reviewer "derekmisler" 2>&1 || echo "::warning::Failed to update PR #$EXISTING_PR in $REPO (may be non-fatal)"
             else
               echo "Creating new PR in $REPO"
               gh pr create --repo "$REPO" \
                 --head "$BRANCH" \
-                --title "chore: update cagent-action to $VERSION" \
+                --title "chore: update docker-agent-action to $VERSION" \
                 --body "$PR_BODY" \
                 --reviewer "derekmisler" || echo "::warning::Failed to create PR in $REPO"
             fi
