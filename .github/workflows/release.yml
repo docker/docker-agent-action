@@ -295,9 +295,11 @@ jobs:
           # Strip the self-referential "chore: update docker-agent-action to vX.Y.Z" bullet that
           # the update-self-refs job creates after each release. It always appears in the
           # *next* release's auto-generated notes and is noise for readers.
+          # Migration window: the legacy "update cagent-action to v*" phrasing is also stripped
+          # so the last pre-rename self-ref bullet doesn't leak into the first post-rename notes.
           # Docker Agent version bumps ("update Docker Agent to v*") are intentionally kept.
           NOTES=$(gh release view "$VERSION" --repo docker/docker-agent-action --json body --jq '.body')
-          FILTERED=$(printf '%s' "$NOTES" | grep -v 'update docker-agent-action to v' || true)
+          FILTERED=$(printf '%s' "$NOTES" | grep -vE 'update (docker-agent-action|cagent-action) to v' || true)
           if [ -z "$FILTERED" ]; then
             echo "ℹ️ All lines were self-referential — leaving release notes unchanged to avoid blank notes."
             exit 0

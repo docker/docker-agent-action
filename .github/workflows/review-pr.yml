@@ -502,9 +502,13 @@ jobs:
           # contains the review marker but NOT the reply marker (substring overlap).
           # The login check prevents matching human comments that happen to contain
           # the marker text (e.g., in discussions about the review system).
+          # Migration window: tolerate both the new docker-agent-review markers and the
+          # legacy cagent-review markers, so replies to review comments posted by the old
+          # action still drive the feedback loop until those PRs close.
           if [ "$parent_user_login" = "docker-agent" ] && \
-             echo "$body" | grep -q "<!-- docker-agent-review -->" && \
-             ! echo "$body" | grep -q "<!-- docker-agent-review-reply -->"; then
+             { echo "$body" | grep -q "<!-- docker-agent-review -->" || echo "$body" | grep -q "<!-- cagent-review -->"; } && \
+             ! echo "$body" | grep -q "<!-- docker-agent-review-reply -->" && \
+             ! echo "$body" | grep -q "<!-- cagent-review-reply -->"; then
             echo "is_agent=true" >> $GITHUB_OUTPUT
             echo "root_comment_id=$PARENT_ID" >> $GITHUB_OUTPUT
 
