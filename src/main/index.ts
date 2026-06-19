@@ -138,7 +138,7 @@ async function run(): Promise<void> {
   let verboseLogArtifactName = '';
   let exitCode = 1;
   let executionTime = 0;
-  let cagentVersion = '';
+  let dockerAgentVersion = '';
   let mcpInstalled = false;
   let promptBlocked = false;
   let promptStripped = false;
@@ -159,8 +159,8 @@ async function run(): Promise<void> {
     // __DOCKER_AGENT_VERSION__ is a build-time constant injected by tsup (see
     // tsup.config.ts).  This avoids a filesystem read at runtime that would
     // fail when ACTION_PATH resolves to a sub-directory (e.g. review-pr/).
-    cagentVersion = __DOCKER_AGENT_VERSION__;
-    core.debug(`Docker Agent version: ${cagentVersion}`);
+    dockerAgentVersion = __DOCKER_AGENT_VERSION__;
+    core.debug(`Docker Agent version: ${dockerAgentVersion}`);
 
     // ── Step 2: Validate inputs ───────────────────────────────────────────
     const agent = core.getInput('agent', { required: true });
@@ -169,9 +169,9 @@ async function run(): Promise<void> {
       return;
     }
 
-    if (!isValidVersion(cagentVersion)) {
+    if (!isValidVersion(dockerAgentVersion)) {
       core.setFailed(
-        `Invalid Docker Agent version format '${cagentVersion}'. Expected format: v1.2.3`,
+        `Invalid Docker Agent version format '${dockerAgentVersion}'. Expected format: v1.2.3`,
       );
       return;
     }
@@ -227,7 +227,7 @@ async function run(): Promise<void> {
 
     if (debug) {
       core.debug(`agent: ${agent}`);
-      core.debug(`Docker Agent version: ${cagentVersion}`);
+      core.debug(`Docker Agent version: ${dockerAgentVersion}`);
       core.debug(`mcp-gateway: ${mcpGateway}, version: ${mcpGatewayVersion}`);
     }
 
@@ -289,16 +289,17 @@ async function run(): Promise<void> {
 
     // ── Step 6: Setup binaries ────────────────────────────────────────────
     const binaryResult = await setupBinaries({
-      version: cagentVersion,
+      version: dockerAgentVersion,
       mcpGateway,
       mcpGatewayVersion,
       githubToken: resolvedToken,
       debug,
     });
     mcpInstalled = binaryResult.mcpInstalled;
-    cagentVersion = binaryResult.cagentVersion;
+    dockerAgentVersion = binaryResult.dockerAgentVersion;
 
-    core.setOutput('cagent-version', cagentVersion);
+    core.setOutput('docker-agent-version', dockerAgentVersion);
+    core.setOutput('cagent-version', dockerAgentVersion); // backward compat alias
     core.setOutput('mcp-gateway-installed', String(mcpInstalled));
 
     // ── Step 7: Run docker-agent ──────────────────────────────────────────
@@ -432,7 +433,7 @@ async function run(): Promise<void> {
           agent: core.getInput('agent') || '',
           exitCode,
           executionTime,
-          cagentVersion,
+          dockerAgentVersion,
           mcpInstalled,
           timeout: parseInt(core.getInput('timeout') || '0', 10),
           outputFile: outputFile || undefined,

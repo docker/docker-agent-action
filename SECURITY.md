@@ -1,6 +1,6 @@
 # Security Documentation
 
-This document describes the security hardening built into the cagent-action GitHub Action.
+This document describes the security hardening built into the docker-agent-action GitHub Action.
 
 ## 🔒 Security Features
 
@@ -281,7 +281,7 @@ names verbatim for easy cross-referencing.
 ```yaml
 - name: Run Agent
   id: agent
-  uses: docker/cagent-action@VERSION
+  uses: docker/docker-agent-action@VERSION
   with:
     agent: my-agent
     prompt: "Analyze the logs"
@@ -309,7 +309,7 @@ All executions automatically include:
 
 ```yaml
 - name: Run Agent (with org-membership auth)
-  uses: docker/cagent-action@VERSION
+  uses: docker/docker-agent-action@VERSION
   with:
     agent: my-agent
     prompt: "Review this PR"

@@ -3,11 +3,11 @@
 Convert each CONFIRMED/LIKELY finding to an inline comment object for the `comments` array:
 - **Added/context lines** (`+` or ` ` in diff) — use `line` with the new-file line number:
   ```json
-  {"path": "file.go", "line": 123, "body": "**ISSUE**\n\nDETAILS\n\n<!-- cagent-review -->"}
+  {"path": "file.go", "line": 123, "body": "**ISSUE**\n\nDETAILS\n\n<!-- docker-agent-review -->"}
   ```
 - **Deleted lines** (`-` in diff) — use `side: "LEFT"` with the old-file line number:
   ```json
-  {"path": "file.go", "line": 45, "side": "LEFT", "body": "**ISSUE**\n\nDETAILS\n\n<!-- cagent-review -->"}
+  {"path": "file.go", "line": 45, "side": "LEFT", "body": "**ISSUE**\n\nDETAILS\n\n<!-- docker-agent-review -->"}
   ```
 
 The `line` field normally refers to the new file (right side of the diff). Deleted lines
@@ -39,7 +39,7 @@ cat > /tmp/comment_body.md << 'COMMENT_BODY_EOF'
 
 Detailed explanation of the bug, trigger path, and impact.
 
-<!-- cagent-review -->
+<!-- docker-agent-review -->
 COMMENT_BODY_EOF
 
 jq --arg path "$file_path" --argjson line "$line_number" \
@@ -69,7 +69,7 @@ jq -n \
 | gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input -
 ```
 
-The `<!-- cagent-review -->` marker MUST be on its own line, separated by a blank line
+The `<!-- docker-agent-review -->` marker MUST be on its own line, separated by a blank line
 from the content. Do NOT include it in console output mode.
 
 # Comment Scope (REQUIRED)

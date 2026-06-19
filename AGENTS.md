@@ -4,7 +4,7 @@ Guide for AI agents and LLMs working in this repository. Read this before explor
 
 ## What this repo is
 
-**`docker/cagent-action`** — a GitHub Action (and a family of sub-actions) that runs [Docker Agent](https://github.com/docker/docker-agent) AI agents inside GitHub Actions workflows. It is published to the GitHub Marketplace and consumed by other repos as `uses: docker/cagent-action@vX.Y.Z`.
+**`docker/docker-agent-action`** — a GitHub Action (and a family of sub-actions) that runs [Docker Agent](https://github.com/docker/docker-agent) AI agents inside GitHub Actions workflows. It is published to the GitHub Marketplace and consumed by other repos as `uses: docker/docker-agent-action@vX.Y.Z`.
 
 The repo ships **three things**:
 
@@ -18,7 +18,7 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 
 ```
 .
-├── action.yml                       # ← Root action ("cagent Runner"). Composite. Source of truth for inputs/outputs.
+├── action.yml                       # ← Root action ("Docker Agent Runner"). Composite. Source of truth for inputs/outputs.
 ├── DOCKER_AGENT_VERSION             # Pinned docker-agent version (currently v1.54.0). Read at runtime by action.yml.
 ├── package.json                     # pnpm workspace root. Scripts: build, test, lint, format, actionlint.
 ├── tsup.config.ts                   # Bundles src/<name>/index.ts → dist/<name>.js (ESM, Node 24, fully bundled).
@@ -76,17 +76,17 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   ├── README.md                    # User-facing docs for the PR review feature.
 │   ├── reply/action.yml             # Sub-action: replies to feedback on review comments.
 │   └── agents/
-│       ├── pr-review.yaml           # Root reviewer agent (cagent YAML).
+│       ├── pr-review.yaml           # Root reviewer agent (docker-agent YAML).
 │       ├── pr-review-feedback.yaml  # Processes captured feedback into memory.
 │       ├── pr-review-mention-reply.yaml  # Handles @docker-agent mention-reply responses.
 │       ├── pr-review-reply.yaml     # Replies in-thread to reviewer comments.
 │       ├── refs/                    # Reference docs passed to agents (posting format, code-review style).
-│       └── evals/                   # cagent eval JSON files (success-*, security-*, marlin-*, etc.).
+│       └── evals/                   # docker-agent eval JSON files (success-*, security-*, marlin-*, etc.).
 │
 ├── setup-credentials/               # Composite action: fetches AWS creds via OIDC, exports GITHUB_APP_TOKEN +
 │   └── action.yml                   #   ORG_MEMBERSHIP_TOKEN. At root so consumers can use
-│                                    #   docker/cagent-action/setup-credentials@VERSION directly.
-│                                    #   Also exports CAGENT_ACTION_ROOT (repo root of the downloaded action copy)
+│                                    #   docker/docker-agent-action/setup-credentials@VERSION directly.
+│                                    #   Also exports DOCKER_AGENT_ACTION_ROOT (repo root of the downloaded action copy)
 │                                    #   for subsequent run: steps that need to invoke dist/ bundles.
 │
 ├── .github/
@@ -111,9 +111,9 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 
 ### Versioning & releases
 
-- This action is consumed via `uses: docker/cagent-action@vX.Y.Z`. **The committed `dist/` directory is the runtime artifact** that consumers download — it must be checked in for tagged releases.
+- This action is consumed via `uses: docker/docker-agent-action@vX.Y.Z`. **The committed `dist/` directory is the runtime artifact** that consumers download — it must be checked in for tagged releases.
 - `DOCKER_AGENT_VERSION` is the **single source of truth** for the docker-agent binary version. `action.yml` reads it with `cat`. Update via `.github/workflows/update-docker-agent-version.yml`.
-- Internal `uses:` references to this action (e.g. `review-pr/action.yml` → `docker/cagent-action@<sha>`) are pinned to **commit SHAs with version comments**, not tags. Bumping requires updating both the SHA and the comment.
+- Internal `uses:` references to this action (e.g. `review-pr/action.yml` → `docker/docker-agent-action@<sha>`) are pinned to **commit SHAs with version comments**, not tags. Bumping requires updating both the SHA and the comment.
 
 ### TypeScript / `src` rules
 
@@ -157,12 +157,12 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 - Uses a **best-effort cache lock** (`pr-review-lock-<repo>-<pr>-*` cache key) to avoid concurrent reviews on the same PR. Lock TTL is 600s; the agent execution timeout is 1800s (30 min) — these are intentionally decoupled. Reviews are idempotent so the small race window is acceptable.
 - **Memory persistence** uses `actions/cache` keyed by `pr-review-memory-<repo>-<job>-<run_id>` with prefix-based restore. The DB lives at `${{ github.workspace }}/.cache/pr-review-memory.db`.
 - **Feedback loop**: the `reply-to-feedback` job in `.github/workflows/review-pr.yml` (which runs the `pr-review-reply.yaml` agent) uploads a `pr-review-feedback` artifact on every reply via its "Upload feedback artifact" step. The next review run downloads all such artifacts, runs `pr-review-feedback.yaml` to call `add_memory(...)` for each, then deletes the artifacts.
-- **Bot reply detection** uses HTML markers: `<!-- cagent-review -->` on review comments, `<!-- cagent-review-reply -->` on agent replies (including mention-reply responses). **Don't change these strings** — workflows in consumer repos grep for them.
+- **Bot reply detection** uses HTML markers: `<!-- docker-agent-review -->` on review comments, `<!-- docker-agent-review-reply -->` on agent replies (including mention-reply responses). **Don't change these strings** — workflows in consumer repos grep for them.
 - **Copilot-style triggers**: in addition to the original `pull_request_review` / `issue_comment /review` paths, `review-pr.yml` now also fires on:
   - `pull_request` action `review_requested` when `github.event.requested_reviewer.login == 'docker-agent'`
   - `@docker-agent` mentions on PR/issue comments — these run the `.github/actions/mention-reply` handler (sets `should-reply` and builds the context prompt) and then the `review-pr/mention-reply` sub-action (referenced from a pinned SHA, not present as a local path on every commit). The `pr-review-mention-reply.yaml` agent handles the actual reply.
 - Diffs over 1500 lines are **chunked at file boundaries** in `review-pr/action.yml` (see "Split diff into chunks"). Per-file **risk scoring** (security paths, line counts, error-handling patterns) prioritizes verifier attention.
-- Stale review threads on lines no longer in the diff are auto-resolved via GraphQL `resolveReviewThread`. Threads with no `<!-- cagent-review -->` marker are never touched.
+- Stale review threads on lines no longer in the diff are auto-resolved via GraphQL `resolveReviewThread`. Threads with no `<!-- docker-agent-review -->` marker are never touched.
 
 ### Workflows (`.github/workflows/`)
 
@@ -171,7 +171,7 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 | `test.yml`                        | Unit + integration tests on push/PR.                                 |
 | `test-e2e.yml`                    | End-to-end action invocation against a real agent.                   |
 | `release.yml`                     | Publishes tagged releases (must include a built `dist/`).            |
-| `review-pr.yml`                   | **Reusable workflow** consumers call as `docker/cagent-action/.github/workflows/review-pr.yml@v…`. |
+| `review-pr.yml`                   | **Reusable workflow** consumers call as `docker/docker-agent-action/.github/workflows/review-pr.yml@v…`. |
 | `self-review-pr.yml` + `-trigger.yml` | Dogfooding: the repo reviews its own PRs.                        |
 | `reply-to-feedback.yml`           | Handles replies to bot review comments.                              |
 | `pr-describe.yml`                 | Generates PR descriptions from diffs.                                |
@@ -223,7 +223,7 @@ When you change something, verify:
 - [ ] Did you change a bash block in any `action.yml`? Run `pnpm actionlint` and the relevant `tests/*.sh`.
 - [ ] Did you change anything under `src/security/`? Re-run `pnpm test` (covers `src/security/__tests__/security.test.ts`) and confirm the threat model above is still covered.
 - [ ] Did you bump a pinned `uses:` SHA? Update the trailing version comment too.
-- [ ] Did you change a `<!-- cagent-* -->` marker, an output name, or an env var name? Search the repo (and consumer documentation) for references first — these are public contracts.
+- [ ] Did you change a `<!-- docker-agent-* -->` marker, an output name, or an env var name? Search the repo (and consumer documentation) for references first — these are public contracts.
 
 ## Things to avoid
 
@@ -232,7 +232,7 @@ When you change something, verify:
 - **Don't** introduce env-var fallbacks for API keys — explicit inputs only.
 - **Don't** remove `if: always()` from sanitize-output / upload-artifact / summary steps.
 - **Don't** commit changes to `review-pr/agents/.cache/*.db*` files (they're local memory artifacts).
-- **Don't** rename markers (`<!-- cagent-review -->`, `<!-- cagent-review-reply -->`) without a versioned migration plan.
+- **Don't** rename markers (`<!-- docker-agent-review -->`, `<!-- docker-agent-review-reply -->`) without a versioned migration plan.
 - **Don't** loosen authorization checks — comment-triggered events are the primary abuse vector for this action.
 
 ## Where to look for more context

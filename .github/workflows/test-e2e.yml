@@ -205,14 +205,14 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: docker/cagent-action/setup-credentials@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
+        uses: docker/docker-agent-action/setup-credentials@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
 
       - name: Create anchor issue comment on current PR
         id: create-anchor
         env:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
         run: |
-          COMMENT_ID=$(gh api repos/docker/cagent-action/issues/$TEST_PR_NUMBER/comments \
+          COMMENT_ID=$(gh api repos/docker/docker-agent-action/issues/$TEST_PR_NUMBER/comments \
             --method POST \
             --raw-field body="@docker-agent this is an automated e2e test — please reply with a brief acknowledgement." \
             --jq .id)
@@ -230,7 +230,7 @@ jobs:
               "action": "created",
               "issue": {
                 "number": $pr_number,
-                "pull_request": { "url": ("https://api.github.com/repos/docker/cagent-action/pulls/" + ($pr_number | tostring)) }
+                "pull_request": { "url": ("https://api.github.com/repos/docker/docker-agent-action/pulls/" + ($pr_number | tostring)) }
               },
               "comment": {
                 "id": $comment_id,
@@ -239,7 +239,7 @@ jobs:
               },
               "repository": {
                 "owner": { "login": "docker" },
-                "name": "cagent-action"
+                "name": "docker-agent-action"
               },
               "sender": { "login": $actor, "type": "User" }
             }' > /tmp/test-event-toplevel.json
@@ -288,8 +288,8 @@ jobs:
         env:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
         run: |
-          FOUND=$(gh api repos/docker/cagent-action/issues/$TEST_PR_NUMBER/comments \
-            --jq '[.[] | select(.body | contains("<!-- cagent-review-reply -->")) | select(.created_at > (now - 300 | todate))] | length')
+          FOUND=$(gh api repos/docker/docker-agent-action/issues/$TEST_PR_NUMBER/comments \
+            --jq '[.[] | select(.body | contains("<!-- docker-agent-review-reply -->")) | select(.created_at > (now - 300 | todate))] | length')
           if [ "$FOUND" -eq 0 ]; then
             echo "❌ No reply comment found within the last 5 minutes"
             exit 1
@@ -304,15 +304,15 @@ jobs:
           ANCHOR_ID: ${{ steps.create-anchor.outputs.test_comment_id }}
         run: |
           # Delete any test reply comments posted in the last 5 minutes
-          gh api repos/docker/cagent-action/issues/$TEST_PR_NUMBER/comments \
-            --jq '.[] | select(.body | contains("<!-- cagent-review-reply -->")) | select(.created_at > (now - 300 | todate)) | .id' | \
+          gh api repos/docker/docker-agent-action/issues/$TEST_PR_NUMBER/comments \
+            --jq '.[] | select(.body | contains("<!-- docker-agent-review-reply -->")) | select(.created_at > (now - 300 | todate)) | .id' | \
           while read -r comment_id; do
-            gh api "repos/docker/cagent-action/issues/comments/$comment_id" -X DELETE || true
+            gh api "repos/docker/docker-agent-action/issues/comments/$comment_id" -X DELETE || true
             echo "Deleted comment $comment_id"
           done
           # Delete the anchor comment itself
           if [ -n "$ANCHOR_ID" ]; then
-            gh api "repos/docker/cagent-action/issues/comments/$ANCHOR_ID" -X DELETE || true
+            gh api "repos/docker/docker-agent-action/issues/comments/$ANCHOR_ID" -X DELETE || true
             echo "Deleted anchor comment $ANCHOR_ID"
           fi
 
@@ -345,7 +345,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: docker/cagent-action/setup-credentials@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
+        uses: docker/docker-agent-action/setup-credentials@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
 
       - name: Create anchor review comment on current PR
         id: create-anchor
@@ -353,15 +353,15 @@ jobs:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
         run: |
           # Get the PR head SHA
-          HEAD_SHA=$(gh api repos/docker/cagent-action/pulls/$TEST_PR_NUMBER --jq '.head.sha')
+          HEAD_SHA=$(gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER --jq '.head.sha')
           echo "PR head SHA: $HEAD_SHA"
 
           # Get first file in the diff to use as a safe anchor
-          DIFF_FILE=$(gh api repos/docker/cagent-action/pulls/$TEST_PR_NUMBER/files --jq '.[0].filename')
+          DIFF_FILE=$(gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER/files --jq '.[0].filename')
           echo "Using diff file: $DIFF_FILE"
 
           # Post a test inline comment to get a real comment ID
-          COMMENT_ID=$(gh api repos/docker/cagent-action/pulls/$TEST_PR_NUMBER/comments \
+          COMMENT_ID=$(gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER/comments \
             -X POST \
             --input - <<< $(jq -n \
               --arg sha "$HEAD_SHA" \
@@ -392,7 +392,7 @@ jobs:
               },
               "repository": {
                 "owner": { "login": "docker" },
-                "name": "cagent-action"
+                "name": "docker-agent-action"
               },
               "sender": { "login": $actor, "type": "User" }
             }' > /tmp/test-event-inline.json
@@ -457,9 +457,9 @@ jobs:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
           ANCHOR_ID: ${{ steps.create-anchor.outputs.test_comment_id }}
         run: |
-          FOUND=$(gh api repos/docker/cagent-action/pulls/$TEST_PR_NUMBER/comments \
+          FOUND=$(gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER/comments \
             | jq --argjson id "$ANCHOR_ID" \
-            '[.[] | select(.in_reply_to_id == $id and (.body | contains("<!-- cagent-review-reply -->"))) ] | length')
+            '[.[] | select(.in_reply_to_id == $id and (.body | contains("<!-- docker-agent-review-reply -->"))) ] | length')
           if [ "$FOUND" -eq 0 ]; then
             echo "❌ No inline reply found in thread $ANCHOR_ID"
             exit 1
@@ -478,13 +478,13 @@ jobs:
             exit 0
           fi
           # Delete any replies in the thread first
-          gh api repos/docker/cagent-action/pulls/$TEST_PR_NUMBER/comments \
+          gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER/comments \
             | jq --argjson id "$ANCHOR_ID" \
             '[.[] | select(.in_reply_to_id == $id)] | .[].id' | \
           while read -r reply_id; do
-            gh api "repos/docker/cagent-action/pulls/comments/$reply_id" -X DELETE || true
+            gh api "repos/docker/docker-agent-action/pulls/comments/$reply_id" -X DELETE || true
             echo "Deleted reply comment $reply_id"
           done
           # Delete the anchor comment itself
-          gh api "repos/docker/cagent-action/pulls/comments/$ANCHOR_ID" -X DELETE || true
+          gh api "repos/docker/docker-agent-action/pulls/comments/$ANCHOR_ID" -X DELETE || true
           echo "Deleted anchor comment $ANCHOR_ID"

@@ -27,7 +27,7 @@ import * as tc from '@actions/tool-cache';
 
 export interface BinarySetupResult {
   /** Version string of docker-agent that was installed/found. */
-  cagentVersion: string;
+  dockerAgentVersion: string;
   /** Whether mcp-gateway was successfully installed. */
   mcpInstalled: boolean;
   /** Absolute path to the docker-agent binary. */
@@ -286,5 +286,5 @@ export async function setupBinaries(opts: {
     core.info(`✅ mcp-gateway ${mcpGatewayVersion} installed`);
   }
 
-  return { cagentVersion: version, mcpInstalled, dockerAgentPath };
+  return { dockerAgentVersion: version, mcpInstalled, dockerAgentPath };
 }

@@ -20,7 +20,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { Octokit } from '@octokit/rest';
 
-export const MARKER = '<!-- cagent-review-reply -->';
+export const MARKER = '<!-- docker-agent-review-reply -->';
 
 export interface PostMentionReplyConfig {
   secretsDetected: string;
@@ -69,7 +69,7 @@ export async function run(config: PostMentionReplyConfig): Promise<void> {
   // Guard 3: output file must contain the reply marker
   const fileContent = readFileSync(outputFile, 'utf-8');
   if (!fileContent.includes(MARKER)) {
-    log('⏭️ Output file does not contain <!-- cagent-review-reply --> marker — skipping');
+    log('⏭️ Output file does not contain <!-- docker-agent-review-reply --> marker — skipping');
     return;
   }
 
