@@ -155,7 +155,9 @@ jobs:
          github.event.comment.user.login != 'docker-agent[bot]' &&
          github.event.comment.user.type != 'Bot' &&
          !contains(github.event.comment.body, '<!-- docker-agent-review -->') &&
-         !contains(github.event.comment.body, '<!-- docker-agent-review-reply -->')) ||
+         !contains(github.event.comment.body, '<!-- docker-agent-review-reply -->') &&
+         !contains(github.event.comment.body, '<!-- cagent-review -->') &&
+         !contains(github.event.comment.body, '<!-- cagent-review-reply -->')) ||
         (github.event_name == 'pull_request' && github.event.action != 'review_requested' && github.event.sender.type != 'Bot' && github.event.sender.login != 'docker-agent' && github.event.sender.login != 'docker-agent[bot]') ||
         (github.event_name == 'pull_request' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == 'docker-agent') ||
         inputs.pr-number != '' ||

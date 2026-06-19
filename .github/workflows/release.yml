@@ -172,7 +172,7 @@ jobs:
           # requires repo-root-relative paths.  Absolute paths cause a cryptic
           # "A path was requested for deletion which does not exist" GraphQL error.
           PREP_SHA=$(find dist/ -type f 2>/dev/null | \
-            GITHUB_TOKEN="${GH_TOKEN}" GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+            GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
               --repo docker/docker-agent-action \
               --branch "$STAGING_BRANCH" \
               --base-ref main \
@@ -220,7 +220,7 @@ jobs:
 
           # Create TEMP commit on the staging branch (YAML files pinned to PREP_SHA)
           TEMP_SHA=$(printf '%s\n' "${PINNED_FILES[@]}" DOCKER_AGENT_VERSION | \
-            GITHUB_TOKEN="${GH_TOKEN}" GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+            GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
               --repo docker/docker-agent-action \
               --branch "$STAGING_BRANCH" \
               --message "release(temp): pin self-refs to ${PREP_SHA} for ${VERSION}" \
@@ -254,7 +254,7 @@ jobs:
 
           # Create RELEASE commit on the staging branch (YAML files pinned to TEMP_SHA)
           RELEASE_SHA=$(printf '%s\n' "${PINNED_FILES[@]}" | \
-            GITHUB_TOKEN="${GH_TOKEN}" GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+            GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
               --repo docker/docker-agent-action \
               --branch "$STAGING_BRANCH" \
               --message "release: ${VERSION}" \
@@ -446,7 +446,7 @@ jobs:
           RELEASE_URL="https://github.com/docker/docker-agent-action/releases/tag/$VERSION"
 
           # Create signed commit
-          COMMIT_OID=$(GITHUB_TOKEN="${GH_TOKEN}" GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
+          COMMIT_OID=$(GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
               --repo docker/docker-agent-action \
               --branch "$BRANCH" \
               --base-ref main \
