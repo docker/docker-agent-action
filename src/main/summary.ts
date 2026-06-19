@@ -35,7 +35,8 @@ export interface WriteSummaryOptions {
  * Safe to call when outputFile is absent — will skip the output section.
  */
 export async function writeJobSummary(opts: WriteSummaryOptions): Promise<void> {
-  const { agent, exitCode, executionTime, dockerAgentVersion, mcpInstalled, timeout, outputFile } = opts;
+  const { agent, exitCode, executionTime, dockerAgentVersion, mcpInstalled, timeout, outputFile } =
+    opts;
 
   let statusLine: string;
   if (exitCode === 0) {
