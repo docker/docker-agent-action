@@ -87,7 +87,7 @@ jobs:
 
       - name: Setup credentials
         if: steps.fork-check.outputs.is_fork != 'true'
-        uses: docker/docker-agent-action/setup-credentials@1ef4adee7b9bc09f3d009ed53aad2e6780335d39 # v2.0.0
+        uses: docker/docker-agent-action/setup-credentials@f9a49dfe99a4cd1dceaa0d3e5d0f8b9e261dd79d # v2.0.0
 
       - name: Write synthetic issue_comment event
         if: steps.fork-check.outputs.is_fork != 'true'
@@ -191,7 +191,7 @@ jobs:
 
       - name: Setup credentials
         if: steps.fork-check.outputs.is_fork != 'true'
-        uses: docker/docker-agent-action/setup-credentials@1ef4adee7b9bc09f3d009ed53aad2e6780335d39 # v2.0.0
+        uses: docker/docker-agent-action/setup-credentials@f9a49dfe99a4cd1dceaa0d3e5d0f8b9e261dd79d # v2.0.0
 
       - name: Create anchor review comment
         if: steps.fork-check.outputs.is_fork != 'true'
