@@ -205,7 +205,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
+        uses: docker/docker-agent-action/setup-credentials@3c0fa9d282c3f84d08dfd70ab0a28b151d11db70 # v2.0.0
 
       - name: Create anchor issue comment on current PR
         id: create-anchor
@@ -345,7 +345,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@367a30ddb41e0156459d03750f508eac03f3c38a # v1.5.5
+        uses: docker/docker-agent-action/setup-credentials@3c0fa9d282c3f84d08dfd70ab0a28b151d11db70 # v2.0.0
 
       - name: Create anchor review comment on current PR
         id: create-anchor
