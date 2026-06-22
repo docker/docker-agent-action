@@ -24,6 +24,10 @@ name: Migrate consumer repos
 #     often reference both review-pr.yml and the trigger workflow).
 #   - supports dry-run (default ON) and a repo allowlist for piloting the
 #     automation on a few repos per tier (roadmap issue #9).
+#   - falls back to a fork PR when the machine user lacks write access on a
+#     consumer: it forks under the machine user, commits on the fork, and opens
+#     a cross-repo PR. Repos with forking disabled and no write access are
+#     reported under Skipped for a manual update.
 #
 # All rewrite logic lives in src/migrate-consumer-refs (TypeScript, unit
 # tested) — this workflow only orchestrates discovery, cloning, and PRs.
@@ -288,31 +292,104 @@ jobs:
             echo "Changed files:"
             echo "$CHANGED_FILES"
 
+            # Resolve how this repo would be migrated (read-only) so a dry run
+            # reports the routing without performing any writes:
+            #   direct: the machine user has write, so commit the branch into the
+            #     repo and open a same-repo PR.
+            #   fork:   no write access. Fork under the machine user, commit on
+            #     the fork, and open a cross-repo PR (head "owner:branch"). Needs
+            #     only read on the upstream, like an external contribution.
+            #   skip:   no write access AND forking disabled. Cannot be migrated
+            #     automatically; reported under Skipped for a manual update.
+            DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name) || {
+              echo "::warning::Failed to resolve default branch for $REPO — skipping"
+              SUMMARY_SKIPPED+="- ${REPO} (default-branch lookup failed)"$'\n'
+              cleanup_workdir
+              continue
+            }
+            CAN_PUSH=$(gh api "repos/$REPO" --jq '.permissions.push' 2>/dev/null || echo "false")
+            if [ "$CAN_PUSH" = "true" ]; then
+              ROUTE="direct"
+            elif [ "$(gh api "repos/$REPO" --jq '.allow_forking' 2>/dev/null || echo "false")" = "true" ]; then
+              ROUTE="fork"
+            else
+              ROUTE="skip"
+            fi
+
             if [ "$DRY_RUN" = "true" ]; then
-              echo "🧪 DRY RUN — diff that would be committed:"
+              N_FILES=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
+              echo "🧪 DRY RUN — route: ${ROUTE}; diff that would be committed:"
               git --no-pager diff
-              SUMMARY_CHANGED+="- ${REPO} (dry run — $(echo "$CHANGED_FILES" | wc -l | tr -d ' ') file(s))"$'\n'
+              if [ "$ROUTE" = "skip" ]; then
+                SUMMARY_SKIPPED+="- ${REPO} (dry run — no write access, forking disabled)"$'\n'
+              else
+                SUMMARY_CHANGED+="- ${REPO} (dry run — ${ROUTE} PR, ${N_FILES} file(s))"$'\n'
+              fi
               cleanup_workdir
               continue
             fi
 
-            # Detect the default branch (consumers use main or master).
-            DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name)
+            # Resolve the repo + head ref to commit to, per the route above.
+            if [ "$ROUTE" = "skip" ]; then
+              echo "::warning::No write access and forking disabled on $REPO — skipping (needs a write grant or manual update)"
+              SUMMARY_SKIPPED+="- ${REPO} (no write access, forking disabled)"$'\n'
+              cleanup_workdir
+              continue
+            elif [ "$ROUTE" = "direct" ]; then
+              COMMIT_REPO="$REPO"
+              PR_HEAD="$BRANCH"
+            else
+              FORK_OWNER=$(gh api user --jq .login)
+              FORK="${FORK_OWNER}/$(basename "$REPO")"
+              echo "No write access on $REPO — opening a fork PR from ${FORK}"
+              # Fork is idempotent (no-op when it already exists) and created
+              # asynchronously, so poll until the API can see it.
+              gh repo fork "$REPO" --clone=false --default-branch-only >/dev/null 2>&1 || true
+              FORK_READY=""
+              for _ in $(seq 1 10); do
+                if gh api "repos/$FORK" >/dev/null 2>&1; then FORK_READY=1; break; fi
+                sleep 3
+              done
+              if [ -z "$FORK_READY" ]; then
+                echo "::warning::Fork ${FORK} did not become available in time — skipping $REPO"
+                SUMMARY_SKIPPED+="- ${REPO} (fork not ready)"$'\n'
+                cleanup_workdir
+                continue
+              fi
+              # Guard against a name collision: proceed only if $FORK is really a
+              # fork of $REPO. gh can rename a fork, and the machine user may own
+              # an unrelated repo of the same basename — committing to the wrong
+              # repo must never happen.
+              FORK_PARENT=$(gh api "repos/$FORK" --jq '.parent.full_name // empty' 2>/dev/null || true)
+              if [ "$FORK_PARENT" != "$REPO" ]; then
+                echo "::warning::${FORK} is not a fork of ${REPO} (parent='${FORK_PARENT:-none}') — skipping to avoid writing to the wrong repo"
+                SUMMARY_SKIPPED+="- ${REPO} (fork name collision)"$'\n'
+                cleanup_workdir
+                continue
+              fi
+              # Force-sync the fork's default branch to upstream so the cross-repo
+              # PR diff shows only the migration, not drift from a stale fork.
+              gh repo sync "$FORK" --branch "$DEFAULT_BRANCH" --force >/dev/null 2>&1 || true
+              COMMIT_REPO="$FORK"
+              PR_HEAD="${FORK_OWNER}:${BRANCH}"
+            fi
 
-            # Create one signed commit covering all changed files.
+            # Create one signed commit covering all changed files, on whichever
+            # repo was resolved above (the upstream when we have write, else the
+            # fork).
             ADD_ARGS=()
             while IFS= read -r F; do
               ADD_ARGS+=(--add "$F")
             done <<< "$CHANGED_FILES"
 
             COMMIT_OID=$(GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
-              --repo "$REPO" \
+              --repo "$COMMIT_REPO" \
               --branch "$BRANCH" \
               --base-ref "$DEFAULT_BRANCH" \
               --force \
               --message "chore: migrate cagent-action to docker-agent-action ($VERSION)" \
               "${ADD_ARGS[@]}") || {
-              echo "::warning::Failed to create signed commit in $REPO (may lack write access)"
+              echo "::warning::Failed to create signed commit in $COMMIT_REPO (may lack write access)"
               SUMMARY_SKIPPED+="- ${REPO} (commit failed)"$'\n'
               cleanup_workdir
               continue
@@ -323,7 +400,16 @@ jobs:
             # Create or update the PR. `// empty` is required: without it jq
             # prints the literal string "null" when no PR exists, which would
             # wrongly take the "update existing PR" branch and never create one.
-            EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+            # Look up an existing open PR for idempotent re-runs. `gh pr list
+            # --head` matches a branch NAME only and does NOT support the
+            # "owner:branch" form, so a fork PR is looked up via the REST pulls
+            # endpoint, whose head=owner:branch filter does. `// empty` keeps an
+            # absent PR from becoming the literal string "null".
+            if [ "$ROUTE" = "fork" ]; then
+              EXISTING_PR=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f head="${FORK_OWNER}:${BRANCH}" --jq '.[0].number // empty' 2>/dev/null || true)
+            else
+              EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+            fi
 
             printf -v PR_BODY '%s\n\n%s\n%s\n\n%s\n%s\n%s\n\n%s\n\n%s' \
               "## Summary" \
@@ -344,7 +430,7 @@ jobs:
             else
               echo "Creating new PR in $REPO"
               PR_URL=$(gh pr create --repo "$REPO" \
-                --head "$BRANCH" \
+                --head "$PR_HEAD" \
                 --base "$DEFAULT_BRANCH" \
                 --title "chore: migrate cagent-action to docker-agent-action ($VERSION)" \
                 --body "$PR_BODY") || {
