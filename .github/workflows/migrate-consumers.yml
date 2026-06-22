@@ -339,19 +339,33 @@ jobs:
               COMMIT_REPO="$REPO"
               PR_HEAD="$BRANCH"
             else
-              FORK_OWNER=$(gh api user --jq .login)
+              FORK_OWNER=$(gh api user --jq .login) || {
+                echo "::warning::Could not resolve the machine-user login for $REPO — skipping"
+                SUMMARY_SKIPPED+="- ${REPO} (could not resolve fork owner)"$'\n'
+                cleanup_workdir
+                continue
+              }
+              if [ -z "$FORK_OWNER" ]; then
+                echo "::warning::Machine-user login resolved to empty for $REPO — skipping"
+                SUMMARY_SKIPPED+="- ${REPO} (empty fork owner)"$'\n'
+                cleanup_workdir
+                continue
+              fi
               FORK="${FORK_OWNER}/$(basename "$REPO")"
               echo "No write access on $REPO — opening a fork PR from ${FORK}"
               # Fork is idempotent (no-op when it already exists) and created
-              # asynchronously, so poll until the API can see it.
-              gh repo fork "$REPO" --clone=false --default-branch-only >/dev/null 2>&1 || true
+              # asynchronously, so poll until the API can see it. The exit code is
+              # ignored on purpose (some gh versions return non-zero when the fork
+              # already exists), but stderr is kept so a genuine fork failure is
+              # distinguishable from slow async readiness in the skip warning.
+              FORK_ERR=$(gh repo fork "$REPO" --clone=false --default-branch-only 2>&1 >/dev/null || true)
               FORK_READY=""
               for _ in $(seq 1 10); do
                 if gh api "repos/$FORK" >/dev/null 2>&1; then FORK_READY=1; break; fi
                 sleep 3
               done
               if [ -z "$FORK_READY" ]; then
-                echo "::warning::Fork ${FORK} did not become available in time — skipping $REPO"
+                echo "::warning::Fork ${FORK} did not become available — skipping $REPO${FORK_ERR:+ (fork error: $FORK_ERR)}"
                 SUMMARY_SKIPPED+="- ${REPO} (fork not ready)"$'\n'
                 cleanup_workdir
                 continue
