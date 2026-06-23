@@ -15,7 +15,8 @@
  *      (auth|security|crypto|session|secret|token|password|credential, case-insensitive)
  *   4. Large change (>100 added lines)→ +2
  *   5. Many hunks   (>3 hunk headers) → +1
- *   6. Test/doc/config file           → score = 0  (resets baseline + 3-5 to zero)
+ *   6. Low-risk file                  → score = 0  (resets baseline + 3-5 to zero)
+ *      Tests, docs, config, lock files, binary assets, dotfiles, LICENSE, etc.
  *   7. Error-handling patterns        → +1
  *      (catch|rescue|except|recover|error|panic in any added line, case-sensitive)
  *
@@ -35,9 +36,55 @@
 /** Matches security-sensitive keywords in a file path (case-insensitive). */
 const SECURITY_PATH_RE = /auth|security|crypto|session|secret|token|password|credential/i;
 
-/** Matches test, documentation, and config file extensions (case-insensitive). */
-const TEST_FILE_RE =
-  /_test\.go$|\.test\.[tj]sx?$|\.spec\.[tj]sx?$|test_.*\.py$|\.md$|\.ya?ml$|\.json$|\.toml$|_test\.rs$|_bench\.rs$|_spec\.rs$|_spec\.rb$|(^|\/)(tests?|benches|__tests__|specs?)\//i;
+/**
+ * Matches low-risk file types that should be auto-excluded from review.
+ * Covers test files, documentation, config/manifest/data files, lock files,
+ * binary assets (images, fonts), CSS, dotfiles, and misc non-code files.
+ *
+ * Renamed from TEST_FILE_RE to reflect the broader scope introduced alongside
+ * the baseline-score-1 change: with a baseline of 1 any file not matched here
+ * would survive auto-exclusion, so this list must be comprehensive.
+ *
+ * Categories:
+ *   - Test files:    _test.go, .test.ts/js/tsx/jsx, .spec.ts/js/tsx/jsx,
+ *                    test_*.py, _test.rs, _bench.rs, _spec.rs, _spec.rb,
+ *                    tests/, benches/, __tests__/, specs/ directories
+ *   - Documentation: .md
+ *   - Config/data:   .yml, .yaml, .json, .toml, .css
+ *   - Lock files:    yarn.lock, package-lock.json, Cargo.lock, go.sum,
+ *                    Gemfile.lock, pnpm-lock.yaml, composer.lock, poetry.lock
+ *   - Assets:        .svg, .png, .jpg, .jpeg, .gif, .ico,
+ *                    .woff, .woff2, .eot, .ttf
+ *   - Dotfiles:      .gitignore, .gitattributes, .editorconfig,
+ *                    .prettierrc[.*], .eslintignore, .dockerignore
+ *   - Misc:          LICENSE[.*], .env.example
+ */
+const LOW_RISK_FILE_RE =
+  // Test files
+  /_test\.go$|\.test\.[tj]sx?$|\.spec\.[tj]sx?$|test_.*\.py$|_test\.rs$|_bench\.rs$|_spec\.rs$|_spec\.rb$|(^|\/)(tests?|benches|__tests__|specs?)\//i;
+
+/**
+ * Extended low-risk pattern covering everything LOW_RISK_FILE_RE covers plus
+ * lock files, binary assets, CSS, dotfiles, and misc non-code files.
+ * Built as a RegExp constructor call so the source can be split across lines.
+ */
+const LOW_RISK_FILE_EXTRA_RE = new RegExp(
+  // Documentation
+  '\\.md$' +
+    // Config / manifests / data / CSS
+    '|\\.ya?ml$|\\.json$|\\.toml$|\\.css$' +
+    // Lock files
+    '|yarn\\.lock$|package-lock\\.json$|Cargo\\.lock$|go\\.sum$' +
+    '|Gemfile\\.lock$|pnpm-lock\\.yaml$|composer\\.lock$|poetry\\.lock$' +
+    // Binary / asset files
+    '|\\.svg$|\\.png$|\\.jpe?g$|\\.gif$|\\.ico$|\\.woff2?$|\\.eot$|\\.ttf$' +
+    // Dotfiles and project-root config files
+    '|(^|\\/)\\.gitignore$|(^|\\/)\\.gitattributes$|(^|\\/)\\.editorconfig$' +
+    '|(^|\\/)\\.prettierrc(\\.\\w+)?$|(^|\\/)\\.eslintignore$|(^|\\/)\\.dockerignore$' +
+    // Misc: legal / example files
+    '|(^|\\/)LICENSE(\\.\\w+)?$|(^|\\/)\\.env\\.example$',
+  'i',
+);
 
 /** Matches error-handling keywords in diff hunk lines (case-sensitive, matching bash awk). */
 const ERROR_PATTERN_RE = /catch|rescue|except|recover|error|panic/;
@@ -161,6 +208,14 @@ function countErrorHandlingLines(diffContent: string, filePath: string): number 
   return count;
 }
 
+/**
+ * Return true if `filePath` matches any low-risk pattern (rule 6).
+ * Checks both the literal regex and the constructor-built extended regex.
+ */
+function isLowRiskFile(filePath: string): boolean {
+  return LOW_RISK_FILE_RE.test(filePath) || LOW_RISK_FILE_EXTRA_RE.test(filePath);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -218,8 +273,8 @@ export function scoreFiles(diffContent: string, excludePrefixes: string[]): Risk
     // Rule 5: many hunks (>3 hunk headers) → +1.
     if (hunks > 3) score += 1;
 
-    // Rule 6: test/doc/config file → reset score to 0.
-    if (TEST_FILE_RE.test(path)) score = 0;
+    // Rule 6: low-risk file (test/doc/config/lock/asset/dotfile) → reset score to 0.
+    if (isLowRiskFile(path)) score = 0;
 
     // Rule 7: error-handling patterns in added lines → +1.
     if (countErrorHandlingLines(diffContent, path) > 0) score += 1;

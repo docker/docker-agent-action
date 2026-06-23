@@ -252,7 +252,7 @@ describe('scoreFiles — rule 5: many hunks (>3 hunk headers) → +1', () => {
   });
 });
 
-// ── Rule 6: test/doc/config file → reset score to 0 ──────────────────────────
+// ── Rule 6: low-risk file → reset score to 0 ───────────────────────────────────
 
 describe('scoreFiles — rule 6: Rust/Ruby test/bench/spec suffixes → reset score to 0', () => {
   it('Rust file in tests/ directory scores 0 (directory component match)', () => {
@@ -313,7 +313,7 @@ describe('scoreFiles — rule 6: Rust/Ruby test/bench/spec suffixes → reset sc
   });
 });
 
-describe('scoreFiles — rule 6: test/doc/config file → reset score to 0', () => {
+describe('scoreFiles — rule 6: existing test/doc/config patterns → reset score to 0', () => {
   const TEST_PATHS = [
     'src/auth_test.go',
     'src/auth.test.ts',
@@ -360,6 +360,70 @@ describe('scoreFiles — rule 6: test/doc/config file → reset score to 0', () 
     const diff = makeDiff('src/auth_test.go', ['+if err != nil { panic(err) }']);
     const scores = scoreFiles(diff, []);
     expect(scores['src/auth_test.go']).toBe(1);
+  });
+});
+
+describe('scoreFiles — rule 6: lock files, assets, CSS, dotfiles → reset score to 0', () => {
+  const LOW_RISK_PATHS = [
+    // Lock files
+    'yarn.lock',
+    'package-lock.json',
+    'Cargo.lock',
+    'go.sum',
+    'Gemfile.lock',
+    'pnpm-lock.yaml',
+    'composer.lock',
+    'poetry.lock',
+    // Binary / asset files
+    'assets/logo.svg',
+    'public/icon.png',
+    'images/hero.jpg',
+    'images/hero.jpeg',
+    'favicon.ico',
+    'fonts/myfont.woff',
+    'fonts/myfont.woff2',
+    'fonts/old.eot',
+    'fonts/body.ttf',
+    // CSS
+    'styles/main.css',
+    // Dotfiles
+    '.gitignore',
+    'src/.gitignore',
+    '.gitattributes',
+    '.editorconfig',
+    '.prettierrc',
+    '.prettierrc.js',
+    '.prettierrc.json',
+    '.eslintignore',
+    '.dockerignore',
+    // Legal / example
+    'LICENSE',
+    'LICENSE.md',
+    '.env.example',
+    'config/.env.example',
+  ] as const;
+
+  for (const p of LOW_RISK_PATHS) {
+    it(`"${p}" scores 0 (low-risk file, rule 6 resets)`, () => {
+      const diff = makeDiff(p, ['+changed']);
+      const scores = scoreFiles(diff, []);
+      expect(scores[p]).toBe(0);
+    });
+  }
+
+  it('lock file with security keyword in path still scores 0 (rule 6 wins over rule 3)', () => {
+    // "auth" in path would add +2 via rule 3, but go.sum is a lock file
+    // so rule 6 resets to 0 regardless.
+    const diff = makeDiff('vendor/auth/go.sum', ['+h1:abc']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['vendor/auth/go.sum']).toBe(0);
+  });
+
+  it('dotfile with error-handling keyword scores 1 (rule 7 still applies after rule 6 reset)', () => {
+    // Rule 6 resets to 0; rule 7 can still add +1 if the diff contains error keywords.
+    const diff = makeDiff('.eslintignore', ['+catch']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['.eslintignore']).toBe(1);
   });
 });
 
@@ -513,6 +577,26 @@ describe('scoreFiles — baseline score 1 for plain application files', () => {
     const diff = makeDiff('internal/handler/http.go', ['+func handleRequest() {}']);
     const scores = scoreFiles(diff, []);
     expect(scores['internal/handler/http.go']).toBe(1);
+  });
+
+  // Regression: these were at score 0 before the baseline change and must
+  // remain at 0 (rule 6 still resets them) — NOT promoted to 1.
+  it('yarn.lock scores 0 (lock file, not promoted by baseline)', () => {
+    const diff = makeDiff('yarn.lock', ['+dep@1.2.3']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['yarn.lock']).toBe(0);
+  });
+
+  it('.gitignore scores 0 (dotfile, not promoted by baseline)', () => {
+    const diff = makeDiff('.gitignore', ['+node_modules/']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['.gitignore']).toBe(0);
+  });
+
+  it('pnpm-lock.yaml scores 0 (lock file, not promoted by baseline)', () => {
+    const diff = makeDiff('pnpm-lock.yaml', ['+  version: 1.0.0']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['pnpm-lock.yaml']).toBe(0);
   });
 });
 
