@@ -305,3 +305,153 @@ jobs:
 **Cause:** `checks: write` permission is absent.
 
 **Fix:** Add `checks: write` to the job `permissions` block. This is optional but strongly recommended so the review progress is visible in the PR's Checks tab.
+
+---
+
+## 7. Audit: Validate All Consuming Repos in the Docker Org
+
+Use this procedure when asked to audit, validate, or report on the health of the PR reviewer setup across repos in the Docker org.
+
+### Step 1 — Discover consuming repos
+
+Search GitHub for all files in the `docker` org that reference the reusable workflow:
+
+```bash
+gh search code "docker/docker-agent-action/.github/workflows/review-pr.yml" \
+  --owner docker \
+  --filename "*.yml" \
+  --json repository,path \
+  --limit 100
+```
+
+This returns a list of `(repository, path)` pairs. For each unique repository, fetch the actual workflow file(s):
+
+```bash
+# Example: fetch a workflow file from a discovered repo
+gh api repos/docker/<repo>/contents/.github/workflows/pr-review.yml \
+  --jq '.content' | base64 -d
+```
+
+Also check for a trigger workflow in fork setups:
+
+```bash
+gh api repos/docker/<repo>/contents/.github/workflows/pr-review-trigger.yml \
+  --jq '.content' | base64 -d 2>/dev/null || echo "no trigger workflow"
+```
+
+Check whether the repo accepts fork PRs (to validate the correct pattern is in use):
+
+```bash
+gh api repos/docker/<repo> --jq '{allow_forking, visibility, fork}'
+```
+
+Also check for open PRs from forks as a real-world signal:
+
+```bash
+gh pr list --repo docker/<repo> --json headRepository --limit 50 \
+  --jq '[.[] | select(.headRepository.isFork == true)] | length'
+```
+
+### Step 2 — Validate each repo
+
+For each repo discovered, run through this checklist. Note every issue found.
+
+#### Version / SHA currency
+
+```bash
+# Get the latest release tag
+LATEST=$(gh release view --repo docker/docker-agent-action --json tagName --jq '.tagName')
+echo "Latest: $LATEST"
+
+# Extract the version in use from the workflow file
+grep "review-pr.yml@" .github/workflows/pr-review.yml
+```
+
+- [ ] The `uses:` line ends with `@<LATEST>` (e.g. `@v2.0.0`). Flag if behind.
+
+#### Fork pattern correctness
+
+- [ ] If the repo has fork PRs (or `allow_forking: true` and is public), it must use the **2-workflow pattern** (`pr-review.yml` + `pr-review-trigger.yml`).
+- [ ] If the repo is private or fork PRs are disabled, the **1-workflow pattern** is correct and sufficient.
+- [ ] Flag if a public/open-source repo is using the 1-workflow pattern without confirming forks are disabled.
+
+#### Required permissions
+
+Check the `permissions:` block on the `review` job in `pr-review.yml`:
+
+- [ ] `contents: read`
+- [ ] `pull-requests: write`
+- [ ] `issues: write`
+- [ ] `id-token: write` ← OIDC; missing this breaks all credential fetching
+- [ ] `checks: write` ← optional but strongly recommended
+- [ ] `actions: read` ← **required for fork setups only** (artifact download)
+
+#### Trigger types
+
+Check `on.pull_request.types` in `pr-review.yml` (or `pr-review-trigger.yml` for fork setups):
+
+- [ ] Includes `review_requested` — the **primary trigger** (sidebar reviewer UX)
+- [ ] Includes `ready_for_review`
+- [ ] Includes `opened`
+
+#### Unnecessary caller-side `if:` guards
+
+The reusable workflow handles all safety checks internally. Flag any of the following as unnecessary (safe to remove, not a correctness issue):
+
+- [ ] `author_association` checks on the calling job
+- [ ] Bot-login filters (`github.event.comment.user.login != 'docker-agent'`, etc.) on the calling job — note: these are **required** in the trigger workflow's `save-context` job for fork setups; only flag them as unnecessary in `pr-review.yml`'s main review job
+- [ ] `github.event.issue.pull_request` checks on the calling job
+- [ ] Draft PR `if:` guards on the calling job
+
+#### Fork setup specifics
+
+For repos using the 2-workflow pattern, additionally check:
+
+- [ ] `trigger-run-id` input is wired as:
+  ```yaml
+  trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
+  ```
+- [ ] `workflow_run.workflows` in `pr-review.yml` matches the `name:` field in `pr-review-trigger.yml` exactly (character-for-character, including capitalisation and spaces)
+- [ ] `actions/upload-artifact` in the trigger workflow is pinned to a full commit SHA (not just a tag like `@v4`). Check against the current pinned SHA in this repo's own trigger workflow:
+  ```bash
+  grep "upload-artifact" /workspace/.github/workflows/self-review-pr-trigger.yml
+  ```
+
+### Step 3 — Produce a summary report
+
+Group findings by status. Use this format:
+
+```
+## PR Reviewer Workflow Audit — docker org
+Checked: <date>  |  Latest release: <tag>
+
+### ✅ Compliant (<N> repos)
+- docker/<repo> — <pattern>, <version>
+- ...
+
+### ⚠️ Needs update (<N> repos)
+- docker/<repo>
+  - Version outdated: using @v1.x.x, latest is @v2.0.0
+  - Missing permission: `checks: write`
+  - <other issues>
+- ...
+
+### ❌ Critical problems (<N> repos)
+- docker/<repo>
+  - <description of broken config or missing workflows>
+- ...
+```
+
+For each issue in the ⚠️ and ❌ buckets, note the relevant section of this skill where the fix is documented.
+
+### Step 4 — Remediation
+
+When asked to fix issues found in the audit:
+
+1. For each affected repo, open a PR against that repo with the corrections.
+2. One PR per repo (batch all fixes for a repo into a single PR).
+3. In the PR description, list every issue found and how it was fixed.
+4. Reference the relevant section of this skill (`## 5. Upgrade Checklist`, `## 4a`, `## 4b`, etc.) for context.
+5. Assign the PR to the repo owner or use `--assignee @me` if no clear owner.
+
+> **Don't fix what isn't broken.** Unnecessary `if:` guards (author_association checks, bot filters in the main review job) are safe to remove but are not critical. Only include their removal in a PR if you are already making other changes to that file — don't open a PR solely to remove optional guards.
