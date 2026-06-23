@@ -301,16 +301,25 @@ jobs:
             #     only read on the upstream, like an external contribution.
             #   skip:   no write access AND forking disabled. Cannot be migrated
             #     automatically; reported under Skipped for a manual update.
-            DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name) || {
+            # Fetch the repo metadata in one call (race-free vs separate calls)
+            # and coerce missing fields with jq's `// false`: `gh ... --jq` prints
+            # the string "null" for an absent field, which is neither "true" nor
+            # "false" and would misroute a repo. default_branch comes from the
+            # same response; an empty value (or a failed call -> "{}") skips the
+            # repo rather than aborting the whole run under set -euo pipefail.
+            REPO_META=$(gh api "repos/$REPO" 2>/dev/null || echo '{}')
+            DEFAULT_BRANCH=$(printf '%s' "$REPO_META" | jq -r '.default_branch // empty')
+            if [ -z "$DEFAULT_BRANCH" ]; then
               echo "::warning::Failed to resolve default branch for $REPO — skipping"
               SUMMARY_SKIPPED+="- ${REPO} (default-branch lookup failed)"$'\n'
               cleanup_workdir
               continue
-            }
-            CAN_PUSH=$(gh api "repos/$REPO" --jq '.permissions.push' 2>/dev/null || echo "false")
+            fi
+            CAN_PUSH=$(printf '%s' "$REPO_META" | jq -r '.permissions.push // false')
+            ALLOW_FORKING=$(printf '%s' "$REPO_META" | jq -r '.allow_forking // false')
             if [ "$CAN_PUSH" = "true" ]; then
               ROUTE="direct"
-            elif [ "$(gh api "repos/$REPO" --jq '.allow_forking' 2>/dev/null || echo "false")" = "true" ]; then
+            elif [ "$ALLOW_FORKING" = "true" ]; then
               ROUTE="fork"
             else
               ROUTE="skip"
