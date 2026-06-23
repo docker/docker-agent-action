@@ -167,8 +167,8 @@ export function autoFilterDiff(
 
   if (afterPhase1.length === 0 && sections.length > 0) {
     allFilesKept = true;
-    autoExcludedFiles = [];   // nothing actually excluded
-    keptSections = sections;  // keep everything
+    autoExcludedFiles = []; // nothing actually excluded
+    keptSections = sections; // keep everything
   } else {
     autoExcludedFiles = candidateExcluded;
     keptSections = afterPhase1;
