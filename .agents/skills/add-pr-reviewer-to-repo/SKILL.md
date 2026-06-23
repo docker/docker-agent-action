@@ -147,12 +147,6 @@ permissions: {}
 
 jobs:
   save-context:
-    if: >
-      github.event.comment.user.login != 'docker-agent' &&
-      github.event.comment.user.login != 'docker-agent[bot]' &&
-      github.event.comment.user.type != 'Bot' &&
-      !contains(github.event.comment.body, '<!-- docker-agent-review -->') &&
-      !contains(github.event.comment.body, '<!-- docker-agent-review-reply -->')
     runs-on: ubuntu-latest
     steps:
       - name: Save event context
@@ -399,7 +393,7 @@ Check `on.pull_request.types` in `pr-review.yml` (or `pr-review-trigger.yml` for
 The reusable workflow handles all safety checks internally. Flag any of the following as unnecessary (safe to remove, not a correctness issue):
 
 - [ ] `author_association` checks on the calling job
-- [ ] Bot-login filters (`github.event.comment.user.login != 'docker-agent'`, etc.) on the calling job — note: these are **required** in the trigger workflow's `save-context` job for fork setups; only flag them as unnecessary in `pr-review.yml`'s main review job
+- [ ] Bot-login filters (`github.event.comment.user.login != 'docker-agent'`, etc.) on any job in the calling workflow
 - [ ] `github.event.issue.pull_request` checks on the calling job
 - [ ] Draft PR `if:` guards on the calling job
 

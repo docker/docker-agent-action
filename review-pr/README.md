@@ -56,12 +56,6 @@ permissions: {}
 
 jobs:
   save-context:
-    if: >
-      github.event.comment.user.login != 'docker-agent' &&
-      github.event.comment.user.login != 'docker-agent[bot]' &&
-      github.event.comment.user.type != 'Bot' &&
-      !contains(github.event.comment.body, '<!-- docker-agent-review -->') &&
-      !contains(github.event.comment.body, '<!-- docker-agent-review-reply -->')
     runs-on: ubuntu-latest
     steps:
       - name: Save event context
