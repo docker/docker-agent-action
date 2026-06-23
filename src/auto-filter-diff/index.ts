@@ -53,6 +53,12 @@ try {
     process.stderr.write(`⏭️ Auto-excluded (score 0): ${path}\n`);
   }
 
+  if (result.allFilesKept) {
+    process.stderr.write(
+      'ℹ️  All files scored 0 — keeping all files for review (Phase 2 cap still applies)\n',
+    );
+  }
+
   for (const path of result.progressivelyExcludedFiles) {
     const score = riskScores[path] ?? 'unknown';
     process.stderr.write(`⏭️ Progressive cap (score ${score}): ${path}\n`);

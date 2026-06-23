@@ -34,6 +34,7 @@ jobs:
       issues: write # Create security incident issues if secrets detected
       checks: write # (Optional) Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
+      actions: read # Required by reusable workflow for artifact operations
 ```
 
 That's it. All three events (`pull_request`, `issue_comment`, `pull_request_review_comment`) have full OIDC/secret access for same-repo PRs, so the reusable workflow handles everything directly.
@@ -111,7 +112,7 @@ jobs:
       issues: write # Create security incident issues if secrets detected
       checks: write # (Optional) Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: read # Download artifacts from trigger workflow
+      actions: read # Required by reusable workflow for artifact operations; also needed to download trigger artifacts
     with:
       trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
 ```

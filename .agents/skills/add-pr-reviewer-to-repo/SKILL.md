@@ -119,6 +119,7 @@ jobs:
       issues: write # Create security incident issues if secrets detected
       checks: write # (Optional) Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
+      actions: read # Required by reusable workflow for artifact operations
 ```
 
 All three events (`pull_request`, `issue_comment`, `pull_request_review_comment`) have full OIDC/secret access for same-repo PRs, so the reusable workflow handles everything directly.
@@ -204,7 +205,7 @@ jobs:
       issues: write # Create security incident issues if secrets detected
       checks: write # (Optional) Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: read # Download artifacts from trigger workflow
+      actions: read # Required by reusable workflow for artifact operations; also needed to download trigger artifacts
     with:
       trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
 ```
@@ -238,11 +239,10 @@ pull_request_review_comment
 For repos that already have the workflows, verify each item:
 
 - [ ] **Version/tag is current** — compare the `@VERSION` in `uses:` against the latest release from `gh release list --repo docker/docker-agent-action --limit 1`. Update if behind.
-- [ ] **All required permissions are present** — `contents: read`, `pull-requests: write`, `issues: write`, `id-token: write`. Missing any of these causes silent failures or OIDC auth errors.
+- [ ] **All required permissions are present** — `contents: read`, `pull-requests: write`, `issues: write`, `id-token: write`, `actions: read`. Missing any of these causes silent failures or OIDC/artifact errors. Note: missing `actions: read` specifically causes a 403 when the reusable workflow tries to download artifacts.
 - [ ] **`checks: write` is present** (optional but recommended) — without it the review won't appear as a check run on the PR.
 - [ ] **Bot-filter `if` condition is correct** — the condition must filter out `docker-agent`, `docker-agent[bot]`, any `Bot` user type, and comments containing `<!-- docker-agent-review -->` or `<!-- docker-agent-review-reply -->`. A missing or incomplete filter causes infinite review loops.
 - [ ] **Fork repos: trigger workflow has the artifact upload step** — the `actions/upload-artifact` step must be present in `pr-review-trigger.yml`, pinned to a specific commit SHA (not just a tag). Without it the `workflow_run` handler has no artifact to download.
-- [ ] **Fork repos: `actions: read` permission in `pr-review.yml`** — required to download the artifact from the trigger workflow run. Missing this causes a 403 when the handler tries to fetch the artifact.
 - [ ] **Fork repos: `trigger-run-id` input is wired correctly** — must be `${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}`. An empty string is safe for `issue_comment` events; the reusable workflow handles both paths.
 - [ ] **Fork repos: `workflow_run.workflows` array matches the trigger workflow name exactly** — the string `"PR Review - Trigger"` (or whatever you named it) must match the `name:` field in `pr-review-trigger.yml` character-for-character.
 
@@ -265,9 +265,9 @@ jobs:
       ...
 ```
 
-### Fork setup: artifact download fails with 403
+### Artifact download fails with 403
 
-**Cause:** `actions: read` is missing from the `pr-review.yml` job permissions.
+**Cause:** `actions: read` is missing from the `pr-review.yml` job permissions. This permission is required by the reusable workflow for artifact operations on all setups, not just fork repos.
 
 **Fix:** Add `actions: read` to the `permissions` block on the `review` job in `pr-review.yml`.
 
@@ -378,7 +378,7 @@ Check the `permissions:` block on the `review` job in `pr-review.yml`:
 - [ ] `issues: write`
 - [ ] `id-token: write` ← OIDC; missing this breaks all credential fetching
 - [ ] `checks: write` ← optional but strongly recommended
-- [ ] `actions: read` ← **required for fork setups only** (artifact download)
+- [ ] `actions: read` ← required for all setups (reusable workflow uses it for artifact operations)
 
 #### Trigger types
 

@@ -103,14 +103,30 @@ describe('autoFilterDiff — phase 1: auto-exclude score-0 files', () => {
     expect(result.remainingFiles).toBe(1);
   });
 
-  it('all files excluded returns empty string', () => {
+  it('when ALL files are score-0, keeps every file instead of excluding them all (allFilesKept=true)', () => {
+    // The key fix: a PR where every changed file is low-risk should still
+    // be reviewed.  Phase 1 detects the all-excluded condition and falls back
+    // to keeping all sections; autoExcludedFiles is empty, allFilesKept=true.
     const diff = makeDiff('src/a.go') + makeDiff('src/b.go');
     const riskScores = { 'src/a.go': 0, 'src/b.go': 0 };
     const result = autoFilterDiff(diff, riskScores, 0);
 
-    expect(result.filtered).toBe('');
-    expect(result.remainingFiles).toBe(0);
-    expect(result.autoExcludedFiles).toHaveLength(2);
+    expect(result.allFilesKept).toBe(true);
+    expect(result.autoExcludedFiles).toHaveLength(0);
+    expect(result.remainingFiles).toBe(2);
+    expect(result.filtered).toContain('src/a.go');
+    expect(result.filtered).toContain('src/b.go');
+  });
+
+  it('when SOME files are score-0, normal exclusion applies (allFilesKept=false)', () => {
+    // Mixed PR: low-risk file is excluded, high-risk file is kept.
+    const diff = makeDiff('src/gen.pb.go') + makeDiff('src/auth/handler.go');
+    const riskScores = { 'src/gen.pb.go': 0, 'src/auth/handler.go': 2 };
+    const result = autoFilterDiff(diff, riskScores, 0);
+
+    expect(result.allFilesKept).toBe(false);
+    expect(result.autoExcludedFiles).toEqual(['src/gen.pb.go']);
+    expect(result.remainingFiles).toBe(1);
   });
 
   it('reports correct originalLines', () => {
@@ -121,6 +137,84 @@ describe('autoFilterDiff — phase 1: auto-exclude score-0 files', () => {
     // originalLines must be > 0 and equal to the line count of the full diff
     expect(result.originalLines).toBeGreaterThan(0);
     expect(result.originalLines).toBe(diff.split('\n').length);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 1 — never-exclude-all guarantee
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('autoFilterDiff — never exclude all files (all-score-0 fallback)', () => {
+  it('single score-0 file: kept (would otherwise exclude everything)', () => {
+    const diff = makeDiff('yarn.lock');
+    const riskScores = { 'yarn.lock': 0 };
+    const result = autoFilterDiff(diff, riskScores, 0);
+
+    expect(result.allFilesKept).toBe(true);
+    expect(result.autoExcludedFiles).toHaveLength(0);
+    expect(result.remainingFiles).toBe(1);
+    expect(result.filtered).toContain('yarn.lock');
+  });
+
+  it('many score-0 files (e.g. lock file PR): all kept', () => {
+    const diff =
+      makeDiff('yarn.lock') +
+      makeDiff('package-lock.json') +
+      makeDiff('Cargo.lock') +
+      makeDiff('go.sum');
+    const riskScores = { 'yarn.lock': 0, 'package-lock.json': 0, 'Cargo.lock': 0, 'go.sum': 0 };
+    const result = autoFilterDiff(diff, riskScores, 0);
+
+    expect(result.allFilesKept).toBe(true);
+    expect(result.autoExcludedFiles).toHaveLength(0);
+    expect(result.remainingFiles).toBe(4);
+    expect(result.filtered).toContain('yarn.lock');
+    expect(result.filtered).toContain('package-lock.json');
+  });
+
+  it('all score-0 but Phase 2 cap still trims (timeout protection preserved)', () => {
+    // Four score-0 files whose total exceeds the cap: Phase 1 falls back to
+    // keeping all, then Phase 2 removes the lowest-score files until the cap fits.
+    const diff =
+      makeDiff('src/a.go', 80) + // score 0 → all-kept fallback
+      makeDiff('src/b.go', 80) + // score 0
+      makeDiff('src/c.go', 80) + // score 0
+      makeDiff('src/d.go', 80); // score 0
+    const riskScores = { 'src/a.go': 0, 'src/b.go': 0, 'src/c.go': 0, 'src/d.go': 0 };
+    // Combined ~344 lines; cap at 100 → Phase 2 removes some
+    const result = autoFilterDiff(diff, riskScores, 100);
+
+    expect(result.allFilesKept).toBe(true); // Phase 1 fell back
+    expect(result.autoExcludedFiles).toHaveLength(0);
+    expect(result.remainingFiles).toBeGreaterThanOrEqual(1); // Phase 2 trimmed but kept ≥1
+    expect(result.remainingLines).toBeLessThanOrEqual(100 + 90); // rough check
+    expect(result.progressivelyExcludedFiles.length).toBeGreaterThan(0);
+  });
+
+  it('allFilesKept is false for empty diff', () => {
+    const result = autoFilterDiff('', {}, 0);
+    expect(result.allFilesKept).toBe(false);
+  });
+
+  it('allFilesKept is false when no files are score-0', () => {
+    const diff = makeDiff('src/app.ts') + makeDiff('src/server.ts');
+    const riskScores = { 'src/app.ts': 1, 'src/server.ts': 2 };
+    const result = autoFilterDiff(diff, riskScores, 0);
+
+    expect(result.allFilesKept).toBe(false);
+    expect(result.autoExcludedFiles).toHaveLength(0);
+    expect(result.remainingFiles).toBe(2);
+  });
+
+  it('filtered output is identical to original diff when all-kept fallback fires', () => {
+    // Round-trip: the fallback must return the original diff unchanged
+    // (Phase 2 disabled via cap=0).
+    const diff = makeDiff('styles/main.css') + makeDiff('.gitignore');
+    const riskScores = { 'styles/main.css': 0, '.gitignore': 0 };
+    const result = autoFilterDiff(diff, riskScores, 0);
+
+    expect(result.allFilesKept).toBe(true);
+    expect(result.filtered).toBe(diff);
   });
 });
 
@@ -248,6 +342,7 @@ describe('autoFilterDiff — edge cases', () => {
     expect(result.remainingFiles).toBe(0);
     expect(result.remainingLines).toBe(0);
     expect(result.originalLines).toBe(0);
+    expect(result.allFilesKept).toBe(false);
   });
 
   it('diff with no matching risk scores is passed through unchanged', () => {
