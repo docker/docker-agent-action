@@ -15,12 +15,17 @@
  *      (auth|security|crypto|session|secret|token|password|credential, case-insensitive)
  *   4. Large change (>100 added lines)→ +2
  *   5. Many hunks   (>3 hunk headers) → +1
- *   6. Test/doc/config file           → score = 0  (resets 3-5 to zero)
+ *   6. Test/doc/config file           → score = 0  (resets baseline + 3-5 to zero)
  *   7. Error-handling patterns        → +1
  *      (catch|rescue|except|recover|error|panic in any added line, case-sensitive)
  *
+ * Files not caught by rules 1, 2, or 6 start with a baseline score of 1
+ * so that ordinary application code is never auto-excluded alongside
+ * intentionally-low-risk files (tests, docs, generated code, JSON configs).
+ *
  * Rule 6 resets the running total to 0, then rule 7 can still add 1.
- * This faithfully reproduces the existing bash behaviour.
+ * This faithfully reproduces the existing bash behaviour for test/doc/config
+ * files while ensuring plain application files always reach the reviewer.
  */
 
 // ---------------------------------------------------------------------------
@@ -198,7 +203,11 @@ export function scoreFiles(diffContent: string, excludePrefixes: string[]): Risk
       continue;
     }
 
-    let score = 0;
+    // Baseline: plain application files that don't match any positive rule
+    // (rules 3-5) or the reset rule (6) still need review — give them score 1
+    // so they are not auto-excluded alongside intentionally-low-risk files.
+    // Rules 1 and 2 already exited early above with score 0; rule 6 resets to 0.
+    let score = 1;
 
     // Rule 3: security-sensitive path → +2.
     if (SECURITY_PATH_RE.test(path)) score += 2;
