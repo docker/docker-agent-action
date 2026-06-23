@@ -184,6 +184,22 @@ with:
 > 2. **Prevents bot cascades** — replies from bots (except `docker-agent`) are ignored
 > 3. **Fork PRs work automatically** with the two-workflow setup — the trigger → `workflow_run` pattern provides OIDC/secret access regardless of fork status
 
+### What you don't need to add
+
+The workflow YAML examples above are the complete, recommended setup. The reusable workflow handles all safety checks internally — **do not add your own `if:` guards for these**:
+
+| Protection | How it's handled |
+| ---------- | ---------------- |
+| **Bot comment filtering** | All jobs in the reusable workflow filter out `docker-agent`, `docker-agent[bot]`, any `Bot`-type user, and comments with `<!-- docker-agent-review -->`/`<!-- docker-agent-review-reply -->` markers. No caller-side filtering needed. |
+| **Org membership / authorization** | A `check-org-membership` step runs before any review work. PR authors and comment authors are verified as org members or collaborators via OIDC. Callers never need `author_association` checks. |
+| **PR vs issue comment** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are silently ignored. |
+| **Draft PR skipping** | Draft PRs are skipped internally — no caller condition needed. |
+| **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |
+
+**The only decision callers make** is which setup pattern to use: 1-workflow for same-repo PRs, 2-workflow for repos that accept fork PRs. That distinction is the caller's responsibility because it controls which event path delivers OIDC credentials to the reusable workflow.
+
+> **Optional optimization:** some teams add `author_association` checks or bot-login filters on their calling workflow's job `if:` to skip the job early and save Actions minutes. This is a valid cost optimization but is not required for correctness or security. When in doubt, use the canonical YAML above without extra conditions — it's simpler to audit and maintain.
+
 ---
 
 ## Running Locally
