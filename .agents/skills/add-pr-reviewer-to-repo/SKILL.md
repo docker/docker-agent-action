@@ -205,7 +205,7 @@ jobs:
       issues: write # Create security incident issues if secrets detected
       checks: write # (Optional) Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: read # Download artifacts from trigger workflow
+      actions: read # Required by reusable workflow for artifact operations; also needed to download trigger artifacts
     with:
       trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
 ```
@@ -239,7 +239,7 @@ pull_request_review_comment
 For repos that already have the workflows, verify each item:
 
 - [ ] **Version/tag is current** — compare the `@VERSION` in `uses:` against the latest release from `gh release list --repo docker/docker-agent-action --limit 1`. Update if behind.
-- [ ] **All required permissions are present** — `contents: read`, `pull-requests: write`, `issues: write`, `id-token: write`, `actions: read`. Missing any of these causes silent failures or OIDC/artifact errors.
+- [ ] **All required permissions are present** — `contents: read`, `pull-requests: write`, `issues: write`, `id-token: write`, `actions: read`. Missing any of these causes silent failures or OIDC/artifact errors. Note: missing `actions: read` specifically causes a 403 when the reusable workflow tries to download artifacts.
 - [ ] **`checks: write` is present** (optional but recommended) — without it the review won't appear as a check run on the PR.
 - [ ] **Bot-filter `if` condition is correct** — the condition must filter out `docker-agent`, `docker-agent[bot]`, any `Bot` user type, and comments containing `<!-- docker-agent-review -->` or `<!-- docker-agent-review-reply -->`. A missing or incomplete filter causes infinite review loops.
 - [ ] **Fork repos: trigger workflow has the artifact upload step** — the `actions/upload-artifact` step must be present in `pr-review-trigger.yml`, pinned to a specific commit SHA (not just a tag). Without it the `workflow_run` handler has no artifact to download.
