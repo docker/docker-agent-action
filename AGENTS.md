@@ -100,6 +100,11 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   ├── act-local.sh                 # Helper for running workflows locally with `act`.
 │   └── debug-permissions.ts
 │
+├── .agents/
+│   └── skills/
+│       └── onboard-pr-review/
+│           └── SKILL.md             # Skill: set up or upgrade a repo to use the PR reviewer reusable workflow.
+│
 └── tests/                           # Shell-based integration tests for action.yml bash logic.
     ├── test-job-summary.sh
     ├── test-output-extraction.sh
@@ -234,6 +239,16 @@ When you change something, verify:
 - **Don't** commit changes to `review-pr/agents/.cache/*.db*` files (they're local memory artifacts).
 - **Don't** rename markers (`<!-- docker-agent-review -->`, `<!-- docker-agent-review-reply -->`) without a versioned migration plan.
 - **Don't** loosen authorization checks — comment-triggered events are the primary abuse vector for this action.
+
+## Agent skills
+
+Reusable, task-specific how-to guides for AI agents are kept in `.agents/skills/`. Each skill is a single `SKILL.md` file with a YAML frontmatter block (`name` + `description`) followed by step-by-step instructions.
+
+| Skill | Description |
+| ----- | ----------- |
+| [`onboard-pr-review`](.agents/skills/onboard-pr-review/SKILL.md) | Set up or upgrade a consuming repo to use `docker/docker-agent-action/.github/workflows/review-pr.yml`. Covers 1-workflow vs 2-workflow (fork) patterns, trigger mode selection, VERSION pinning, upgrade checklist, and common troubleshooting. |
+
+When asked to onboard a new repo (or upgrade an existing one) to the PR reviewer, load the `onboard-pr-review` skill before starting.
 
 ## Where to look for more context
 
