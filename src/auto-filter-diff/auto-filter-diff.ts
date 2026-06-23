@@ -9,6 +9,9 @@
  *   Phase 1 — Auto-exclude score-0 files:
  *     Remove every file section whose path appears in `riskScores` with a value
  *     of 0.  Files NOT present in `riskScores` are kept (unknown = needs review).
+ *     Exception: if Phase 1 would remove ALL files, keep all instead — a PR
+ *     where every changed file is low-risk still deserves a review.
+ *     Phase 2 still applies in that case, so timeout protection is preserved.
  *
  *   Phase 2 — Progressive cap (only when maxDiffLines > 0):
  *     If the remaining diff exceeds `maxDiffLines` after Phase 1, sort the kept
@@ -35,6 +38,11 @@ export interface AutoFilterResult {
   remainingLines: number;
   /** Line count of the original diff (split by '\n'). */
   originalLines: number;
+  /**
+   * True when Phase 1 would have excluded everything and was skipped.
+   * The review will cover all files; Phase 2 (progressive cap) still applies.
+   */
+  allFilesKept: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +140,7 @@ export function autoFilterDiff(
       remainingFiles: 0,
       remainingLines: 0,
       originalLines: 0,
+      allFilesKept: false,
     };
   }
 
@@ -139,14 +148,31 @@ export function autoFilterDiff(
   const { preamble, sections } = parseSections(diffContent);
 
   // ── Phase 1: auto-exclude score-0 files ────────────────────────────────────
-  const autoExcludedFiles: string[] = [];
-  let keptSections = sections.filter((section) => {
+  const candidateExcluded: string[] = [];
+  const afterPhase1 = sections.filter((section) => {
     if (section.path in riskScores && riskScores[section.path] === 0) {
-      autoExcludedFiles.push(section.path);
+      candidateExcluded.push(section.path);
       return false;
     }
     return true;
   });
+
+  // If Phase 1 would remove every file, keep all files instead.
+  // A PR where every changed file is low-risk still deserves a review — the
+  // reviewer should see it rather than silently skipping the whole PR.
+  // Phase 2 (progressive cap) still applies to bound review size.
+  let allFilesKept = false;
+  let autoExcludedFiles: string[];
+  let keptSections: typeof sections;
+
+  if (afterPhase1.length === 0 && sections.length > 0) {
+    allFilesKept = true;
+    autoExcludedFiles = [];   // nothing actually excluded
+    keptSections = sections;  // keep everything
+  } else {
+    autoExcludedFiles = candidateExcluded;
+    keptSections = afterPhase1;
+  }
 
   // ── Phase 2: progressive cap ───────────────────────────────────────────────
   const progressivelyExcludedFiles: string[] = [];
@@ -188,5 +214,6 @@ export function autoFilterDiff(
     remainingFiles: keptSections.length,
     remainingLines,
     originalLines,
+    allFilesKept,
   };
 }
