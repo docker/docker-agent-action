@@ -141,12 +141,10 @@ agents:
          a. Check for pre-split chunk files: `ls /tmp/drafter_chunk_*.diff`
             The CI workflow splits the diff before the agent runs. If chunk files exist,
             use them directly — do NOT recreate them.
-         b. **Parallel delegation**: Issue ALL `transfer_task` delegations in a single
-            tool-call batch — do NOT wait for one drafter to complete before starting
-            the next. Submitting all delegations simultaneously allows the framework to
-            execute them in parallel, reducing total review wall-clock time from
-            O(N chunks × per-chunk time) to O(max per-chunk time). Each delegation is
-            fully independent; findings arrays are merged in step d below.
+         b. **Batch delegation**: Issue ALL `transfer_task` delegations in a single
+            tool-call batch — the orchestrator batches all `transfer_task` calls in
+            one tool-call response and then awaits each result in turn. Each delegation
+            is fully independent; findings arrays are merged in step d below.
 
          **Console output mode** (GITHUB_ACTIONS empty/unset):
          a. Do NOT run `ls /tmp/drafter_chunk_*.diff` — there are no pre-staged files
@@ -186,10 +184,15 @@ agents:
          message.** Those fields do not exist in the drafter schema. If the task string
          asks for `title`/`body`, the schema validator rejects every emit attempt and the
          drafter enters an infinite file-read retry loop. Always use `issue` and `details`.
-      5. Parse the drafter's JSON response. Check `review_complete`:
+      5. Parse the drafter's JSON response. If the response is empty, not valid JSON,
+         or an error message, treat it as
+         `{"findings": [], "summary": "Drafter did not complete", "review_complete": false}`.
+         Check `review_complete`:
          - If `review_complete` is `true` AND zero findings → skip directly to step 8 (Decision Rules).
-         - If `review_complete` is `false` AND zero findings → the drafter likely exhausted its context.
-           Post a COMMENT review noting the review was incomplete and do NOT approve.
+         - If `review_complete` is `false` AND zero findings → post a COMMENT review and do NOT approve.
+           Include the drafter's `summary` field in the comment body so the cause is visible:
+           if summary is "Drafter did not complete" the drafter crashed or returned a malformed
+           response; otherwise the drafter ran out of context before finishing.
          - Otherwise, collect all findings with severity "high" or "medium" — reference
            each finding's one-line summary via the `issue` field and its explanation via
            the `details` field (not `title`/`body`) — and delegate them to the `verifier`
@@ -425,7 +428,10 @@ agents:
       ## REQUIRED: Verify Before Reporting
 
       **High-severity findings**: Use `read_file` to read the full source file and verify
-      that the bug exists. This is mandatory for any finding you intend to mark as "high".
+      that the bug exists before reporting it as "high". Read each source file at most
+      once — if you have already read a file, use that cached content to verify all
+      remaining high-severity findings that reference it. Do not re-read; do not skip
+      verification.
 
       **Medium findings**: Use `read_file` to verify when the diff context is ambiguous
       or the finding depends on surrounding code not shown in the hunk. Prefer reading
