@@ -125,7 +125,7 @@ jobs:
           ref: refs/pull/${{ needs.resolve-context.outputs.pr-number }}/head
 
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@3c0fa9d282c3f84d08dfd70ab0a28b151d11db70 # v2.0.0
+        uses: ./setup-credentials
 
       - name: Setup pnpm
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
@@ -212,7 +212,7 @@ jobs:
           ref: refs/pull/${{ needs.resolve-context.outputs.pr-number }}/head
 
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@3c0fa9d282c3f84d08dfd70ab0a28b151d11db70 # v2.0.0
+        uses: ./setup-credentials
 
       - name: Setup pnpm
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
@@ -283,7 +283,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@3c0fa9d282c3f84d08dfd70ab0a28b151d11db70 # v2.0.0
+        uses: ./setup-credentials
 
       - name: Create anchor issue comment on current PR
         id: create-anchor
@@ -423,7 +423,7 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@3c0fa9d282c3f84d08dfd70ab0a28b151d11db70 # v2.0.0
+        uses: ./setup-credentials
 
       - name: Create anchor review comment on current PR
         id: create-anchor
