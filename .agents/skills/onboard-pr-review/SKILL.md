@@ -9,6 +9,19 @@ Use this skill when you are asked to add AI-powered PR review to a repo, or to u
 
 ---
 
+## How the reviewer is triggered — tell your team this
+
+> **Primary trigger: add `docker-agent` as a reviewer in the PR sidebar.**
+> Open a PR → Reviewers → type `docker-agent` → click. The review starts automatically and appears as a check run.
+>
+> **To re-trigger:** re-request a review from `docker-agent` in the sidebar (click the refresh icon next to their name). This fires a `review_requested` event and starts a fresh review.
+>
+> **`/review` comment:** still works but is deprecated. Prefer the sidebar workflow.
+
+Make sure to communicate this to contributors when onboarding a repo — it's the main daily interaction pattern and easy to miss if someone only reads the workflow YAML.
+
+---
+
 ## 1. Determine Which Pattern to Use
 
 Check the repo's contribution guidelines and GitHub settings:
