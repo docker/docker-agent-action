@@ -4,7 +4,7 @@
 name: Self PR Review - Trigger
 on:
   pull_request:
-    types: [ ready_for_review, opened, review_requested ]
+    types: [review_requested]
   pull_request_review_comment:
     types: [ created ]
 
