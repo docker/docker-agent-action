@@ -84,8 +84,9 @@ describe('scoreFiles — rule 1: exclude-paths prefix → score 0', () => {
   });
 
   it('security-path file in excluded prefix still scores 0 (prefix wins)', () => {
-    // "session_service.pb.go" would score via the security-path rule,
-    // but the exclude-paths rule fires first and short-circuits to 0.
+    // Without an exclude prefix, "session_service.pb.go" would score 3
+    // (baseline 1 + security-path +2), but the exclude-paths rule fires
+    // first and short-circuits to 0.
     const diff = makeLargeDiff('backend/gen/session_service.pb.go', 200);
     const scores = scoreFiles(diff, ['backend/gen/']);
     expect(scores['backend/gen/session_service.pb.go']).toBe(0);
@@ -347,7 +348,9 @@ describe('scoreFiles — rule 6: test/doc/config file → reset score to 0', () 
         '',
       ].join('\n');
       const scores = scoreFiles(diff, []);
-      // Rule 6 resets to 0 (overrides baseline + rules 3-5); rule 7 (error handling) doesn't fire here.
+      // Rule 6 resets to 0 (overrides baseline + rules 3-5); rule 7
+      // (error-handling keywords) can still add +1 after the reset, but
+      // no error-handling keywords appear in this diff, so the score stays 0.
       expect(scores[p]).toBe(0);
     });
   }
@@ -523,8 +526,9 @@ describe('scoreFiles — edge cases', () => {
   it('empty exclude prefixes → all files scored normally (plain files get baseline 1)', () => {
     const diff = makeDiff('backend/gen/foo.pb.go');
     const scores = scoreFiles(diff, []);
-    // No security keyword, no large change, no hunks, not a test/doc/config file
-    // → baseline score 1
+    // No security keyword, no large change, no hunks, not a test/doc/config file.
+    // makeDiff() does not emit a "Code generated" or "DO NOT EDIT" added line,
+    // so rule 2 (generated-file marker) does not fire — the file gets baseline 1.
     expect(scores['backend/gen/foo.pb.go']).toBe(1);
   });
 
