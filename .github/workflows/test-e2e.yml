@@ -124,9 +124,6 @@ jobs:
         with:
           ref: refs/pull/${{ needs.resolve-context.outputs.pr-number }}/head
 
-      - name: Setup credentials
-        uses: ./setup-credentials
-
       - name: Setup pnpm
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
         with:
@@ -140,6 +137,9 @@ jobs:
 
       - name: Build action
         run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Setup credentials
+        uses: ./setup-credentials
 
       - name: Run test
         id: pirate
@@ -211,9 +211,6 @@ jobs:
         with:
           ref: refs/pull/${{ needs.resolve-context.outputs.pr-number }}/head
 
-      - name: Setup credentials
-        uses: ./setup-credentials
-
       - name: Setup pnpm
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
         with:
@@ -227,6 +224,9 @@ jobs:
 
       - name: Build action
         run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Setup credentials
+        uses: ./setup-credentials
 
       - name: Test should fail on invalid agent
         id: invalid-agent
