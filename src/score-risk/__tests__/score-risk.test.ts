@@ -7,6 +7,10 @@
  * Each scoring rule is tested in isolation first (single-variable control),
  * then in combination.  Edge cases and both zero-score exit paths (exclude-paths
  * prefix match and generated-file marker) are verified independently.
+ *
+ * Baseline score is 1 for any file that survives rules 1, 2, and 6 — ensuring
+ * plain application files are never silently auto-excluded alongside
+ * intentionally-low-risk files (tests, docs, generated code, JSON configs).
  */
 import { describe, expect, it } from 'vitest';
 import { parseExcludePrefixes, scoreFiles } from '../score-risk.js';
@@ -80,8 +84,9 @@ describe('scoreFiles — rule 1: exclude-paths prefix → score 0', () => {
   });
 
   it('security-path file in excluded prefix still scores 0 (prefix wins)', () => {
-    // "session_service.pb.go" would score 2 via the security-path rule,
-    // but the exclude-paths rule fires first and short-circuits to 0.
+    // Without an exclude prefix, "session_service.pb.go" would score 3
+    // (baseline 1 + security-path +2), but the exclude-paths rule fires
+    // first and short-circuits to 0.
     const diff = makeLargeDiff('backend/gen/session_service.pb.go', 200);
     const scores = scoreFiles(diff, ['backend/gen/']);
     expect(scores['backend/gen/session_service.pb.go']).toBe(0);
@@ -91,7 +96,7 @@ describe('scoreFiles — rule 1: exclude-paths prefix → score 0', () => {
     const diff = makeDiff('backend/gen/foo.pb.go') + makeDiff('src/auth/handler.go');
     const scores = scoreFiles(diff, ['backend/gen/']);
     expect(scores['backend/gen/foo.pb.go']).toBe(0);
-    expect(scores['src/auth/handler.go']).toBe(2); // security path
+    expect(scores['src/auth/handler.go']).toBe(3); // baseline 1 + security path +2
   });
 
   it('multiple prefixes — file matching any is scored 0', () => {
@@ -102,7 +107,7 @@ describe('scoreFiles — rule 1: exclude-paths prefix → score 0', () => {
     const scores = scoreFiles(diff, ['backend/gen/', 'frontend/src/gen/']);
     expect(scores['backend/gen/foo.pb.go']).toBe(0);
     expect(scores['frontend/src/gen/api.ts']).toBe(0);
-    expect(scores['src/real.go']).toBe(0); // no rules fire for a plain file
+    expect(scores['src/real.go']).toBe(1); // baseline 1: plain file, no signals
   });
 });
 
@@ -152,8 +157,8 @@ describe('scoreFiles — rule 2: generated-file marker → score 0', () => {
       '+// Code generated (too late to trigger marker check)',
     ]);
     const scores = scoreFiles(diff, []);
-    // Security path +2; no other rules fired.
-    expect(scores['src/auth/handler.go']).toBe(2);
+    // Baseline 1 + security path +2 = 3; marker too late to fire.
+    expect(scores['src/auth/handler.go']).toBe(3);
   });
 
   it('marker on context line (not a "+" line) does NOT trigger → scored normally', () => {
@@ -163,8 +168,8 @@ describe('scoreFiles — rule 2: generated-file marker → score 0', () => {
       '+real change',
     ]);
     const scores = scoreFiles(diff, []);
-    // Security path matches "auth" → +2; no marker on added line.
-    expect(scores['src/auth/gen.go']).toBe(2);
+    // Baseline 1 + security path matches "auth" → +2 = 3; no marker on added line.
+    expect(scores['src/auth/gen.go']).toBe(3);
   });
 });
 
@@ -183,75 +188,74 @@ describe('scoreFiles — rule 3: security-sensitive path → +2', () => {
   ] as const;
 
   for (const kw of KEYWORDS) {
-    it(`keyword "${kw}" in path → score 2`, () => {
+    it(`keyword "${kw}" in path → score 3 (baseline 1 + security +2)`, () => {
       const diff = makeDiff(`src/${kw}/handler.go`);
       const scores = scoreFiles(diff, []);
-      expect(scores[`src/${kw}/handler.go`]).toBe(2);
+      expect(scores[`src/${kw}/handler.go`]).toBe(3);
     });
   }
 
-  it('keyword is case-insensitive (AUTH → 2)', () => {
+  it('keyword is case-insensitive (AUTH → 3)', () => {
     const diff = makeDiff('src/AUTH/handler.go');
     const scores = scoreFiles(diff, []);
-    expect(scores['src/AUTH/handler.go']).toBe(2);
+    expect(scores['src/AUTH/handler.go']).toBe(3);
   });
 
-  it('no keyword in path → 0', () => {
+  it('no keyword in path → baseline score 1', () => {
     const diff = makeDiff('src/utils/helper.go');
     const scores = scoreFiles(diff, []);
-    expect(scores['src/utils/helper.go']).toBe(0);
+    expect(scores['src/utils/helper.go']).toBe(1);
   });
 });
 
 // ── Rule 4: large change (>100 added lines) → +2 ─────────────────────────────
 
 describe('scoreFiles — rule 4: large change (>100 added lines) → +2', () => {
-  it('101 added lines → score 2', () => {
+  it('101 added lines → score 3 (baseline 1 + large +2)', () => {
     const diff = makeLargeDiff('src/big.go', 101);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/big.go']).toBe(2);
+    expect(scores['src/big.go']).toBe(3);
   });
 
-  it('100 added lines (boundary) → score 0 (not triggered)', () => {
+  it('100 added lines (boundary) → score 1 (baseline only; rule not triggered)', () => {
     const diff = makeLargeDiff('src/big.go', 100);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/big.go']).toBe(0);
+    expect(scores['src/big.go']).toBe(1);
   });
 
-  it('1 added line → score 0', () => {
+  it('1 added line → score 1 (baseline only)', () => {
     const diff = makeDiff('src/small.go', ['+one line']);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/small.go']).toBe(0);
+    expect(scores['src/small.go']).toBe(1);
   });
 });
 
 // ── Rule 5: many hunks (>3) → +1 ─────────────────────────────────────────────
 
 describe('scoreFiles — rule 5: many hunks (>3 hunk headers) → +1', () => {
-  it('4 hunks → score 1', () => {
+  it('4 hunks → score 2 (baseline 1 + hunks +1)', () => {
     const diff = makeHunksDiff('src/hunky.go', 4);
+    const scores = scoreFiles(diff, []);
+    expect(scores['src/hunky.go']).toBe(2);
+  });
+
+  it('3 hunks (boundary) → score 1 (baseline only; rule not triggered)', () => {
+    const diff = makeHunksDiff('src/hunky.go', 3);
     const scores = scoreFiles(diff, []);
     expect(scores['src/hunky.go']).toBe(1);
   });
 
-  it('3 hunks (boundary) → score 0 (not triggered)', () => {
-    const diff = makeHunksDiff('src/hunky.go', 3);
-    const scores = scoreFiles(diff, []);
-    expect(scores['src/hunky.go']).toBe(0);
-  });
-
-  it('1 hunk → score 0', () => {
+  it('1 hunk → score 1 (baseline only)', () => {
     const diff = makeDiff('src/simple.go', ['+change']);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/simple.go']).toBe(0);
+    expect(scores['src/simple.go']).toBe(1);
   });
 });
 
-// ── Rule 6: test/doc/config file → reset score to 0 ──────────────────────────
+// ── Rule 6: low-risk file → reset score to 0 ───────────────────────────────────
 
 describe('scoreFiles — rule 6: Rust/Ruby test/bench/spec suffixes → reset score to 0', () => {
   it('Rust file in tests/ directory scores 0 (directory component match)', () => {
-    // Security keyword "virtiofs" not in path, but tests/ directory resets to 0
     const diff = makeDiff('crates/vm/tests/integration/virtiofs.rs');
     const scores = scoreFiles(diff, []);
     expect(scores['crates/vm/tests/integration/virtiofs.rs']).toBe(0);
@@ -273,7 +277,7 @@ describe('scoreFiles — rule 6: Rust/Ruby test/bench/spec suffixes → reset sc
     // "auth" in path would normally add +2 (rule 3), but tests/ directory resets to 0
     const diff = makeDiff('src/auth/tests/handler_test.go');
     const scores = scoreFiles(diff, []);
-    // Rule 7 (error handling) can still apply; rule 3 (+2) is reset by rule 6.
+    // Rule 7 (error handling) can still apply; rule 3 (+2) + baseline (1) are reset by rule 6.
     // No error-handling keywords in the default diff content, so score stays 0.
     expect(scores['src/auth/tests/handler_test.go']).toBe(0);
   });
@@ -309,7 +313,7 @@ describe('scoreFiles — rule 6: Rust/Ruby test/bench/spec suffixes → reset sc
   });
 });
 
-describe('scoreFiles — rule 6: test/doc/config file → reset score to 0', () => {
+describe('scoreFiles — rule 6: existing test/doc/config patterns → reset score to 0', () => {
   const TEST_PATHS = [
     'src/auth_test.go',
     'src/auth.test.ts',
@@ -344,7 +348,9 @@ describe('scoreFiles — rule 6: test/doc/config file → reset score to 0', () 
         '',
       ].join('\n');
       const scores = scoreFiles(diff, []);
-      // Rule 6 resets to 0; rule 7 (error handling) doesn't fire here.
+      // Rule 6 resets to 0 (overrides baseline + rules 3-5); rule 7
+      // (error-handling keywords) can still add +1 after the reset, but
+      // no error-handling keywords appear in this diff, so the score stays 0.
       expect(scores[p]).toBe(0);
     });
   }
@@ -357,27 +363,91 @@ describe('scoreFiles — rule 6: test/doc/config file → reset score to 0', () 
   });
 });
 
+describe('scoreFiles — rule 6: lock files, assets, CSS, dotfiles → reset score to 0', () => {
+  const LOW_RISK_PATHS = [
+    // Lock files
+    'yarn.lock',
+    'package-lock.json',
+    'Cargo.lock',
+    'go.sum',
+    'Gemfile.lock',
+    'pnpm-lock.yaml',
+    'composer.lock',
+    'poetry.lock',
+    // Binary / asset files
+    'assets/logo.svg',
+    'public/icon.png',
+    'images/hero.jpg',
+    'images/hero.jpeg',
+    'favicon.ico',
+    'fonts/myfont.woff',
+    'fonts/myfont.woff2',
+    'fonts/old.eot',
+    'fonts/body.ttf',
+    // CSS
+    'styles/main.css',
+    // Dotfiles
+    '.gitignore',
+    'src/.gitignore',
+    '.gitattributes',
+    '.editorconfig',
+    '.prettierrc',
+    '.prettierrc.js',
+    '.prettierrc.json',
+    '.eslintignore',
+    '.dockerignore',
+    // Legal / example
+    'LICENSE',
+    'LICENSE.md',
+    '.env.example',
+    'config/.env.example',
+  ] as const;
+
+  for (const p of LOW_RISK_PATHS) {
+    it(`"${p}" scores 0 (low-risk file, rule 6 resets)`, () => {
+      const diff = makeDiff(p, ['+changed']);
+      const scores = scoreFiles(diff, []);
+      expect(scores[p]).toBe(0);
+    });
+  }
+
+  it('lock file with security keyword in path still scores 0 (rule 6 wins over rule 3)', () => {
+    // "auth" in path would add +2 via rule 3, but go.sum is a lock file
+    // so rule 6 resets to 0 regardless.
+    const diff = makeDiff('vendor/auth/go.sum', ['+h1:abc']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['vendor/auth/go.sum']).toBe(0);
+  });
+
+  it('dotfile with error-handling keyword scores 1 (rule 7 still applies after rule 6 reset)', () => {
+    // Rule 6 resets to 0; rule 7 can still add +1 if the diff contains error keywords.
+    const diff = makeDiff('.eslintignore', ['+catch']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['.eslintignore']).toBe(1);
+  });
+});
+
 // ── Rule 7: error-handling patterns → +1 ─────────────────────────────────────
 
 describe('scoreFiles — rule 7: error-handling patterns → +1', () => {
   const KEYWORDS = ['catch', 'rescue', 'except', 'recover', 'error', 'panic'] as const;
 
   for (const kw of KEYWORDS) {
-    it(`keyword "${kw}" in an added line → +1`, () => {
+    it(`keyword "${kw}" in an added line → baseline 1 + error +1 = 2`, () => {
       const diff = makeDiff('src/service.go', [`+handle ${kw} here`]);
       const scores = scoreFiles(diff, []);
-      expect(scores['src/service.go']).toBe(1);
+      expect(scores['src/service.go']).toBe(2);
     });
   }
 
-  it('keyword in a context line (not added) → no +1', () => {
+  it('keyword in a context line (not added) → no +1 (baseline 1 only)', () => {
     // Context line (space-prefixed) doesn't count.
     const diff = makeDiff('src/service.go', [' existing catch block', '+new line only']);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/service.go']).toBe(0);
+    expect(scores['src/service.go']).toBe(1);
   });
 
-  it('multiple error-handling lines still only add +1 total', () => {
+  it('multiple error-handling lines still only add +1 total (baseline 1 + error +1 = 2)', () => {
     const diff = makeDiff('src/service.go', [
       '+catch(err) {',
       '+  recover();',
@@ -385,20 +455,20 @@ describe('scoreFiles — rule 7: error-handling patterns → +1', () => {
       '}',
     ]);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/service.go']).toBe(1);
+    expect(scores['src/service.go']).toBe(2);
   });
 });
 
 // ── Combined scoring ──────────────────────────────────────────────────────────
 
 describe('scoreFiles — combined rules', () => {
-  it('security path + large change = 4', () => {
+  it('security path + large change = 5 (baseline 1 + security +2 + large +2)', () => {
     const diff = makeLargeDiff('src/auth/handler.go', 150);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/auth/handler.go']).toBe(4); // +2 security + +2 large
+    expect(scores['src/auth/handler.go']).toBe(5);
   });
 
-  it('security path + large change + many hunks = 5', () => {
+  it('security path + large change + many hunks = 6 (baseline 1 + security +2 + large +2 + hunks +1)', () => {
     const lines = Array.from({ length: 110 }, (_, i) => `+line${i}`);
     const hunkHeaders = Array.from(
       { length: 4 },
@@ -414,10 +484,10 @@ describe('scoreFiles — combined rules', () => {
       '',
     ].join('\n');
     const scores = scoreFiles(diff, []);
-    expect(scores['src/session/service.go']).toBe(5); // +2 security +2 large +1 hunks
+    expect(scores['src/session/service.go']).toBe(6);
   });
 
-  it('security path + large change + many hunks + error handling = 6 (max realistic)', () => {
+  it('security path + large change + many hunks + error handling = 7 (max realistic)', () => {
     const lines = Array.from({ length: 110 }, (_, i) => `+line${i}`);
     const hunkHeaders = Array.from(
       { length: 4 },
@@ -434,18 +504,18 @@ describe('scoreFiles — combined rules', () => {
       '',
     ].join('\n');
     const scores = scoreFiles(diff, []);
-    expect(scores['src/session/service.go']).toBe(6);
+    expect(scores['src/session/service.go']).toBe(7);
   });
 
   it('multiple files in one diff are scored independently', () => {
     const diff =
-      makeDiff('src/auth/handler.go') + // security → 2
-      makeLargeDiff('src/utils/big.go', 200) + // large → 2
+      makeDiff('src/auth/handler.go') + // baseline 1 + security +2 = 3
+      makeLargeDiff('src/utils/big.go', 200) + // baseline 1 + large +2 = 3
       makeDiff('backend/gen/foo.pb.go'); // excluded → 0
 
     const scores = scoreFiles(diff, ['backend/gen/']);
-    expect(scores['src/auth/handler.go']).toBe(2);
-    expect(scores['src/utils/big.go']).toBe(2);
+    expect(scores['src/auth/handler.go']).toBe(3);
+    expect(scores['src/utils/big.go']).toBe(3);
     expect(scores['backend/gen/foo.pb.go']).toBe(0);
   });
 });
@@ -453,18 +523,80 @@ describe('scoreFiles — combined rules', () => {
 // ── extractFilePath regression: greedy-regex vs indexOf(' b/') ─────────────────
 
 describe('scoreFiles — extractFilePath: indexOf regression for paths containing b/', () => {
-  it('path with security keyword before a b/ directory component scores 2, not 0', () => {
+  it('path with security keyword before a b/ directory component scores 3, not 1', () => {
     // Old greedy regex: replace(/.*b\//, '') on
     //   "diff --git a/src/auth/b/helper.ts b/src/auth/b/helper.ts"
     // matches everything up to the last 'b/' giving 'helper.ts'.
-    // 'helper.ts' has no security keyword → score 0.
+    // 'helper.ts' has no security keyword → baseline score 1 only.
     //
     // New indexOf(' b/'): strips "diff --git a/" prefix and splits at the
     // first ' b/' separator giving 'src/auth/b/helper.ts'.
-    // 'src/auth/b/helper.ts' matches SECURITY_PATH_RE ('auth') → score 2.
+    // 'src/auth/b/helper.ts' matches SECURITY_PATH_RE ('auth') → baseline 1 + +2 = 3.
     const diff = makeDiff('src/auth/b/helper.ts', ['+changed']);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/auth/b/helper.ts']).toBe(2);
+    expect(scores['src/auth/b/helper.ts']).toBe(3);
+  });
+});
+
+// ── Baseline score for plain application files ────────────────────────────────
+
+describe('scoreFiles — baseline score 1 for plain application files', () => {
+  it('plain app file (src/app.ts) with a small change gets score 1, not 0', () => {
+    // This is the key regression test: ordinary application code must never
+    // be auto-excluded alongside intentionally-low-risk files.
+    const diff = makeDiff('src/app.ts', ['+const x = 1;']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['src/app.ts']).toBe(1);
+  });
+
+  it('plain server file (src/server.ts) scores 1', () => {
+    const diff = makeDiff('src/server.ts', ['+app.listen(3000);']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['src/server.ts']).toBe(1);
+  });
+
+  it('plain types file (src/types.ts) scores 1', () => {
+    const diff = makeDiff('src/types.ts', ['+export type Foo = string;']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['src/types.ts']).toBe(1);
+  });
+
+  it('React component (src/TeamDetail.tsx) scores 1', () => {
+    const diff = makeDiff('src/TeamDetail.tsx', ['+export default function TeamDetail() {}']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['src/TeamDetail.tsx']).toBe(1);
+  });
+
+  it('service file (src/entityEnrichment.ts) scores 1', () => {
+    const diff = makeDiff('src/entityEnrichment.ts', ['+export function enrich() {}']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['src/entityEnrichment.ts']).toBe(1);
+  });
+
+  it('plain Go file (internal/handler/http.go) scores 1', () => {
+    const diff = makeDiff('internal/handler/http.go', ['+func handleRequest() {}']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['internal/handler/http.go']).toBe(1);
+  });
+
+  // Regression: these were at score 0 before the baseline change and must
+  // remain at 0 (rule 6 still resets them) — NOT promoted to 1.
+  it('yarn.lock scores 0 (lock file, not promoted by baseline)', () => {
+    const diff = makeDiff('yarn.lock', ['+dep@1.2.3']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['yarn.lock']).toBe(0);
+  });
+
+  it('.gitignore scores 0 (dotfile, not promoted by baseline)', () => {
+    const diff = makeDiff('.gitignore', ['+node_modules/']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['.gitignore']).toBe(0);
+  });
+
+  it('pnpm-lock.yaml scores 0 (lock file, not promoted by baseline)', () => {
+    const diff = makeDiff('pnpm-lock.yaml', ['+  version: 1.0.0']);
+    const scores = scoreFiles(diff, []);
+    expect(scores['pnpm-lock.yaml']).toBe(0);
   });
 });
 
@@ -475,16 +607,18 @@ describe('scoreFiles — edge cases', () => {
     expect(scoreFiles('', [])).toEqual({});
   });
 
-  it('empty exclude prefixes → all files scored normally', () => {
+  it('empty exclude prefixes → all files scored normally (plain files get baseline 1)', () => {
     const diff = makeDiff('backend/gen/foo.pb.go');
     const scores = scoreFiles(diff, []);
-    // No security keyword, no large change, no hunks → 0
-    expect(scores['backend/gen/foo.pb.go']).toBe(0);
+    // No security keyword, no large change, no hunks, not a test/doc/config file.
+    // makeDiff() does not emit a "Code generated" or "DO NOT EDIT" added line,
+    // so rule 2 (generated-file marker) does not fire — the file gets baseline 1.
+    expect(scores['backend/gen/foo.pb.go']).toBe(1);
   });
 
-  it('single plain file with no matching rules → score 0', () => {
+  it('single plain file with no matching rules → baseline score 1', () => {
     const diff = makeDiff('src/utils/helper.go', ['+minor tweak']);
     const scores = scoreFiles(diff, []);
-    expect(scores['src/utils/helper.go']).toBe(0);
+    expect(scores['src/utils/helper.go']).toBe(1);
   });
 });
