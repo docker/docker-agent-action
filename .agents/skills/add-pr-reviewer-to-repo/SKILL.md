@@ -1,5 +1,5 @@
 ---
-name: onboard-pr-review
+name: add-pr-reviewer-to-repo
 description: Set up or upgrade GitHub Actions workflows in a consuming repo to use the docker/docker-agent-action PR reviewer (docker/docker-agent-action/.github/workflows/review-pr.yml). Covers both same-repo and fork-PR patterns, trigger mode selection, version pinning, upgrade checklist, and common troubleshooting.
 ---
 
