@@ -22,6 +22,30 @@ Make sure to communicate this to contributors when onboarding a repo — it's th
 
 ---
 
+## What you DON'T need to add — built-in protections
+
+The reusable workflow handles all of the following internally. **Do not add caller-side guards for these** — they create maintenance burden without improving correctness or safety.
+
+| Concern | How it's handled internally |
+| ------- | --------------------------- |
+| **Bot comment filtering** | All jobs in the reusable workflow carry comprehensive `if:` conditions that skip `docker-agent`, `docker-agent[bot]`, any `Bot`-type user, and comments containing `<!-- docker-agent-review -->` / `<!-- docker-agent-review-reply -->` HTML markers. |
+| **Org membership / authorization** | A dedicated `check-org-membership` step runs before any review work begins. PR authors and comment authors are verified as org members or collaborators. Callers never need their own `author_association` checks. |
+| **PR vs issue comment disambiguation** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are ignored automatically. |
+| **Draft PR skipping** | Handled internally — draft PRs are not reviewed. |
+| **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |
+
+### The one thing callers ARE responsible for
+
+The **fork vs same-repo distinction** is the caller's responsibility, because it determines the event path:
+- Same-repo PRs → use the 1-workflow pattern (events have full OIDC/secret access directly).
+- Fork PRs → use the 2-workflow pattern (trigger artifact → `workflow_run` handler).
+
+The reusable workflow uses the presence of `trigger-run-id` to detect which path it's on. The canonical YAML in sections 4a and 4b below (without extra `if:` guards) is the recommended setup.
+
+> **Note on optional optimizations:** some teams add `author_association` checks or bot-login filters on their *calling* workflow's job `if:` to save Actions minutes by skipping the job entirely before it even calls the reusable workflow. This is a valid cost optimization, but it is not required for correctness or security. When in doubt, omit them — the simpler YAML is easier to audit and maintain.
+
+---
+
 ## 1. Determine Which Pattern to Use
 
 Check the repo's contribution guidelines and GitHub settings:
