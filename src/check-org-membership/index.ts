@@ -2,11 +2,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * check-org-membership — verify whether a GitHub user belongs to an org.
+ * check-org-membership — decide whether a PR review is authorized.
+ *
+ * Two authorization paths feed the same review pipeline:
+ *   1. Auto-run        — a PR opened/updated by an org MEMBER is reviewed
+ *                        automatically. Authorized on the PR AUTHOR's membership.
+ *   2. Review-requested — when `docker-agent` is requested as a reviewer, the
+ *                        review is authorized on the REQUESTER's membership, not
+ *                        the author's. This lets a maintainer pull an EXTERNAL
+ *                        contributor's PR into the review pipeline on demand.
+ *
+ * Security note: the requester is only ever taken from a TRUSTED source — the
+ * `github.event.sender.login` of a same-repo pull_request event, or (on the
+ * fork / workflow_run path) re-derived from the PR timeline via the GitHub API.
+ * It is NEVER read from the trigger artifact, because a fork PR controls its own
+ * trigger workflow and could otherwise forge a member login.
  *
  * Exported functions:
  *   checkOrgMembership(orgToken, org, username) → boolean
  *   resolvePrAuthor(repoToken, owner, repo, prNumber) → string
+ *   resolveReviewRequester(repoToken, owner, repo, prNumber, reviewerLogin) → string
+ *   evaluateMembership(inputs) → { isMember, subject, via }
  *
  * CLI (invoked as a shell run step via dist/check-org-membership.js):
  *   All inputs are read from environment variables:
@@ -15,8 +31,12 @@
  *     GITHUB_REPOSITORY      "owner/repo" (standard GitHub Actions env var)
  *     ORG                    GitHub org name to check (e.g. "docker")
  *     PR_SOURCE              "event" | "trigger" | "input"
- *     PR_NUMBER              PR number as string (required when PR_SOURCE != 'event')
- *     COMMENT_AUTHOR         User login (required when PR_SOURCE == 'event')
+ *     PR_NUMBER              PR number as string (required for PR-driven paths)
+ *     COMMENT_AUTHOR         User login (used on the issue_comment path)
+ *     EVENT_NAME             github.event_name (issue_comment | pull_request | …)
+ *     EVENT_ACTION           github.event.action (e.g. "review_requested")
+ *     REQUESTER              github.event.sender.login (trusted; direct path only)
+ *     AGENT_LOGIN            Reviewer login to match (default "docker-agent")
  *
  *   Outputs are written via @actions/core.setOutput (writes to $GITHUB_OUTPUT):
  *     is_member              "true" | "false"
@@ -84,6 +104,162 @@ export async function resolvePrAuthor(
 }
 
 // ---------------------------------------------------------------------------
+// Core function: review-requester resolution (trusted, server-side)
+// ---------------------------------------------------------------------------
+
+interface TimelineReviewRequestedEvent {
+  event?: string;
+  actor?: { login?: string } | null;
+  review_requester?: { login?: string } | null;
+  requested_reviewer?: { login?: string } | null;
+}
+
+/**
+ * Return the login of the user who most recently requested `reviewerLogin` as a
+ * reviewer on the PR, or '' if no such request exists.
+ *
+ * Derived from the PR timeline via the GitHub API using `repoToken`. This is the
+ * authoritative, non-forgeable source for the requester on the fork / workflow_run
+ * path, where the triggering event payload is not directly available and the
+ * trigger artifact is written in the untrusted fork context.
+ */
+export async function resolveReviewRequester(
+  repoToken: string,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  reviewerLogin: string,
+): Promise<string> {
+  const octokit = new Octokit({ auth: repoToken });
+  // Paginate: the relevant review_requested event may be anywhere in the timeline,
+  // and timelines are returned in chronological (ascending) order, so the latest
+  // matching event — the one we want — is towards the end.
+  const events = (await octokit.paginate(octokit.rest.issues.listEventsForTimeline, {
+    owner,
+    repo,
+    issue_number: prNumber,
+    per_page: 100,
+  })) as unknown as TimelineReviewRequestedEvent[];
+
+  let requester = '';
+  for (const ev of events) {
+    if (ev.event === 'review_requested' && ev.requested_reviewer?.login === reviewerLogin) {
+      const actor = ev.review_requester?.login ?? ev.actor?.login ?? '';
+      if (actor) requester = actor;
+    }
+  }
+  return requester;
+}
+
+// ---------------------------------------------------------------------------
+// Authorization decision
+// ---------------------------------------------------------------------------
+
+export interface MembershipInputs {
+  orgToken: string;
+  repoToken: string;
+  org: string;
+  reviewerLogin: string;
+  repository: string;
+  prSource: string;
+  eventName: string;
+  eventAction: string;
+  prNumber: number;
+  commentAuthor: string;
+  /** Trusted requester login from github.event.sender.login (direct path only). */
+  trustedRequester: string;
+}
+
+export interface MembershipDecision {
+  isMember: boolean;
+  subject: string;
+  via: 'comment' | 'author' | 'requester' | 'none';
+}
+
+function parseRepository(repository: string): { owner: string; repo: string } {
+  const slashIdx = repository.indexOf('/');
+  if (slashIdx < 0) {
+    throw new Error(`Invalid GITHUB_REPOSITORY: '${repository}' (expected 'owner/repo')`);
+  }
+  return { owner: repository.slice(0, slashIdx), repo: repository.slice(slashIdx + 1) };
+}
+
+/**
+ * Resolve the review requester from a trusted source only.
+ *  - Direct same-repo pull_request review_requested → github.event.sender.login.
+ *  - Fork / workflow_run path → re-derived from the PR timeline (server-side).
+ * Returns '' when there is no trustworthy requester.
+ */
+async function resolveTrustedRequester(
+  inputs: MembershipInputs,
+  owner: string,
+  repo: string,
+): Promise<string> {
+  const { prSource, eventName, eventAction, trustedRequester } = inputs;
+  if (prSource === 'event' && eventName === 'pull_request' && eventAction === 'review_requested') {
+    return trustedRequester;
+  }
+  if (prSource === 'trigger') {
+    try {
+      return await resolveReviewRequester(
+        inputs.repoToken,
+        owner,
+        repo,
+        inputs.prNumber,
+        inputs.reviewerLogin,
+      );
+    } catch (err: unknown) {
+      core.warning(
+        `Failed to resolve review requester for #${inputs.prNumber}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return '';
+    }
+  }
+  return '';
+}
+
+/**
+ * Decide whether the review is authorized, returning the subject and the path
+ * that granted it. See the module header for the two authorization paths.
+ */
+export async function evaluateMembership(inputs: MembershipInputs): Promise<MembershipDecision> {
+  const { orgToken, org, prSource, eventName, commentAuthor } = inputs;
+
+  // Comment-driven triggers (e.g. /review) authorize the commenter. EVENT_NAME may
+  // be absent when called by an older caller; fall back to the presence of a
+  // comment author to detect this path.
+  const isCommentTrigger =
+    prSource === 'event' &&
+    (eventName === 'issue_comment' || (eventName === '' && commentAuthor !== ''));
+  if (isCommentTrigger) {
+    const ok = commentAuthor !== '' && (await checkOrgMembership(orgToken, org, commentAuthor));
+    return { isMember: ok, subject: commentAuthor, via: ok ? 'comment' : 'none' };
+  }
+
+  const { owner, repo } = parseRepository(inputs.repository);
+  if (!Number.isInteger(inputs.prNumber) || inputs.prNumber <= 0) {
+    throw new Error(`Invalid pr-number: '${inputs.prNumber}' (expected positive integer)`);
+  }
+
+  // Path 1 — auto-run: the PR author must be an org member.
+  const author = await resolvePrAuthor(inputs.repoToken, owner, repo, inputs.prNumber);
+  if (author && (await checkOrgMembership(orgToken, org, author))) {
+    return { isMember: true, subject: author, via: 'author' };
+  }
+
+  // Path 2 — review-requested: an org member who requested the review authorizes
+  // it, even when the PR author is external (not an org member).
+  const requester = await resolveTrustedRequester(inputs, owner, repo);
+  if (requester && (await checkOrgMembership(orgToken, org, requester))) {
+    return { isMember: true, subject: requester, via: 'requester' };
+  }
+
+  return { isMember: false, subject: author, via: 'none' };
+}
+
+// ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
 
@@ -91,10 +267,6 @@ async function main(): Promise<void> {
   const orgToken = process.env.ORG_MEMBERSHIP_TOKEN ?? '';
   const repoToken = process.env.GITHUB_APP_TOKEN ?? '';
   const org = process.env.ORG ?? '';
-  const prSource = process.env.PR_SOURCE ?? '';
-  const prNumberStr = process.env.PR_NUMBER ?? '';
-  const commentAuthor = process.env.COMMENT_AUTHOR ?? '';
-  const repository = process.env.GITHUB_REPOSITORY ?? '';
 
   if (!orgToken) {
     core.setFailed('ORG_MEMBERSHIP_TOKEN is not set — ensure setup-credentials ran successfully.');
@@ -105,40 +277,33 @@ async function main(): Promise<void> {
     return;
   }
 
-  let username: string;
-
-  if (prSource === 'event') {
-    username = commentAuthor;
-  } else {
-    const prNumber = parseInt(prNumberStr, 10);
-    if (!Number.isInteger(prNumber) || prNumber <= 0) {
-      core.setFailed(`Invalid pr-number: '${prNumberStr}' (expected positive integer)`);
-      return;
-    }
-    const slashIdx = repository.indexOf('/');
-    if (slashIdx < 0) {
-      core.setFailed(`Invalid GITHUB_REPOSITORY: '${repository}' (expected 'owner/repo')`);
-      return;
-    }
-    const owner = repository.slice(0, slashIdx);
-    const repo = repository.slice(slashIdx + 1);
-    try {
-      username = await resolvePrAuthor(repoToken, owner, repo, prNumber);
-    } catch (err: unknown) {
-      core.setFailed(
-        `Failed to resolve PR author for #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return;
-    }
-  }
+  const inputs: MembershipInputs = {
+    orgToken,
+    repoToken,
+    org,
+    reviewerLogin: process.env.AGENT_LOGIN ?? 'docker-agent',
+    repository: process.env.GITHUB_REPOSITORY ?? '',
+    prSource: process.env.PR_SOURCE ?? '',
+    eventName: process.env.EVENT_NAME ?? '',
+    eventAction: process.env.EVENT_ACTION ?? '',
+    prNumber: Number.parseInt(process.env.PR_NUMBER ?? '', 10),
+    commentAuthor: process.env.COMMENT_AUTHOR ?? '',
+    trustedRequester: process.env.REQUESTER ?? '',
+  };
 
   try {
-    const isMember = await checkOrgMembership(orgToken, org, username);
-    core.setOutput('is_member', String(isMember));
-    if (isMember) {
-      core.info(`✅ ${username} is a ${org} org member — proceeding with review`);
+    const decision = await evaluateMembership(inputs);
+    core.setOutput('is_member', String(decision.isMember));
+    if (decision.isMember) {
+      const reason =
+        decision.via === 'requester'
+          ? `review requested by ${org} org member @${decision.subject}`
+          : `@${decision.subject} is a ${org} org member`;
+      core.info(`✅ ${reason} — proceeding with review`);
     } else {
-      core.info(`⏭️ ${username} is not a ${org} org member — skipping review`);
+      core.info(
+        `⏭️ Not authorized to review (subject: @${decision.subject || 'unknown'}) — skipping`,
+      );
     }
   } catch (err: unknown) {
     const status = (err as { status?: number }).status;
