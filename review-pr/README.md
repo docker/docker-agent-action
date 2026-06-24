@@ -156,6 +156,17 @@ pull_request:
 ```
 Adds `synchronize` to also trigger on every push to the PR branch. Opt in if your team wants the reviewer to automatically re-examine every update, at the cost of more workflow runs.
 
+### External and fork contributor PRs
+
+Auto-review only runs on PRs authored by org members. A PR opened by an external or fork contributor is **not** reviewed automatically. To get one reviewed, an org member drives it through GitHub's native UI in two steps:
+
+1. **Approve the workflow run.** For PRs from first-time and external contributors, GitHub holds all Actions runs until a maintainer approves them (governed by the repository's `Settings` → `Actions` → `General` fork-PR approval policy). Click **Approve and run workflows** on the PR; until then nothing runs, including the PR review trigger.
+2. **Request a review from `docker-agent`.** In the PR sidebar, under **Reviewers**, add `docker-agent`. This fires a `review_requested` event and starts the review, shown as a check run.
+
+That is the entire flow. **No special commands or workflow inputs are needed**: not the deprecated `/review` comment, not `workflow_dispatch`, and no caller-side configuration. The review is authorized by the requesting org member rather than the PR author, which is what lets an external contributor's PR be reviewed on demand. The request is safe by construction: GitHub only lets users with triage or write access request a reviewer, and the reusable workflow verifies org membership before any review work runs. An external contributor cannot trigger a review of their own PR.
+
+To re-run the review after new commits, re-request the review from `docker-agent` in the sidebar (the refresh icon next to their name).
+
 ### Customizing
 
 ```yaml
