@@ -319,6 +319,22 @@ describe('evaluateMembership', () => {
     expect(mockPaginate).not.toHaveBeenCalled();
   });
 
+  it('review_requested: the REQUESTER env value is only trusted on the direct same-repo triple', async () => {
+    // Defense-in-depth: a PR_SOURCE=event path whose event is NOT a
+    // pull_request:review_requested must never trust the env-supplied requester,
+    // even if that login is a real org member. Here an auto-run "opened" event
+    // carries a member login in trustedRequester; it must be ignored.
+    membersAre('sneaky-member');
+    mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'ext-author' } } });
+
+    const decision = await evaluateMembership(
+      inputs({ eventAction: 'opened', trustedRequester: 'sneaky-member' }),
+    );
+
+    expect(decision).toEqual({ isMember: false, subject: 'ext-author', via: 'none' });
+    expect(mockPaginate).not.toHaveBeenCalled();
+  });
+
   it('review_requested (direct): denies when the requester is not an org member', async () => {
     membersAre(); // neither author nor requester is a member
     mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'ext-author' } } });

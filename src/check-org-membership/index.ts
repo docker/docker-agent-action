@@ -196,6 +196,14 @@ async function resolveTrustedRequester(
   repo: string,
 ): Promise<string> {
   const { prSource, eventName, eventAction, trustedRequester } = inputs;
+  // SECURITY: trustedRequester (REQUESTER = github.event.sender.login) is only
+  // authoritative for a DIRECT same-repo pull_request:review_requested event,
+  // which the workflow tags PR_SOURCE=event. The fork / workflow_run path is
+  // tagged PR_SOURCE=trigger and is resolved from the server-side timeline below,
+  // because its trigger artifact is written in the untrusted fork context. Gate
+  // on the full (event, pull_request, review_requested) triple so that if a
+  // caller ever routes another trigger through PR_SOURCE=event, the env-supplied
+  // requester is never trusted — it falls through to '' (deny), not the timeline.
   if (prSource === 'event' && eventName === 'pull_request' && eventAction === 'review_requested') {
     return trustedRequester;
   }
