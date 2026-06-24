@@ -30,7 +30,7 @@ const { mockCheckMembershipForUser, mockGetPull, MockOctokit, constructorTokens 
 
 vi.mock('@octokit/rest', () => ({ Octokit: MockOctokit }));
 
-import { checkOrgMembership, resolvePrAuthor } from '../index.js';
+import { checkOrgMembership, resolvePrAuthor, resolveUsername } from '../index.js';
 
 const ORG_TOKEN = 'fake-org-token';
 const REPO_TOKEN = 'fake-repo-token';
@@ -132,6 +132,72 @@ describe('resolvePrAuthor', () => {
     mockGetPull.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }));
 
     await expect(resolvePrAuthor(REPO_TOKEN, 'docker', 'myrepo', 999)).rejects.toThrow('Not Found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveUsername — picks which user's membership to verify per trigger path
+// ---------------------------------------------------------------------------
+
+describe('resolveUsername', () => {
+  const apiOpts = { repoToken: REPO_TOKEN, owner: 'docker', repo: 'repo', prNumber: 11 };
+
+  // This suite asserts on getPull call counts; reset history per test since the
+  // shared mock accumulates calls across the other suites in this file.
+  beforeEach(() => {
+    mockGetPull.mockClear();
+  });
+
+  it('uses the comment author on an event trigger when present', async () => {
+    const u = await resolveUsername({
+      prSource: 'event',
+      commentAuthor: 'alice',
+      prAuthor: '',
+      ...apiOpts,
+    });
+    expect(u).toBe('alice');
+    expect(mockGetPull).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the PR author on an event trigger with no comment author (direct pull_request path)', async () => {
+    const u = await resolveUsername({
+      prSource: 'event',
+      commentAuthor: '',
+      prAuthor: 'frank',
+      ...apiOpts,
+    });
+    expect(u).toBe('frank');
+    expect(mockGetPull).not.toHaveBeenCalled();
+  });
+
+  it('resolves the PR author via the API when both author envs are empty on an event trigger', async () => {
+    mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'grace' } } });
+    const u = await resolveUsername({
+      prSource: 'event',
+      commentAuthor: '',
+      prAuthor: '',
+      ...apiOpts,
+    });
+    expect(u).toBe('grace');
+    expect(mockGetPull).toHaveBeenCalledWith({ owner: 'docker', repo: 'repo', pull_number: 11 });
+  });
+
+  it('resolves the PR author via the API on the trigger path', async () => {
+    mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'heidi' } } });
+    const u = await resolveUsername({
+      prSource: 'trigger',
+      commentAuthor: '',
+      prAuthor: '',
+      ...apiOpts,
+    });
+    expect(u).toBe('heidi');
+    expect(mockGetPull).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the repo token (not the org token) for the API fallback', async () => {
+    mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'ivan' } } });
+    await resolveUsername({ prSource: 'input', commentAuthor: '', prAuthor: '', ...apiOpts });
+    expect(constructorTokens).toEqual([REPO_TOKEN]);
   });
 });
 

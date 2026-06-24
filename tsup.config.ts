@@ -23,14 +23,17 @@ const src = (name: string) => {
   return p;
 };
 const entry = {
+  'audit-log': src('audit-log'),
   'auto-filter-diff': src('auto-filter-diff'),
   'check-org-membership': src('check-org-membership'),
+  'check-staleness': src('check-staleness'),
   credentials: src('credentials'),
   'filter-diff': src('filter-diff'),
   main: src('main'),
   'mention-reply': src('mention-reply'),
   'migrate-consumer-refs': src('migrate-consumer-refs'),
   'post-mention-reply': src('post-mention-reply'),
+  'rate-limit': src('rate-limit'),
   'score-risk': src('score-risk'),
   security: src('security'),
   'signed-commit': src('signed-commit'),

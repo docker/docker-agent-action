@@ -15,8 +15,11 @@
  *     GITHUB_REPOSITORY      "owner/repo" (standard GitHub Actions env var)
  *     ORG                    GitHub org name to check (e.g. "docker")
  *     PR_SOURCE              "event" | "trigger" | "input"
- *     PR_NUMBER              PR number as string (required when PR_SOURCE != 'event')
- *     COMMENT_AUTHOR         User login (required when PR_SOURCE == 'event')
+ *     PR_NUMBER              PR number as string (required when no author env is set)
+ *     COMMENT_AUTHOR         Comment author login (set on comment-triggered events)
+ *     PR_AUTHOR              PR author login (set on pull_request events so the direct
+ *                            auto-review path verifies the PR author, not an empty
+ *                            comment author; falls back to a live API lookup if unset)
  *
  *   Outputs are written via @actions/core.setOutput (writes to $GITHUB_OUTPUT):
  *     is_member              "true" | "false"
@@ -84,6 +87,44 @@ export async function resolvePrAuthor(
 }
 
 // ---------------------------------------------------------------------------
+// Core function: resolve which user's membership to verify
+// ---------------------------------------------------------------------------
+
+export interface ResolveUsernameOptions {
+  /** "event" | "trigger" | "input" — how the PR number was resolved. */
+  prSource: string;
+  /** Comment author login (set on comment-triggered events). */
+  commentAuthor: string;
+  /** PR author login (set on pull_request events). */
+  prAuthor: string;
+  /** Repo-scoped token used for the live PR-author lookup fallback. */
+  repoToken: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+}
+
+/**
+ * Resolve the login whose org membership must be verified for this request.
+ *
+ * Precedence:
+ *   1. On an "event" trigger, the comment author (comment-driven events) or the
+ *      PR author (pull_request events expose PR_AUTHOR, not a comment author).
+ *   2. Otherwise — and as a fallback when both author envs are empty — resolve
+ *      the PR author live via the API.
+ *
+ * The fallback closes the historical gap where a directly-wired pull_request
+ * auto-review passed an empty COMMENT_AUTHOR, so the PR author was never checked.
+ */
+export async function resolveUsername(opts: ResolveUsernameOptions): Promise<string> {
+  if (opts.prSource === 'event') {
+    const fromEvent = opts.commentAuthor || opts.prAuthor;
+    if (fromEvent) return fromEvent;
+  }
+  return resolvePrAuthor(opts.repoToken, opts.owner, opts.repo, opts.prNumber);
+}
+
+// ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
 
@@ -94,6 +135,7 @@ async function main(): Promise<void> {
   const prSource = process.env.PR_SOURCE ?? '';
   const prNumberStr = process.env.PR_NUMBER ?? '';
   const commentAuthor = process.env.COMMENT_AUTHOR ?? '';
+  const prAuthor = process.env.PR_AUTHOR ?? '';
   const repository = process.env.GITHUB_REPOSITORY ?? '';
 
   if (!orgToken) {
@@ -105,31 +147,45 @@ async function main(): Promise<void> {
     return;
   }
 
-  let username: string;
+  // A PR number is always required: even on the "event" path the author env may
+  // be empty (directly-wired pull_request auto-review), which falls back to a
+  // live PR-author lookup.
+  const prNumber = parseInt(prNumberStr, 10);
+  if (!Number.isInteger(prNumber) || prNumber <= 0) {
+    core.setFailed(`Invalid pr-number: '${prNumberStr}' (expected positive integer)`);
+    return;
+  }
+  const slashIdx = repository.indexOf('/');
+  if (slashIdx < 0) {
+    core.setFailed(`Invalid GITHUB_REPOSITORY: '${repository}' (expected 'owner/repo')`);
+    return;
+  }
+  const owner = repository.slice(0, slashIdx);
+  const repo = repository.slice(slashIdx + 1);
 
-  if (prSource === 'event') {
-    username = commentAuthor;
-  } else {
-    const prNumber = parseInt(prNumberStr, 10);
-    if (!Number.isInteger(prNumber) || prNumber <= 0) {
-      core.setFailed(`Invalid pr-number: '${prNumberStr}' (expected positive integer)`);
-      return;
-    }
-    const slashIdx = repository.indexOf('/');
-    if (slashIdx < 0) {
-      core.setFailed(`Invalid GITHUB_REPOSITORY: '${repository}' (expected 'owner/repo')`);
-      return;
-    }
-    const owner = repository.slice(0, slashIdx);
-    const repo = repository.slice(slashIdx + 1);
-    try {
-      username = await resolvePrAuthor(repoToken, owner, repo, prNumber);
-    } catch (err: unknown) {
-      core.setFailed(
-        `Failed to resolve PR author for #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return;
-    }
+  let username: string;
+  try {
+    username = await resolveUsername({
+      prSource,
+      commentAuthor,
+      prAuthor,
+      repoToken,
+      owner,
+      repo,
+      prNumber,
+    });
+  } catch (err: unknown) {
+    core.setFailed(
+      `Failed to resolve user for membership check on #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
+  if (!username) {
+    // No resolvable user — fail closed: do not authorize a review we can't attribute.
+    core.setOutput('is_member', 'false');
+    core.info('⏭️ Could not resolve a user to verify org membership — skipping review');
+    return;
   }
 
   try {

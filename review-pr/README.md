@@ -175,9 +175,12 @@ with:
 
 > **Built-in defense-in-depth:**
 >
-> 1. **Verifies org membership** before every review (auto-review checks the PR author; `/review` checks the commenter)
+> 1. **Verifies org membership** before every review. Comment/mention/reply triggers check the commenter; auto-review and `review_requested` check the PR author. Requesting a review from `docker-agent` in the sidebar additionally relies on GitHub-native enforcement (only users with triage/write access can request reviewers).
 > 2. **Prevents bot cascades** — replies from bots (except `docker-agent`) are ignored
-> 3. **Fork PRs work automatically** with the two-workflow setup — the trigger → `workflow_run` pattern provides OIDC/secret access regardless of fork status
+> 3. **Logs every review request** — one structured audit record per request (requester, time, trigger, PR, reviewed SHA, allow/deny/throttle decision) is emitted as a notice, a job-summary line, and a 90-day audit artifact, including on denial paths
+> 4. **Throttles rate anomalies** — per-PR `concurrency:` groups collapse same-trigger bursts, and a rate-limit check skips the review when too many requests land on one PR in a short window
+> 5. **Handles force-pushes** — when a PR is rebased/force-pushed after a review is requested, the review runs against the latest commit and the actually-reviewed SHA is recorded with a notice
+> 6. **Fork PRs work automatically** with the two-workflow setup — the trigger → `workflow_run` pattern provides OIDC/secret access regardless of fork status
 
 ### What you don't need to add
 
@@ -186,10 +189,13 @@ The workflow YAML examples above are the complete, recommended setup. The reusab
 | Protection | How it's handled |
 | ---------- | ---------------- |
 | **Bot comment filtering** | All jobs in the reusable workflow filter out `docker-agent`, `docker-agent[bot]`, any `Bot`-type user, and comments with `<!-- docker-agent-review -->`/`<!-- docker-agent-review-reply -->` markers. No caller-side filtering needed. |
-| **Org membership / authorization** | A `check-org-membership` step runs before any review work. PR authors and comment authors are verified as org members or collaborators via OIDC. Callers never need `author_association` checks. |
+| **Org membership / authorization** | A `check-org-membership` step runs before any review work. On comment/mention/reply triggers it verifies the commenter; on auto-review and `review_requested` it verifies the PR author (falling back to a live PR-author lookup when no author login is in the event). Callers never need `author_association` checks. |
 | **PR vs issue comment** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are silently ignored. |
 | **Draft PR skipping** | Draft PRs are skipped internally — no caller condition needed. |
 | **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |
+| **Rate-anomaly throttling** | Per-PR `concurrency:` groups serialize same-trigger bursts, and a rate-limit check skips the review when too many docker-agent review/reply comments land on one PR within the window. No caller configuration needed. |
+| **Review-request audit log** | Every request is recorded (notice + job summary + 90-day `pr-review-audit-*` artifact) with requester, trigger, PR, reviewed SHA, and the allow/deny/throttle decision — including denied and throttled requests. |
+| **Force-push handling** | The SHA a review was requested for is compared to the current head; the review runs against the latest commit and the reviewed SHA is recorded so a force-push mid-flight is visible rather than silent. |
 
 **The only decision callers make** is which setup pattern to use: 1-workflow for same-repo PRs, 2-workflow for repos that accept fork PRs. That distinction is the caller's responsibility because it controls which event path delivers OIDC credentials to the reusable workflow.
 
