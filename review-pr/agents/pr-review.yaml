@@ -211,14 +211,29 @@ agents:
          Do NOT approve — surface the raw findings so the author can evaluate them.
          Do NOT retry the delegation.
          (The fallback preserves the drafter's analysis for the author.)
-      6. Parse the verifier's JSON response (a `verdicts` array). Filter out DISMISSED verdicts and findings where
-         `in_changed_code == false` or `in_diff == false`.
-      7. **Verify line numbers** before posting (see below)
+      6. Parse the verifier's JSON response (a `verdicts` array). Drop verdicts that are out
+         of scope (`in_changed_code == false` or `in_diff == false`). Keep the rest — including
+         DISMISSED — and assign each a **confidence score** using the Confidence Scoring section
+         below. The score (not a manual judgment) decides each finding's disposition: posted
+         inline, listed in the lower-confidence summary, sent to the dismissed-security audit,
+         or dropped. Each verdict carries `evidence_strength` and `context_completeness` for this.
+      7. **Verify line numbers** before posting (see below) — only for findings you will post
+         inline or list in the summary.
       8. Apply the Decision Rules (see below) to determine the review verdict
-      9. Build inline comments from CONFIRMED/LIKELY issues using each finding's `issue`
-         (one-line summary), `details` (full explanation), `severity`, `category`, `file`,
-         and `line` fields. Post the review.
-      10. Always report ALL HIGH severity bugs. Limit MEDIUM/LOW to 5 comments max.
+      9. Build the review from the confidence dispositions (see Confidence Scoring → Posting policy):
+         - **Inline comments** — every finding whose disposition is `inline`. Each comment uses
+           the finding's `issue` (one-line summary), `details` (full explanation), `severity`,
+           `category`, `file`, `line`, and a confidence label, e.g. `confidence: moderate (68/100)`.
+         - **Lower-confidence summary** — weak-band non-forced findings (plus any pushed past the
+           comment cap), listed under "Lower-confidence findings (not posted inline)" with their
+           scores. Never silently drop these.
+         - **Dismissed security audit** — DISMISSED `security` findings, listed under "Dismissed
+           security findings (review manually)" citing the verifier's stated mitigation.
+         Then post the review.
+      10. Order inline comments by confidence, highest first. Forced comments (high-severity and
+          security CONFIRMED/LIKELY) are ALWAYS posted and never count against the cap. Among the
+          remaining (non-forced) inline comments, keep at most 5 (highest confidence first) and
+          move the overflow to the lower-confidence summary list.
 
       Find **real bugs in the changed code**, not style issues. If the changed code works correctly, approve it.
 
@@ -294,10 +309,74 @@ agents:
       (from the `-X,Y` side of the hunk header). Do NOT use `grep` to verify deleted
       lines — they are gone from the working tree.
 
+      ## Confidence Scoring (MANDATORY — strict lookup, not a judgment call)
+
+      Assign every surviving finding a **confidence score (0–100)**, a **band**, and a
+      **posting disposition**. This is a deterministic lookup, never a subjective guess. The
+      authoritative implementation is `src/score-confidence/score-confidence.ts`; the rules
+      below mirror it exactly and MUST stay in sync with it. Confidence answers "how sure are
+      we the bug is real" — a separate axis from `severity` ("how bad it is if real"); report both.
+
+      Inputs per finding: `verdict`, `evidence_strength`, `context_completeness` (all from the
+      verifier), the drafter vs verifier severity (for concordance), scope (`in_diff` AND
+      `in_changed_code`), and — for posting only — `category` (security) and verifier `severity` (high).
+
+      **Step 0 — scope gate.** If NOT (`in_diff` AND `in_changed_code`): score 0, band
+      negligible, do not surface. Stop.
+
+      **Step 1 — dismissed gate.** If `verdict` is DISMISSED: score 0, band negligible, never
+      post inline. (A DISMISSED `security` finding still goes to the audit list — see policy.) Stop.
+
+      **Step 2 — core subtotal (read ONE cell; do not add the parts yourself).**
+
+      | verdict / evidence         | full | partial | none |
+      | -------------------------- | ---- | ------- | ---- |
+      | CONFIRMED / direct         | 100  | 92      | 78   |
+      | CONFIRMED / circumstantial | 90   | 82      | 68   |
+      | CONFIRMED / speculative    | 78   | 70      | 56   |
+      | LIKELY / direct            | 70   | 62      | 48   |
+      | LIKELY / circumstantial    | 60   | 52      | 38   |
+      | LIKELY / speculative       | 48   | 40      | 26   |
+
+      **Step 3 — severity concordance (one addition).** Rank high=3, medium=2, low=1. Let
+      d = |drafterRank − verifierRank|. Add: d==0 → +5, d==1 → +0, d==2 → −8.
+
+      **Step 4 — clamp.** score = min(100, max(0, subtotal + concordance)).
+
+      **Step 5 — band.** strong: score ≥ 80; moderate: 55–79; weak: 30–54; negligible: < 30.
+      (Only CONFIRMED can reach strong; LIKELY tops out at 75.)
+
+      ### Posting policy (first match wins; the 5-comment cap is applied last)
+
+      1. Out-of-scope, or DISMISSED non-security → do not surface.
+      2. **Security floor** — `category` security AND `verdict` CONFIRMED/LIKELY → ALWAYS post
+         inline, whatever the score. Never auto-suppress a security finding. Exempt from the cap.
+      3. **High-severity always-post** — verifier `severity` high AND `verdict` CONFIRMED/LIKELY
+         → ALWAYS post inline, whatever the band. Exempt from the cap.
+      4. **Default** — band strong or moderate (score ≥ 55) → post inline.
+      5. **Weak band (30–54), non-forced** — do NOT post inline; list under "Lower-confidence
+         findings (not posted inline)" with the score.
+      6. **Medium-severity floor** — a non-forced finding in the negligible band (< 30) whose
+         verifier `severity` is `medium` is NOT dropped: list it in the lower-confidence summary.
+         (Confidence rewards drafter↔verifier severity agreement, so a one-notch disagreement can
+         push a finding down a band; this floor guarantees raising severity never makes a finding
+         *less* visible. Only negligible-band, low-severity findings are dropped entirely.)
+      7. **DISMISSED security** — do NOT post inline; list under "Dismissed security findings
+         (review manually)" citing the verifier's stated mitigation.
+      8. **Cap** — among inline comments from rule 4 that are NOT high-severity and NOT security,
+         keep at most 5 (highest score first; break ties by CONFIRMED before LIKELY, then higher
+         subtotal, then direct > circumstantial > speculative, then full > partial > none). Move
+         the rest to the rule-5 summary list. Forced comments (rules 2–3) never count against
+         the cap and are never displaced.
+
+      Label every inline comment with its confidence, e.g. `confidence: moderate (68/100)`.
+
       ## Decision Rules (MANDATORY — strict lookup, not a judgment call)
 
-      1. **Filter**: Remove findings where `in_changed_code == false` or `in_diff == false`
-      2. **Classify** (for informational labeling in the review summary):
+      1. **Filter**: Consider only findings whose confidence disposition is `inline` (see
+         Confidence Scoring). Out-of-scope, dropped, summary-only, and audit-only findings do
+         NOT drive the assessment label.
+      2. **Classify** the inline findings (for informational labeling in the review summary):
          - CRITICAL = high severity CONFIRMED/LIKELY
          - NOTABLE = medium severity CONFIRMED/LIKELY
          - MINOR = everything else
@@ -348,9 +427,16 @@ agents:
       ## Review: COMMENT
       ### Assessment: [🟢 APPROVE|🟡 NEEDS ATTENTION|🔴 CRITICAL]
       ### Findings
-      **[SEVERITY] file:line — issue**
+      **[SEVERITY] file:line — issue** (confidence: BAND SCORE/100)
       details
+
+      ### Lower-confidence findings (not posted inline)
+      - [SEVERITY] file:line — issue (confidence: weak SCORE/100)
+
+      ### Dismissed security findings (review manually)
+      - file:line — issue (verifier mitigation: …)
       ```
+      Omit the "Lower-confidence" and "Dismissed security" sections when they have no entries.
 
     sub_agents:
       - drafter
@@ -741,6 +827,24 @@ agents:
         expressed without changing its behavior (e.g. `os.Remove(x)` → `_ = fileutil.Remove(x)`
         does not introduce the discarded error; a move/rename/wrap refactor introduces
         nothing). "Touched by the diff" is not the same as "introduced by the diff."
+      - `evidence_strength`: How strongly the provided code snippet ITSELF shows the bug.
+        - `direct`: the buggy line is in the snippet and the defect is visible right there.
+        - `circumstantial`: the snippet shows related or calling code, but not the defect itself.
+        - `speculative`: the snippet does not pin the bug; you are reasoning about code you cannot see.
+      - `context_completeness`: How complete the code context was for your judgment.
+        - `full`: every symbol/definition you needed to decide was present in the provided snippets.
+        - `partial`: you had to assume the behavior of some referenced code you could not see.
+        - `none`: the key code needed to confirm the bug was not retrievable from the snippet.
+
+      **Disjointness rule (REQUIRED):** if `context_completeness` is `none` you MUST NOT set
+      `evidence_strength` to `direct` — without the defining context you cannot have direct
+      evidence. Keep the two axes independent; do not collapse one into the other.
+
+      `evidence_strength` and `context_completeness` feed the deterministic confidence score
+      the orchestrator computes (see its "Confidence Scoring" section). Assign them honestly:
+      over-claiming `direct`/`full` inflates confidence, while reflexive `speculative`/`none`
+      hedging suppresses real bugs. They do not change your `verdict` — verify exactly as
+      before, then describe the evidence you actually had.
 
     structured_output:
       name: verification_verdicts
@@ -772,6 +876,14 @@ agents:
                   description: "Explanation of verdict"
                 in_changed_code:
                   type: boolean
+                evidence_strength:
+                  type: string
+                  enum: ["direct", "circumstantial", "speculative"]
+                  description: "How strongly the cited snippet itself shows the bug"
+                context_completeness:
+                  type: string
+                  enum: ["full", "partial", "none"]
+                  description: "How complete the code context was when judging"
               required:
                 [
                   "verdict",
@@ -781,6 +893,8 @@ agents:
                   "issue",
                   "details",
                   "in_changed_code",
+                  "evidence_strength",
+                  "context_completeness",
                 ]
               additionalProperties: false
         required: ["verdicts"]
