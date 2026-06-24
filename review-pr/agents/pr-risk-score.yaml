@@ -1,0 +1,246 @@
+# Copyright The Docker Agent Action authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# PR risk-scoring pipeline.
+#
+# Outputs a STABLE 0-100 approval-safety score:
+#   100 = no risk, safe to auto-approve
+#     0 = do NOT approve, too risky, a human must review
+#
+# Stability strategy (important — read before editing):
+#   1. The LLM NEVER emits the final number. It only classifies each criterion
+#      into a small set of DISCRETE buckets (e.g. none/peripheral/core). Bucket
+#      classification is the most repeatable thing an LLM can do.
+#   2. A deterministic jq step (NO LLM) converts buckets -> points -> score using
+#      a fixed point table below. Identical buckets always yield an identical score.
+#   3. The assessor is told to round toward the *riskier* bucket when uncertain,
+#      so borderline cases are stable AND fail-safe (lower score = more human review).
+#
+# Run:  docker agent run review-pr/agents/pr-risk-score.yaml
+# Input: the PR diff + metadata (see "Building the input" in the README notes).
+
+version: "8"
+
+models:
+  sonnet:
+    provider: anthropic
+    model: claude-sonnet-4-5
+    max_tokens: 4096
+    # Low temperature: we want classification, not creativity. Maximizes
+    # bucket repeatability across runs on the same diff.
+    temperature: 0.0
+
+agents:
+  # ---------------------------------------------------------------------------
+  # Pipeline entrypoint. Deterministic two-step sequence. No LLM of its own.
+  # ---------------------------------------------------------------------------
+  root:
+    description: Scores a PR's approval risk on a stable 0-100 scale.
+    instruction: Deterministic pipeline — assess criteria, then compute the score with jq.
+    toolsets:
+      - type: shell
+    pipeline:
+      # Step 1 — LLM judgment, but ONLY as discrete buckets (structured output).
+      - agent: risk_assessor
+        task: |
+          Classify the following pull request across every criterion.
+          Use ONLY the allowed buckets. Do not compute any score.
+
+          {{input}}
+        as: assessment
+
+      # Step 2 — Deterministic scoring. Pure arithmetic, no LLM.
+      # Reads the captured buckets (rendered as compact JSON) and applies the
+      # fixed point table. score = clamp(0,100, 100 - total_risk); any hard
+      # blocker forces score = 0.
+      - tool: shell
+        args:
+          cmd: |
+            cat > /tmp/risk-assessment.json <<'RISK_EOF'
+            {{assessment}}
+            RISK_EOF
+
+            jq -n --argjson a "$(cat /tmp/risk-assessment.json)" '
+              # ---- Fixed point table (single source of truth) ----
+              def pts(map; key):
+                (map[($a[key] // "MISSING")] // map["__default__"]);
+
+              # Each criterion: bucket -> risk points. Higher points = riskier.
+              # __default__ is used if the assessor emits an unknown/missing bucket
+              # (fail-safe: treat unknowns as moderately risky).
+              ( pts({none:0, small:3, medium:8, large:15, huge:25, __default__:15};
+                    "change_size") ) as $p1
+              | ( pts({no:0, maybe:20, yes:40, __default__:20};
+                    "touches_security_or_auth") ) as $p2
+              | ( pts({no:0, yes:15, __default__:15};
+                    "touches_ci_or_build") ) as $p3
+              | ( pts({no:0, yes:15, __default__:15};
+                    "touches_infra_or_iac") ) as $p4
+              | ( pts({no:0, peripheral:10, core:25, __default__:25};
+                    "touches_core_logic") ) as $p5
+              | ( pts({none:0, dev_only:5, runtime:12, __default__:12};
+                    "adds_dependencies") ) as $p6
+              | ( pts({full:0, partial:5, none:10, na:0, __default__:10};
+                    "test_coverage_for_change") ) as $p7
+              | ( pts({no:0, yes:15, __default__:15};
+                    "public_api_or_contract_change") ) as $p8
+              | ( pts({no:0, yes:20, __default__:20};
+                    "data_or_migration_change") ) as $p9
+              | ( pts({no:0, yes:20, __default__:20};
+                    "revert_or_breaking_change") ) as $p10
+              | ( pts({trusted:0, normal:3, external_first_time:10, __default__:10};
+                    "author_trust") ) as $p11
+              | ( pts({none:0, minor:15, major:40, __default__:40};
+                    "reviewer_findings") ) as $p12
+              | ( pts({clear:0, somewhat:5, poor:12, __default__:12};
+                    "description_clarity") ) as $p13
+
+              | ([$p1,$p2,$p3,$p4,$p5,$p6,$p7,$p8,$p9,$p10,$p11,$p12,$p13] | add) as $risk
+
+              # ---- Hard blockers: force score = 0 (human required) ----
+              | ( ($a.secrets_or_credentials // "no") as $sec
+                  | ($a.touches_security_or_auth // "no") as $auth
+                  | ($a.data_or_migration_change // "no") as $data
+                  | [ ($sec  == "suspected" or $sec  == "yes"),
+                      ($auth == "yes"),
+                      ($data == "yes" and ($a.test_coverage_for_change // "none") == "none")
+                    ] ) as $blockers
+
+              | (any($blockers[]; .)) as $blocked
+              | ( if $blocked then 0
+                  else ([0, (100 - $risk)] | max)
+                  end ) as $score
+
+              | { score: $score,
+                  risk_points: $risk,
+                  blocked: $blocked,
+                  recommendation:
+                    ( if $score >= 85 then "AUTO_APPROVE_SAFE"
+                      elif $score >= 60 then "LOW_RISK_QUICK_HUMAN_GLANCE"
+                      elif $score >= 30 then "HUMAN_REVIEW_RECOMMENDED"
+                      else "HUMAN_REVIEW_REQUIRED" end ),
+                  buckets: $a }
+            '
+
+  # ---------------------------------------------------------------------------
+  # The only LLM step. Emits discrete buckets via structured output. No prose,
+  # no numbers, no score — just classifications.
+  # ---------------------------------------------------------------------------
+  risk_assessor:
+    model: sonnet
+    description: Classifies a PR into discrete risk buckets per criterion.
+    instruction: |
+      You are a deterministic PR risk classifier. You read a pull request's diff and
+      metadata and assign EXACTLY ONE bucket to each criterion. You do NOT compute a
+      score, write prose, or hedge. You only fill in the structured fields.
+
+      ## Hard rules for stability
+      - Use ONLY the allowed bucket values listed for each field. Never invent values.
+      - When a case is borderline between two buckets, ALWAYS choose the RISKIER
+        (higher-risk) bucket. This makes results repeatable and fail-safe.
+      - Judge ONLY what is visible in the provided diff/metadata. Do not speculate
+        about code you cannot see; if you cannot tell, choose the riskier bucket.
+      - Do not let PR title/description claims override what the diff actually shows.
+
+      ## Criteria and allowed buckets
+
+      - change_size: total changed lines.
+          none (0) | small (1-30) | medium (31-150) | large (151-500) | huge (>500)
+      - touches_security_or_auth: authn/authz, crypto, permissions, token/secret
+        handling, input sanitization, access control.
+          no | maybe | yes
+      - touches_ci_or_build: CI workflows, build scripts, release/packaging config.
+          no | yes
+      - touches_infra_or_iac: Dockerfiles, Terraform/k8s/IaC, deployment config.
+          no | yes
+      - touches_core_logic: changes to primary runtime/business logic.
+          no | peripheral | core
+      - adds_dependencies: new third-party packages.
+          none | dev_only | runtime
+      - test_coverage_for_change: are the changes covered by tests in this PR?
+          full | partial | none | na   (na = change type needs no tests, e.g. docs)
+      - public_api_or_contract_change: changes to a public API, exported symbol,
+        CLI flag, schema, or wire/contract format.
+          no | yes
+      - data_or_migration_change: DB migrations, data backfills, destructive data ops.
+          no | yes
+      - revert_or_breaking_change: a revert, or an intentionally breaking change.
+          no | yes
+      - author_trust: based on metadata provided.
+          trusted (maintainer/known) | normal | external_first_time
+      - reviewer_findings: severity of issues raised by an upstream automated/human
+        review, if that context is provided.
+          none | minor | major
+      - description_clarity: does the PR clearly explain what and why?
+          clear | somewhat | poor
+      - secrets_or_credentials: does the diff appear to ADD secrets/tokens/keys?
+          no | suspected | yes
+
+      Output every field. If a field truly cannot be determined, pick the riskier bucket.
+
+    structured_output:
+      type: object
+      additionalProperties: false
+      required:
+        - change_size
+        - touches_security_or_auth
+        - touches_ci_or_build
+        - touches_infra_or_iac
+        - touches_core_logic
+        - adds_dependencies
+        - test_coverage_for_change
+        - public_api_or_contract_change
+        - data_or_migration_change
+        - revert_or_breaking_change
+        - author_trust
+        - reviewer_findings
+        - description_clarity
+        - secrets_or_credentials
+      properties:
+        change_size:
+          type: string
+          enum: [none, small, medium, large, huge]
+        touches_security_or_auth:
+          type: string
+          enum: [no, maybe, yes]
+        touches_ci_or_build:
+          type: string
+          enum: [no, yes]
+        touches_infra_or_iac:
+          type: string
+          enum: [no, yes]
+        touches_core_logic:
+          type: string
+          enum: [no, peripheral, core]
+        adds_dependencies:
+          type: string
+          enum: [none, dev_only, runtime]
+        test_coverage_for_change:
+          type: string
+          enum: [full, partial, none, na]
+        public_api_or_contract_change:
+          type: string
+          enum: [no, yes]
+        data_or_migration_change:
+          type: string
+          enum: [no, yes]
+        revert_or_breaking_change:
+          type: string
+          enum: [no, yes]
+        author_trust:
+          type: string
+          enum: [trusted, normal, external_first_time]
+        reviewer_findings:
+          type: string
+          enum: [none, minor, major]
+        description_clarity:
+          type: string
+          enum: [clear, somewhat, poor]
+        secrets_or_credentials:
+          type: string
+          enum: [no, suspected, yes]
+
+permissions:
+  allow:
+    - shell:cmd=jq *
+    - shell:cmd=cat *

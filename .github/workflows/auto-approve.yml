@@ -1,0 +1,152 @@
+# Copyright The Docker Agent Action authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Standalone, self-contained PR risk-score + auto-approve reusable workflow.
+#
+# Flow:  build PR context -> pr-risk-score (stable 0-100) -> pr-classify-approve
+# The approver submits a GitHub APPROVE review ONLY when:
+#   - the deterministic risk score >= approve-threshold (default 85), AND
+#   - no hard blocker fired (secrets / auth / unsafe migration).
+# Otherwise it does nothing and the PR is left for a human.
+#
+# This workflow is intentionally decoupled from the heavyweight review-pr.yml
+# pipeline (no AWS/OIDC/github-app machinery). A consumer only needs ONE secret:
+# an Anthropic API key. Call it from a consumer repo like:
+#
+#   jobs:
+#     auto-approve:
+#       uses: docker/docker-agent-action/.github/workflows/auto-approve.yml@feat/risk-score-auto-approve
+#       permissions:
+#         contents: read
+#         pull-requests: write
+#       secrets:
+#         anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+name: PR Risk Score + Auto-Approve
+
+on:
+  workflow_call:
+    inputs:
+      approve-threshold:
+        description: "Minimum risk score (0-100) required to auto-approve."
+        type: number
+        required: false
+        default: 85
+      action-ref:
+        description: "Git ref of docker/docker-agent-action holding the agents + action."
+        type: string
+        required: false
+        default: feat/risk-score-auto-approve
+    secrets:
+      anthropic-api-key:
+        description: "Anthropic API key for the scoring + approval agents."
+        required: true
+
+jobs:
+  score-and-approve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_FROM_EVENT: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -n "$PR_FROM_EVENT" ]; then
+            echo "number=$PR_FROM_EVENT" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::This workflow must be triggered by a pull_request event."
+            exit 1
+          fi
+
+      - name: Checkout agent definitions
+        uses: actions/checkout@v4
+        with:
+          repository: docker/docker-agent-action
+          ref: ${{ inputs.action-ref }}
+          path: .docker-agent-action
+
+      - name: Build PR context
+        id: ctx
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json title,body,author,additions,deletions,files \
+            > /tmp/pr-meta.json
+          gh pr diff "$PR_NUMBER" --repo "$REPO" > /tmp/pr.diff || true
+
+          {
+            echo "Classify the following pull request across every criterion."
+            echo "Use ONLY the allowed buckets. Do not compute any score."
+            echo
+            echo "## PR metadata"
+            cat /tmp/pr-meta.json
+            echo
+            echo "## Unified diff"
+            echo '```diff'
+            head -c 200000 /tmp/pr.diff
+            echo '```'
+          } > /tmp/risk-input.txt
+
+      - name: Risk score
+        id: score
+        uses: docker/docker-agent-action@feat/risk-score-auto-approve
+        with:
+          agent: .docker-agent-action/review-pr/agents/pr-risk-score.yaml
+          prompt: "Score this PR using the attached context file. Output the final JSON score object."
+          add-prompt-files: /tmp/risk-input.txt
+          anthropic-api-key: ${{ secrets.anthropic-api-key }}
+          yolo: "true"
+
+      - name: Parse score
+        id: parse
+        env:
+          OUTPUT_FILE: ${{ steps.score.outputs.output-file }}
+        run: |
+          # The pr-risk-score pipeline prints a JSON object containing
+          # {"score":N,"risk_points":N,"blocked":bool,...} as its final result.
+          # Extract the LAST JSON object that has a numeric "score" field.
+          SCORE=""
+          BLOCKED=""
+          if [ -f "$OUTPUT_FILE" ]; then
+            # Pull every {...} blob, keep ones with a "score" key, take the last.
+            JSON=$(grep -oE '\{[^{}]*"score"[^{}]*\}' "$OUTPUT_FILE" | tail -n1 || true)
+            if [ -n "$JSON" ]; then
+              SCORE=$(printf '%s' "$JSON" | jq -r '.score // empty' 2>/dev/null || true)
+              BLOCKED=$(printf '%s' "$JSON" | jq -r '.blocked // false' 2>/dev/null || true)
+            fi
+          fi
+          # Fail safe: if we could not parse a score, treat as max risk / blocked.
+          if ! printf '%s' "$SCORE" | grep -qE '^[0-9]+$'; then
+            echo "::warning::Could not parse a numeric risk score; defaulting to 0 (human required)."
+            SCORE=0
+            BLOCKED=true
+          fi
+          [ "$BLOCKED" = "true" ] || BLOCKED=false
+          echo "score=$SCORE" >> "$GITHUB_OUTPUT"
+          echo "blocked=$BLOCKED" >> "$GITHUB_OUTPUT"
+          echo "Parsed risk score=$SCORE blocked=$BLOCKED"
+
+      - name: Auto-approve
+        uses: docker/docker-agent-action@feat/risk-score-auto-approve
+        with:
+          agent: .docker-agent-action/review-pr/agents/pr-classify-approve.yaml
+          prompt: |
+            REPO=${{ github.repository }}
+            PR_NUMBER=${{ steps.pr.outputs.number }}
+            REVIEW_EXIT_CODE=0
+            RISK_SCORE=${{ steps.parse.outputs.score }}
+            RISK_BLOCKED=${{ steps.parse.outputs.blocked }}
+            APPROVE_THRESHOLD=${{ inputs.approve-threshold }}
+
+            Enforce the gates and approve only if all pass.
+          anthropic-api-key: ${{ secrets.anthropic-api-key }}
+          github-token: ${{ github.token }}
+          yolo: "true"
