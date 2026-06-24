@@ -394,73 +394,15 @@ jobs:
             });
             core.setOutput('check-id', check.id);
 
-      - name: Checkout PR head
-        if: |
-          steps.membership.outputs.is_member == 'true' &&
-          steps.command.outputs.is_review != 'false' &&
-          steps.draft.outputs.skip != 'true' &&
-          steps.rate.outputs.anomalous != 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-          ref: refs/pull/${{ steps.pr.outputs.number }}/head
-
-      - name: Run PR Review
-        if: |
-          steps.membership.outputs.is_member == 'true' &&
-          steps.command.outputs.is_review != 'false' &&
-          steps.draft.outputs.skip != 'true' &&
-          steps.rate.outputs.anomalous != 'true'
-        id: run-review
-        continue-on-error: true
-        uses: docker/docker-agent-action/review-pr@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
-        with:
-          pr-number: ${{ steps.pr.outputs.number }}
-          comment-id: ${{ inputs.comment-id || github.event.comment.id }}
-          additional-prompt: ${{ inputs.additional-prompt }}
-          add-prompt-files: ${{ inputs.add-prompt-files }}
-          exclude-paths: ${{ inputs.exclude-paths }}
-          max-diff-lines: ${{ inputs.max-diff-lines }}
-          model: ${{ inputs.model }}
-          github-token: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM || secrets.ANTHROPIC_API_KEY }}
-          openai-api-key: ${{ env.OPENAI_API_KEY_FROM_SSM || secrets.OPENAI_API_KEY }}
-          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
-          aws-bearer-token-bedrock: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-          xai-api-key: ${{ secrets.XAI_API_KEY }}
-          nebius-api-key: ${{ secrets.NEBIUS_API_KEY }}
-          mistral-api-key: ${{ secrets.MISTRAL_API_KEY }}
-          skip-auth: "true"
-
-      - name: Update check run
-        if: always() && steps.create-check.outputs.check-id != ''
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          CHECK_ID: ${{ steps.create-check.outputs.check-id }}
-          JOB_STATUS: ${{ job.status }}
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const conclusion = process.env.JOB_STATUS === 'cancelled' ? 'cancelled' : process.env.JOB_STATUS === 'success' ? 'success' : 'failure';
-            try {
-              await github.rest.checks.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                check_run_id: parseInt(process.env.CHECK_ID, 10),
-                status: 'completed',
-                conclusion: conclusion,
-                completed_at: new Date().toISOString()
-              });
-            } catch (error) {
-              core.warning(`Failed to update check run: ${error.message}`);
-            }
-
       # Audit safeguard: emit one structured record per review request that joins
       # the requester, time, trigger, PR, reviewed SHA, and the authorize/deny/
       # throttle decision. Runs on the allow AND deny paths so denied, throttled,
       # and stale requests are all recorded, not just successful ones. If
       # setup-credentials failed (no dist bundle / DOCKER_AGENT_ACTION_ROOT), the
       # record is still emitted inline so even infra-failure denials are logged.
+      # Placed BEFORE "Checkout PR head" on purpose: the decision is fully known by
+      # now, and keeping this run-step ahead of the untrusted checkout avoids an
+      # execute-after-untrusted-checkout (TOCTOU) pattern.
       - name: Audit review request
         if: |
           always() &&
@@ -533,6 +475,67 @@ jobs:
           path: ${{ runner.temp }}/review-audit/
           retention-days: 90
           if-no-files-found: ignore
+
+      - name: Checkout PR head
+        if: |
+          steps.membership.outputs.is_member == 'true' &&
+          steps.command.outputs.is_review != 'false' &&
+          steps.draft.outputs.skip != 'true' &&
+          steps.rate.outputs.anomalous != 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: refs/pull/${{ steps.pr.outputs.number }}/head
+
+      - name: Run PR Review
+        if: |
+          steps.membership.outputs.is_member == 'true' &&
+          steps.command.outputs.is_review != 'false' &&
+          steps.draft.outputs.skip != 'true' &&
+          steps.rate.outputs.anomalous != 'true'
+        id: run-review
+        continue-on-error: true
+        uses: docker/docker-agent-action/review-pr@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        with:
+          pr-number: ${{ steps.pr.outputs.number }}
+          comment-id: ${{ inputs.comment-id || github.event.comment.id }}
+          additional-prompt: ${{ inputs.additional-prompt }}
+          add-prompt-files: ${{ inputs.add-prompt-files }}
+          exclude-paths: ${{ inputs.exclude-paths }}
+          max-diff-lines: ${{ inputs.max-diff-lines }}
+          model: ${{ inputs.model }}
+          github-token: ${{ env.GITHUB_APP_TOKEN || github.token }}
+          anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM || secrets.ANTHROPIC_API_KEY }}
+          openai-api-key: ${{ env.OPENAI_API_KEY_FROM_SSM || secrets.OPENAI_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+          aws-bearer-token-bedrock: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          xai-api-key: ${{ secrets.XAI_API_KEY }}
+          nebius-api-key: ${{ secrets.NEBIUS_API_KEY }}
+          mistral-api-key: ${{ secrets.MISTRAL_API_KEY }}
+          skip-auth: "true"
+
+      - name: Update check run
+        if: always() && steps.create-check.outputs.check-id != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CHECK_ID: ${{ steps.create-check.outputs.check-id }}
+          JOB_STATUS: ${{ job.status }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const conclusion = process.env.JOB_STATUS === 'cancelled' ? 'cancelled' : process.env.JOB_STATUS === 'success' ? 'success' : 'failure';
+            try {
+              await github.rest.checks.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                check_run_id: parseInt(process.env.CHECK_ID, 10),
+                status: 'completed',
+                conclusion: conclusion,
+                completed_at: new Date().toISOString()
+              });
+            } catch (error) {
+              core.warning(`Failed to update check run: ${error.message}`);
+            }
 
   reply-to-feedback:
     needs: [resolve-context]
