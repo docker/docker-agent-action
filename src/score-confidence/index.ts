@@ -9,8 +9,10 @@
  *
  *   findingsPath  Path to a JSON file holding an array of merged finding records
  *                 (drafter hypothesis + verifier verdict). Read-only.
- *   outputPath    Where to write the confidence report JSON
- *                 (default: /tmp/finding_confidence.json).
+ *   outputPath    Optional. When given, the confidence report JSON is written to
+ *                 this caller-controlled path; otherwise it is written to stdout
+ *                 (the default — keeps the tool composable and avoids writing to a
+ *                 fixed temp location).
  *
  * Each input record uses the agent's snake_case field names:
  *   {
@@ -35,8 +37,6 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { type FindingInput, scoreFindings } from './score-confidence.js';
-
-const DEFAULT_OUTPUT_PATH = '/tmp/finding_confidence.json';
 
 /** Map one snake_case input record to the camelCase {@link FindingInput} shape. */
 function parseRecord(raw: Record<string, unknown>, index: number): FindingInput {
@@ -63,7 +63,7 @@ function parseRecord(raw: Record<string, unknown>, index: number): FindingInput 
 }
 
 function main(): void {
-  const [, , findingsPath, outputPath = DEFAULT_OUTPUT_PATH] = process.argv;
+  const [, , findingsPath, outputPath] = process.argv;
 
   if (!findingsPath) {
     process.stderr.write('Usage: score-confidence <findingsPath> [outputPath]\n');
@@ -98,7 +98,14 @@ function main(): void {
     dropped: project(report.dropped),
   };
 
-  writeFileSync(outputPath, JSON.stringify(output), 'utf-8');
+  const json = JSON.stringify(output);
+  // Default to stdout (composable, no fixed temp path); write to a file only when
+  // the caller supplies an explicit, caller-controlled output path.
+  if (outputPath) {
+    writeFileSync(outputPath, json, 'utf-8');
+  } else {
+    process.stdout.write(`${json}\n`);
+  }
 }
 
 try {
