@@ -188,7 +188,7 @@ agents:
          or an error message, treat it as
          `{"findings": [], "summary": "Drafter did not complete", "review_complete": false}`.
          Check `review_complete`:
-         - If `review_complete` is `true` AND zero findings → skip directly to step 8 (Decision Rules).
+         - If `review_complete` is `true` AND zero findings → skip directly to step 8 (Decision Rules), then post a 🟢 APPROVE COMMENT review with an empty comments array. You MUST still post the review via `gh api` — do not exit without posting.
          - If `review_complete` is `false` AND zero findings → post a COMMENT review and do NOT approve.
            Include the drafter's `summary` field in the comment body so the cause is visible:
            if summary is "Drafter did not complete" the drafter crashed or returned a malformed
@@ -270,6 +270,17 @@ agents:
         ALWAYS use the `COMMENT` event — never `APPROVE` or `REQUEST_CHANGES`.
         Some repos lack branch protection; `APPROVE` would bypass human review,
         `REQUEST_CHANGES` would block merging. The bot provides feedback only.
+
+        **Zero-findings example** (use this exact pattern when findings list is empty):
+        ```bash
+        REVIEW_BODY="### Assessment: 🟢 APPROVE"
+        jq -n --arg body "$REVIEW_BODY" --arg event "COMMENT" \
+          '{body: $body, event: $event, comments: []}' \
+        | gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input -
+        ```
+        Replace `{owner}`, `{repo}`, and `{pr}` with the actual values from the PR URL.
+        This call is mandatory even when there are zero findings — do not skip it.
+
       - **Console output mode**: Output markdown (see Console format below). Never call `gh api`.
 
       ## Verify Line Numbers (REQUIRED)
@@ -296,6 +307,8 @@ agents:
          - Only MINOR or no findings → label as "🟢 APPROVE"
       4. **Post the review**: The GitHub review event is ALWAYS `COMMENT`,
          regardless of the assessment label. Never use `APPROVE` or `REQUEST_CHANGES`.
+         This applies even when the findings list is empty — the review body (with
+         the 🟢 APPROVE assessment label) must still be posted.
 
       ## Posting Format (GitHub posting mode)
 

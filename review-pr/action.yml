@@ -870,6 +870,22 @@ runs:
           fi
         else
           STATUS="✅ **Review completed**"
+          # Defense-in-depth: if the log exists but no review was posted, post a fallback LGTM comment.
+          # This guards against the agent exiting 0 without calling gh api (e.g., zero-findings early exit).
+          if [ -n "$VERBOSE_LOG_FILE" ] && [ -f "$VERBOSE_LOG_FILE" ] && ! grep -qE 'pullrequestreview-[0-9]+' "$VERBOSE_LOG_FILE" 2>/dev/null; then
+            # Dedup guard: skip posting if an identical fallback comment already exists.
+            EXISTING=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
+              --jq '[.[] | select(.body | startswith("🟢 **No issues found**"))] | length' \
+              2>/dev/null || echo "0")
+            if [ "${EXISTING:-0}" -gt 0 ]; then
+              echo "ℹ️  Fallback LGTM comment already exists — skipping duplicate post"
+            else
+              echo "::warning::Agent exited 0 but no review was posted — posting fallback LGTM comment"
+              gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
+                -f body="🟢 **No issues found** — LGTM! [View logs]($RUN_URL)." 2>&1 || \
+                echo "::warning::Failed to post fallback LGTM comment to PR"
+            fi
+          fi
         fi
 
         # Override the default summary with a cleaner one for PR reviews
