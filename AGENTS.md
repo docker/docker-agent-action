@@ -30,7 +30,7 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   ├── add-reaction/                # Adds emoji reactions to issue/PR comments.
 │   │   ├── index.ts                 # Entry → bundled to dist/add-reaction.js
 │   │   └── __tests__/
-│   ├── check-org-membership/        # Verifies a user belongs to a GitHub org; also resolves PR author via pulls.get.
+│   ├── check-org-membership/        # Authorizes a review: auto-run on PR-author membership, review_requested on the (trusted, timeline-derived) requester. Resolves PR author via pulls.get.
 │   │   ├── index.ts                 # Entry → bundled to dist/check-org-membership.js (standalone CLI + library).
 │   │   └── __tests__/
 │   ├── credentials/                 # Fetches AWS secrets via OIDC, exports PAT and AI keys.
