@@ -42,8 +42,8 @@ cd tests
 
 This repo uses the `docker-agent` AI reviewer on pull requests. How a review is triggered depends on who opened the PR:
 
-- **Org members:** a review runs automatically when the PR is opened or marked ready for review. Re-request a review from `docker-agent` in the sidebar to re-run it.
-- **External / fork contributors:** the PR is not reviewed automatically. An org member gets it reviewed in two steps:
+- **Org members:** request a review from `docker-agent` in the PR sidebar (Reviewers → add `docker-agent`). The review starts automatically once requested.
+- **External / fork contributors:** the same request step applies, but GitHub gates Actions on these PRs, so an org member must also approve the workflow run first:
   1. **Approve the workflow run.** GitHub holds workflows on PRs from first-time and external contributors until a maintainer clicks **Approve and run workflows**.
   2. **Request the review.** In the PR sidebar, under **Reviewers**, add `docker-agent`. The review starts and appears as a check run.
 
