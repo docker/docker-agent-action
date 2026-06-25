@@ -290,7 +290,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     totalAttempt++;
 
     if (totalAttempt > 1) {
-      core.info(`🔄 Retry attempt ${totalAttempt - 1} (waiting ${currentDelay}s)...`);
+      const retryLabel =
+        exitCode === TIMEOUT_EXIT_CODE
+          ? `Timeout retry ${timeoutRetryCount} of ${opts.retryOnTimeout}`
+          : `Retry ${failureRetryCount} of ${opts.maxRetries}`;
+      core.info(`🔄 ${retryLabel} (waiting ${currentDelay}s)...`);
       await sleep(currentDelay);
       currentDelay *= 2;
 

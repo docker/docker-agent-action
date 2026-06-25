@@ -881,10 +881,10 @@ runs:
             # (prior runs posted to /issues/comments; this prevents a duplicate on the first
             # run of this new code against PRs that already received an LGTM issue comment).
             EXISTING=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" \
-              --jq '[.[] | select(.body | startswith("🟢 **No issues found**"))] | length' \
+              --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
               2>/dev/null || echo "0")
             EXISTING_OLD=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq '[.[] | select(.body | startswith("🟢 **No issues found**"))] | length' \
+              --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
               2>/dev/null || echo "0")
             if [ "${EXISTING:-0}" -gt 0 ] || [ "${EXISTING_OLD:-0}" -gt 0 ]; then
               echo "ℹ️  Fallback LGTM review already exists — skipping duplicate post"
