@@ -278,15 +278,20 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
 
   const startTime = Date.now();
   let exitCode = 1;
-  let attempt = 0;
+  let totalAttempt = 0;
+  // Track the two retry budgets independently so mixed-failure sequences
+  // (e.g. a non-timeout failure followed by a timeout) consume only from
+  // the correct budget and never silently exhaust the other.
+  let failureRetryCount = 0;
+  let timeoutRetryCount = 0;
   let currentDelay = opts.retryDelay;
 
   while (true) {
-    attempt++;
+    totalAttempt++;
 
-    if (attempt > 1) {
+    if (totalAttempt > 1) {
       core.info(
-        `🔄 Retry attempt ${attempt - 1} of ${opts.maxRetries} (waiting ${currentDelay}s)...`,
+        `🔄 Retry attempt ${totalAttempt - 1} (waiting ${currentDelay}s)...`,
       );
       await sleep(currentDelay);
       currentDelay *= 2;
@@ -294,7 +299,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       // Reset verbose log separator for retry
       const separator = [
         '',
-        `========== RETRY ATTEMPT ${attempt} (${new Date().toISOString()}) ==========`,
+        `========== RETRY ATTEMPT ${totalAttempt} (${new Date().toISOString()}) ==========`,
         '',
       ].join(os.EOL);
       fs.appendFileSync(opts.verboseLogFile, separator, 'utf-8');
@@ -322,17 +327,20 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
 
     if (exitCode === TIMEOUT_EXIT_CODE) {
       core.error(`Agent execution timed out after ${opts.timeout} seconds`);
-      if (opts.retryOnTimeout <= 0 || attempt > opts.retryOnTimeout) {
-        break; // No more timeout retries
+      if (timeoutRetryCount >= opts.retryOnTimeout) {
+        break; // Timeout retry budget exhausted
       }
+      timeoutRetryCount++;
       core.warning(
-        `Timeout on attempt ${attempt} — will retry (${attempt}/${opts.retryOnTimeout} timeout retries used)`,
+        `Timeout — will retry (${timeoutRetryCount}/${opts.retryOnTimeout} timeout retries used)`,
       );
-      // fall through to shared retry path below
-    } else if (attempt > opts.maxRetries) {
-      core.warning(`Agent failed after ${opts.maxRetries} retries (exit code: ${exitCode})`);
-      break;
+      // fall through to retry
     } else {
+      if (failureRetryCount >= opts.maxRetries) {
+        core.warning(`Agent failed after ${opts.maxRetries} retries (exit code: ${exitCode})`);
+        break;
+      }
+      failureRetryCount++;
       core.warning(`Agent failed (exit code: ${exitCode}), will retry...`);
     }
   }

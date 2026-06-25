@@ -282,6 +282,24 @@ describe('runAgent', () => {
     expect(mockSpawn).toHaveBeenCalledTimes(2);
   });
 
+  it('timeout retry budget is independent of failure retry budget (mixed sequence)', async () => {
+    // Attempt 1: normal failure — consumes one failureRetryCount slot
+    // Attempt 2: timeout — should still get its own retryOnTimeout=1 slot
+    // Attempt 3: success
+    mockSpawn
+      .mockImplementationOnce(() => makeMockChild(1))            // failure
+      .mockImplementationOnce(() => makeMockChild(TIMEOUT_EXIT_CODE)) // timeout
+      .mockImplementation(() => makeMockChild(0));               // success
+
+    const result = await runAgent(
+      baseOpts({ maxRetries: 1, retryDelay: 0, retryOnTimeout: 1 }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    // failure retry + timeout retry + final success = 3 spawns
+    expect(mockSpawn).toHaveBeenCalledTimes(3);
+  });
+
   it('kills process with SIGTERM when timeout fires (FIX D)', async () => {
     // Child exits naturally in 5 s; action timeout is 50 ms.
     // The real timer path fires SIGTERM, then the child is killed.

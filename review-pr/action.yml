@@ -877,10 +877,16 @@ runs:
           # This guards against the agent exiting 0 without calling gh api (e.g., zero-findings early exit).
           if [ -n "$VERBOSE_LOG_FILE" ] && [ -f "$VERBOSE_LOG_FILE" ] && ! grep -qE 'pullrequestreview-[0-9]+' "$VERBOSE_LOG_FILE" 2>/dev/null; then
             # Dedup guard: skip posting if an identical fallback PR review already exists.
+            # Also check the old issue-comment endpoint for a one-time migration guard
+            # (prior runs posted to /issues/comments; this prevents a duplicate on the first
+            # run of this new code against PRs that already received an LGTM issue comment).
             EXISTING=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" \
               --jq '[.[] | select(.body | startswith("🟢 **No issues found**"))] | length' \
               2>/dev/null || echo "0")
-            if [ "${EXISTING:-0}" -gt 0 ]; then
+            EXISTING_OLD=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
+              --jq '[.[] | select(.body | startswith("🟢 **No issues found**"))] | length' \
+              2>/dev/null || echo "0")
+            if [ "${EXISTING:-0}" -gt 0 ] || [ "${EXISTING_OLD:-0}" -gt 0 ]; then
               echo "ℹ️  Fallback LGTM review already exists — skipping duplicate post"
             else
               echo "::warning::Agent exited 0 but no review was posted — posting fallback LGTM review"
