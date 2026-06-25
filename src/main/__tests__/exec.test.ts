@@ -287,13 +287,11 @@ describe('runAgent', () => {
     // Attempt 2: timeout — should still get its own retryOnTimeout=1 slot
     // Attempt 3: success
     mockSpawn
-      .mockImplementationOnce(() => makeMockChild(1))            // failure
+      .mockImplementationOnce(() => makeMockChild(1)) // failure
       .mockImplementationOnce(() => makeMockChild(TIMEOUT_EXIT_CODE)) // timeout
-      .mockImplementation(() => makeMockChild(0));               // success
+      .mockImplementation(() => makeMockChild(0)); // success
 
-    const result = await runAgent(
-      baseOpts({ maxRetries: 1, retryDelay: 0, retryOnTimeout: 1 }),
-    );
+    const result = await runAgent(baseOpts({ maxRetries: 1, retryDelay: 0, retryOnTimeout: 1 }));
 
     expect(result.exitCode).toBe(0);
     // failure retry + timeout retry + final success = 3 spawns

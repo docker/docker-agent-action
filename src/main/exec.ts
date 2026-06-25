@@ -290,9 +290,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     totalAttempt++;
 
     if (totalAttempt > 1) {
-      core.info(
-        `🔄 Retry attempt ${totalAttempt - 1} (waiting ${currentDelay}s)...`,
-      );
+      core.info(`🔄 Retry attempt ${totalAttempt - 1} (waiting ${currentDelay}s)...`);
       await sleep(currentDelay);
       currentDelay *= 2;
 
