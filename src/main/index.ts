@@ -217,6 +217,7 @@ async function run(): Promise<void> {
     const timeout = parseInt(core.getInput('timeout') || '0', 10);
     const maxRetries = parseInt(core.getInput('max-retries') || '2', 10);
     const retryDelay = parseInt(core.getInput('retry-delay') || '5', 10);
+    const retryOnTimeout = parseInt(core.getInput('retry-on-timeout') || '0', 10);
     const yolo = core.getBooleanInput('yolo');
     const workingDirectory = core.getInput('working-directory') || '.';
     const extraArgs = core.getInput('extra-args');
@@ -342,6 +343,7 @@ async function run(): Promise<void> {
       timeout,
       maxRetries,
       retryDelay,
+      retryOnTimeout,
       debug,
       anthropicApiKey,
       openaiApiKey,

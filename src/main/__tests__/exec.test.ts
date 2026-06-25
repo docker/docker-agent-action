@@ -69,6 +69,7 @@ function baseOpts(overrides: Partial<Parameters<typeof runAgent>[0]> = {}) {
     timeout: 0,
     maxRetries: 0,
     retryDelay: 0,
+    retryOnTimeout: 0,
     debug: false,
     anthropicApiKey: 'sk-ant-test',
     telemetryTags: 'source=test',
@@ -248,15 +249,37 @@ describe('runAgent', () => {
     expect(writtenData.toString()).toContain('Raw prompt');
   });
 
-  it('returns TIMEOUT_EXIT_CODE (124) without retrying on timeout', async () => {
+  it('returns TIMEOUT_EXIT_CODE (124) without retrying on timeout when retryOnTimeout=0', async () => {
     // Return 124 (our timeout sentinel — simulate the timer firing)
     mockSpawn.mockReturnValue(makeMockChild(TIMEOUT_EXIT_CODE));
 
-    const result = await runAgent(baseOpts({ timeout: 5, maxRetries: 3 }));
+    const result = await runAgent(baseOpts({ timeout: 5, maxRetries: 3, retryOnTimeout: 0 }));
 
     expect(result.exitCode).toBe(TIMEOUT_EXIT_CODE);
     // Only spawned once — no retries after timeout
     expect(mockSpawn).toHaveBeenCalledOnce();
+  });
+
+  it('retries once on timeout when retryOnTimeout=1, succeeds on retry', async () => {
+    mockSpawn
+      .mockImplementationOnce(() => makeMockChild(TIMEOUT_EXIT_CODE))
+      .mockImplementation(() => makeMockChild(0));
+
+    const result = await runAgent(baseOpts({ maxRetries: 0, retryDelay: 0, retryOnTimeout: 1 }));
+
+    expect(result.exitCode).toBe(0);
+    // First attempt timed out, second attempt succeeded
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops retrying on timeout after retryOnTimeout attempts', async () => {
+    mockSpawn.mockImplementation(() => makeMockChild(TIMEOUT_EXIT_CODE));
+
+    const result = await runAgent(baseOpts({ maxRetries: 0, retryDelay: 0, retryOnTimeout: 1 }));
+
+    expect(result.exitCode).toBe(TIMEOUT_EXIT_CODE);
+    // 1 initial + 1 timeout retry = 2 total
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
   });
 
   it('kills process with SIGTERM when timeout fires (FIX D)', async () => {

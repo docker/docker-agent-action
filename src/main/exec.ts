@@ -47,6 +47,8 @@ export interface RunAgentOptions {
   maxRetries: number;
   /** Base delay between retries in seconds (doubles each attempt). */
   retryDelay: number;
+  /** Number of additional retry attempts allowed when the agent times out (exit 124). */
+  retryOnTimeout: number;
   /** Whether debug mode is enabled. */
   debug: boolean;
 
@@ -320,15 +322,19 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
 
     if (exitCode === TIMEOUT_EXIT_CODE) {
       core.error(`Agent execution timed out after ${opts.timeout} seconds`);
-      break; // Don't retry timeouts
-    }
-
-    if (attempt > opts.maxRetries) {
+      if (opts.retryOnTimeout <= 0 || attempt > opts.retryOnTimeout) {
+        break; // No more timeout retries
+      }
+      core.warning(
+        `Timeout on attempt ${attempt} — will retry (${attempt}/${opts.retryOnTimeout} timeout retries used)`,
+      );
+      // fall through to shared retry path below
+    } else if (attempt > opts.maxRetries) {
       core.warning(`Agent failed after ${opts.maxRetries} retries (exit code: ${exitCode})`);
       break;
+    } else {
+      core.warning(`Agent failed (exit code: ${exitCode}), will retry...`);
     }
-
-    core.warning(`Agent failed (exit code: ${exitCode}), will retry...`);
   }
 
   const executionTime = Math.round((Date.now() - startTime) / 1000);
