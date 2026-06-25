@@ -777,6 +777,7 @@ runs:
         extra-args: ${{ inputs.model && format('--model={0}', inputs.model) || '' }}
         add-prompt-files: ${{ inputs.add-prompt-files }}
         max-retries: "1"  # One retry handles transient API failures (e.g. Anthropic 400s) without risking duplicate reviews from full pipeline restarts
+        retry-on-timeout: "1"  # Retry once on timeout — agent may succeed on a second pass after a transient infra hiccup
         skip-summary: "true"
         org-membership-token: ${{ inputs.org-membership-token }}
         auth-org: ${{ inputs.auth-org }}
@@ -848,8 +849,9 @@ runs:
           else
             TIMEOUT_BODY="⏱️ **PR Review Timed Out** — The review agent hit the 2700 s time limit. This usually happens on large or complex diffs. Re-request a review from \`docker-agent\` to retry — if it times out again, consider splitting the PR into smaller pieces."
           fi
-          if ! gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
-            -f body="$TIMEOUT_BODY" \
+          if ! jq -n --arg body "$TIMEOUT_BODY" --arg event "COMMENT" \
+            '{body: $body, event: $event, comments: []}' \
+          | gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" --input - \
             2>&1; then
             echo "::warning::Failed to post timeout comment to PR"
           fi
@@ -862,8 +864,9 @@ runs:
             STATUS="⚠️ **Review completed with warnings** (exit code: $EXIT_CODE)"
           else
             STATUS="❌ **Review failed** (exit code: $EXIT_CODE)"
-            if ! gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
-              -f body="❌ **PR Review Failed** — The review agent encountered an error and could not complete the review. [View logs]($RUN_URL)." \
+            if ! jq -n --arg body "❌ **PR Review Failed** — The review agent encountered an error and could not complete the review. [View logs]($RUN_URL)." --arg event "COMMENT" \
+              '{body: $body, event: $event, comments: []}' \
+            | gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" --input - \
               2>&1; then
               echo "::warning::Failed to post fallback comment to PR"
             fi
@@ -873,17 +876,24 @@ runs:
           # Defense-in-depth: if the log exists but no review was posted, post a fallback LGTM comment.
           # This guards against the agent exiting 0 without calling gh api (e.g., zero-findings early exit).
           if [ -n "$VERBOSE_LOG_FILE" ] && [ -f "$VERBOSE_LOG_FILE" ] && ! grep -qE 'pullrequestreview-[0-9]+' "$VERBOSE_LOG_FILE" 2>/dev/null; then
-            # Dedup guard: skip posting if an identical fallback comment already exists.
-            EXISTING=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq '[.[] | select(.body | startswith("🟢 **No issues found**"))] | length' \
+            # Dedup guard: skip posting if an identical fallback PR review already exists.
+            # Also check the old issue-comment endpoint for a one-time migration guard
+            # (prior runs posted to /issues/comments; this prevents a duplicate on the first
+            # run of this new code against PRs that already received an LGTM issue comment).
+            EXISTING=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" \
+              --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
               2>/dev/null || echo "0")
-            if [ "${EXISTING:-0}" -gt 0 ]; then
-              echo "ℹ️  Fallback LGTM comment already exists — skipping duplicate post"
+            EXISTING_OLD=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
+              --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
+              2>/dev/null || echo "0")
+            if [ "${EXISTING:-0}" -gt 0 ] || [ "${EXISTING_OLD:-0}" -gt 0 ]; then
+              echo "ℹ️  Fallback LGTM review already exists — skipping duplicate post"
             else
-              echo "::warning::Agent exited 0 but no review was posted — posting fallback LGTM comment"
-              gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
-                -f body="🟢 **No issues found** — LGTM! [View logs]($RUN_URL)." 2>&1 || \
-                echo "::warning::Failed to post fallback LGTM comment to PR"
+              echo "::warning::Agent exited 0 but no review was posted — posting fallback LGTM review"
+              jq -n --arg body "🟢 **No issues found** — LGTM! [View logs]($RUN_URL)." --arg event "COMMENT" \
+                '{body: $body, event: $event, comments: []}' \
+              | gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" --input - 2>&1 || \
+                echo "::warning::Failed to post fallback LGTM review to PR"
             fi
           fi
         fi
