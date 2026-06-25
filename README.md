@@ -221,6 +221,8 @@ jobs:
 
 For comprehensive documentation on setting up AI-powered PR reviews, including features like automatic reviews, requesting a review from `docker-agent`, feedback learning, and customization options, see the **[PR Review documentation](review-pr/README.md)**.
 
+For external or fork contributor PRs, an org member approves the workflow run and then requests a review from `docker-agent` via GitHub's native review request UI (no special commands or workflow inputs required). See [External and fork contributor PRs](review-pr/README.md#external-and-fork-contributor-prs).
+
 ### Manual Trigger with Inputs
 
 ```yaml
