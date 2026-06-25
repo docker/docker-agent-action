@@ -305,6 +305,14 @@ jobs:
           PR_SOURCE: ${{ steps.pr.outputs.source }}
           ORG: docker
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          # review_requested authorizes the requesting maintainer, not the PR
+          # author, so an external contributor's PR can be reviewed on request.
+          # On the direct same-repo path the requester is the trusted event sender;
+          # on the fork/workflow_run path check-org-membership re-derives it from
+          # the PR timeline (the artifact is never trusted for authorization).
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          REQUESTER: ${{ github.event.sender.login }}
         run: node "$DOCKER_AGENT_ACTION_ROOT/dist/check-org-membership.js"
 
       - name: Create check run
