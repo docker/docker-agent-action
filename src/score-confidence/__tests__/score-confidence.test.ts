@@ -446,13 +446,15 @@ describe('posting policy (per finding)', () => {
 describe('scoreFindings — comment cap and grouping', () => {
   // Seven distinct-score non-forced CONFIRMED findings (medium severity, logic_error):
   // direct/full=100, direct/partial=97, circ/full=95, circ/partial=87,
-  // direct/none=83, spec/partial=75, circ/none=73 (all + d0 concordance).
+  // spec/full=83, spec/partial=75, circ/none=73 (all + d0 concordance). The
+  // spec/full=83 cell avoids the verifier disjointness rule (direct + none) so
+  // this cap fixture exercises only combinations the verifier may legitimately emit.
   const NON_FORCED: Array<[EvidenceStrength, ContextCompleteness, number]> = [
     ['direct', 'full', 100],
     ['direct', 'partial', 97],
     ['circumstantial', 'full', 95],
     ['circumstantial', 'partial', 87],
-    ['direct', 'none', 83],
+    ['speculative', 'full', 83],
     ['speculative', 'partial', 75],
     ['circumstantial', 'none', 73],
   ];
@@ -509,6 +511,34 @@ describe('scoreFindings — comment cap and grouping', () => {
     expect(inlineFiles).toContain('pkg/high.go');
     // Cap still applied to the non-forced set only.
     expect(report.summary).toHaveLength(NON_FORCED.length - COMMENT_CAP);
+  });
+
+  it('lists forced comments first, ahead of higher-scoring non-forced ones', () => {
+    const forced: FindingInput[] = [
+      makeFinding({
+        file: 'pkg/sec.go',
+        category: 'security',
+        evidenceStrength: 'speculative',
+        contextCompleteness: 'none',
+        drafterSeverity: 'high',
+        verifierSeverity: 'low',
+      }),
+      makeFinding({
+        file: 'pkg/high.go',
+        verdict: 'LIKELY',
+        evidenceStrength: 'speculative',
+        contextCompleteness: 'none',
+        drafterSeverity: 'high',
+        verifierSeverity: 'high',
+      }),
+    ];
+    const report = scoreFindings([...nonForcedBatch(), ...forced]);
+    // The forced findings (security score 48, high-severity score 31) lead the
+    // inline list even though every non-forced finding outscores them.
+    const leadFiles = report.inline.slice(0, forced.length).map((s) => s.input.file);
+    expect(leadFiles).toEqual(['pkg/sec.go', 'pkg/high.go']);
+    const forcedFlags = report.inline.map((s) => s.result.forced);
+    expect(forcedFlags).toEqual([true, true, false, false, false, false, false]);
   });
 
   it('respects a custom comment cap', () => {
@@ -571,6 +601,34 @@ describe('input validation', () => {
     expect(() => scoreFinding(makeFinding({ category: 'Security' as never }))).toThrow(
       /invalid category/,
     );
+  });
+});
+
+// ── Verifier disjointness rule (direct + none) ───────────────────────────────
+
+describe('disjointness rule (direct + none) is scored, not rejected', () => {
+  // pr-review.yaml forbids the verifier from pairing `direct` evidence with `none`
+  // context, but the scorer is intentionally total over every evidence×context cell:
+  // a rule violation must degrade gracefully (lower score via the missing-context
+  // penalty), never throw and abort the whole batch. This pins that divergence so
+  // the TS model and the YAML rule cannot silently contradict each other.
+  it('scores CONFIRMED/direct/none from the table instead of throwing', () => {
+    const r = scoreFinding(
+      makeFinding({ evidenceStrength: 'direct', contextCompleteness: 'none' }),
+    );
+    expect(r.breakdown.subtotal).toBe(78); // CONFIRMED 70 + direct 18 + none −10
+    expect(r.score).toBe(83); // + d0 concordance (medium↔medium, +5)
+    expect(r.band).toBe('strong');
+  });
+
+  it('scores it strictly below the same finding with full context', () => {
+    const none = scoreFinding(
+      makeFinding({ evidenceStrength: 'direct', contextCompleteness: 'none' }),
+    );
+    const full = scoreFinding(
+      makeFinding({ evidenceStrength: 'direct', contextCompleteness: 'full' }),
+    );
+    expect(none.score).toBeLessThan(full.score);
   });
 });
 

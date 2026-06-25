@@ -230,8 +230,10 @@ agents:
          - **Dismissed security audit** — DISMISSED `security` findings, listed under "Dismissed
            security findings (review manually)" citing the verifier's stated mitigation.
          Then post the review.
-      10. Order inline comments by confidence, highest first. Forced comments (high-severity and
-          security CONFIRMED/LIKELY) are ALWAYS posted and never count against the cap. Among the
+      10. Order inline comments forced-first: list the forced comments (high-severity and
+          security CONFIRMED/LIKELY) first, then the remaining (non-forced) comments by confidence,
+          highest first — so a forced finding is never buried beneath a higher-scoring non-forced
+          one. Forced comments are ALWAYS posted and never count against the cap. Among the
           remaining (non-forced) inline comments, keep at most 5 (highest confidence first) and
           move the overflow to the lower-confidence summary list.
 
@@ -368,6 +370,10 @@ agents:
          subtotal, then direct > circumstantial > speculative, then full > partial > none). Move
          the rest to the rule-5 summary list. Forced comments (rules 2–3) never count against
          the cap and are never displaced.
+
+      When listing the surviving inline comments, place forced comments (security / high-severity,
+      rules 2–3) first, then the remaining comments by the same descending ranking, so a forced
+      finding is never buried beneath a higher-scoring non-forced one.
 
       Label every inline comment with its confidence, e.g. `confidence: moderate (68/100)`.
 

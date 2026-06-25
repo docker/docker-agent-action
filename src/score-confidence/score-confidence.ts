@@ -67,6 +67,17 @@
  * visibility floor (rule 6). Net guarantee: increasing verifier severity never *lowers* a
  * finding's visibility tier (low → drop/summary, medium → at least summary, high → inline).
  *
+ * ## Note on the verifier disjointness rule (direct + none)
+ *
+ * The verifier prompt (pr-review.yaml) forbids pairing `evidence_strength: direct` with
+ * `context_completeness: none` — without the defining context you cannot claim direct evidence.
+ * That is an honesty constraint on the verifier's *output*, NOT an invariant this scorer
+ * enforces: the core table deliberately defines a value for every evidence×context cell
+ * (CONFIRMED/direct/none = 78), so a verifier that violates the rule has its finding scored —
+ * and scored lower for the missing context — rather than rejected. Throwing here would abort
+ * the entire batch over one off-nominal finding, which is strictly worse for a review run. The
+ * divergence is intentional and is pinned by a dedicated unit test.
+ *
  * ## Posting policy (decided after scoring; first match wins; the cap is applied last)
  *
  *   1. Out-of-scope / DISMISSED non-security → drop (never posted inline).
@@ -405,7 +416,7 @@ export function scoreFinding(raw: FindingInput): ConfidenceResult {
       band: 'negligible',
       disposition: 'drop',
       forced: false,
-      reason: 'out-of-scope (not in_diff && in_changed_code)',
+      reason: 'out-of-scope: requires both in_diff and in_changed_code',
       sortKey: sortKeyFor(0, 0),
       breakdown: { subtotal: 0, concordance: 0, severityDistance: 0, gate: 'scope' },
     };
@@ -539,10 +550,19 @@ export function scoreFindings(
     };
   }
 
-  const byDisposition = (d: Disposition): ScoredFinding[] =>
-    scored
-      .filter((s) => s.result.disposition === d)
-      .sort((a, b) => b.result.sortKey - a.result.sortKey);
+  const bySortKeyDesc = (a: ScoredFinding, b: ScoredFinding): number =>
+    b.result.sortKey - a.result.sortKey;
+  // Within the inline bucket, list forced findings (security / high-severity) first
+  // so they can never be visually buried beneath higher-scoring non-forced findings;
+  // each partition is then ranked by descending sortKey. This matches the documented
+  // ordering of ConfidenceReport.inline ("forced first, then capped default-band").
+  const byDisposition = (d: Disposition): ScoredFinding[] => {
+    const matches = scored.filter((s) => s.result.disposition === d);
+    if (d !== 'inline') return matches.sort(bySortKeyDesc);
+    const forced = matches.filter((s) => s.result.forced).sort(bySortKeyDesc);
+    const nonForced = matches.filter((s) => !s.result.forced).sort(bySortKeyDesc);
+    return [...forced, ...nonForced];
+  };
 
   return {
     findings: scored,

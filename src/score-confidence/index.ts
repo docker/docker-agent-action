@@ -39,7 +39,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { type FindingInput, scoreFindings } from './score-confidence.js';
 
 /** Map one snake_case input record to the camelCase {@link FindingInput} shape. */
-function parseRecord(raw: Record<string, unknown>, index: number): FindingInput {
+export function parseRecord(raw: Record<string, unknown>, index: number): FindingInput {
   const get = (key: string): unknown => raw[key];
   const require = (key: string): unknown => {
     const value = get(key);
@@ -48,18 +48,66 @@ function parseRecord(raw: Record<string, unknown>, index: number): FindingInput 
     }
     return value;
   };
+  // Coerce a required field to a strict boolean. A real boolean passes through and
+  // the canonical strings "true"/"false" are accepted; a missing/null or otherwise
+  // unrecognized value throws. This must NOT silently fall back to `false`: the
+  // scope flags gate the whole finding, so a dropped flag would silently discard
+  // the finding (including forced security findings) with no diagnostic.
+  const requireBool = (key: string): boolean => {
+    const value = require(key);
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') return true;
+      if (normalized === 'false') return false;
+    }
+    throw new Error(
+      `finding[${index}] field "${key}" must be a boolean, got ${JSON.stringify(value)}`,
+    );
+  };
+  // Coerce a required field to a positive integer. `Number("abc")` is `NaN`, which
+  // JSON-serializes to `null` and would break (or 422) the GitHub review line
+  // anchor, so a non-numeric or out-of-range value throws rather than propagating.
+  const requireInt = (key: string): number => {
+    const value = require(key);
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error(
+        `finding[${index}] field "${key}" must be a positive integer, got ${JSON.stringify(value)}`,
+      );
+    }
+    return parsed;
+  };
   return {
     file: String(require('file')),
-    line: Number(require('line')),
+    line: requireInt('line'),
     category: require('category') as FindingInput['category'],
     verdict: require('verdict') as FindingInput['verdict'],
     evidenceStrength: require('evidence_strength') as FindingInput['evidenceStrength'],
     contextCompleteness: require('context_completeness') as FindingInput['contextCompleteness'],
     drafterSeverity: require('drafter_severity') as FindingInput['drafterSeverity'],
     verifierSeverity: require('verifier_severity') as FindingInput['verifierSeverity'],
-    inDiff: get('in_diff') === true,
-    inChangedCode: get('in_changed_code') === true,
+    inDiff: requireBool('in_diff'),
+    inChangedCode: requireBool('in_changed_code'),
   };
+}
+
+/**
+ * Narrow a parsed JSON value to the finding-record array the scorer expects.
+ *
+ * A non-array top-level value (e.g. `null`, a scalar, or a `{ "findings": [...] }`
+ * wrapper) must fail loudly rather than be treated as an empty list: a silent
+ * fallback would emit a valid-looking empty report and exit 0, indistinguishable
+ * from a real zero-findings run. Throwing here joins the same loud-failure path as
+ * every other bad input (the outer try/catch writes the message and exits 1).
+ */
+export function toFindingRecords(parsed: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `input must be a JSON array of findings, got ${parsed === null ? 'null' : typeof parsed}`,
+    );
+  }
+  return parsed as Record<string, unknown>[];
 }
 
 function main(): void {
@@ -71,7 +119,7 @@ function main(): void {
   }
 
   const parsed = JSON.parse(readFileSync(findingsPath, 'utf-8')) as unknown;
-  const records = Array.isArray(parsed) ? (parsed as Record<string, unknown>[]) : [];
+  const records = toFindingRecords(parsed);
   const inputs = records.map(parseRecord);
   const report = scoreFindings(inputs);
 
@@ -108,9 +156,13 @@ function main(): void {
   }
 }
 
-try {
-  main();
-} catch (err) {
-  process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
+// Guard: only run as a CLI when invoked directly as dist/score-confidence.js, never
+// when imported (the unit tests import parseRecord directly and must not trigger main).
+if (process.argv[1]?.endsWith('score-confidence.js') && !process.env.VITEST) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
 }
