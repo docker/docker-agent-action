@@ -25,7 +25,16 @@ with `echo` — this causes double-escaping of newlines (`\n` rendered as litera
 
 Build the review body and comments, then use `jq` to produce correctly-escaped JSON:
 ```bash
-# Review body is just the assessment badge — findings go in inline comments
+# Review body is the assessment badge, plus the lower-confidence and dismissed-security
+# summary sections when they have entries (high-confidence findings go in inline comments).
+# Append each section only when non-empty, e.g.:
+#   ### Assessment: 🟡 NEEDS ATTENTION
+#
+#   #### Lower-confidence findings (not posted inline)
+#   - [medium] file.go:42 — issue (confidence: weak 48/100)
+#
+#   #### Dismissed security findings (review manually)
+#   - file.go:88 — issue (verifier mitigation: …)
 REVIEW_BODY="### Assessment: 🟢 APPROVE"   # or 🟡 NEEDS ATTENTION / 🔴 CRITICAL
 
 # Start with an empty comments array
@@ -38,6 +47,8 @@ cat > /tmp/comment_body.md << 'COMMENT_BODY_EOF'
 **[SEVERITY] One-line issue summary**
 
 Detailed explanation of the bug, trigger path, and impact.
+
+confidence: moderate (68/100)
 
 <!-- docker-agent-review -->
 COMMENT_BODY_EOF

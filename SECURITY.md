@@ -88,13 +88,15 @@ depends on the trigger:
 | Trigger | Actor verified | Mechanism |
 |---------|----------------|-----------|
 | `/review` comment, `@docker-agent` mention, reply-to-feedback | The commenter | `check-org-membership` against the `docker` org (OIDC `org-membership-token`) |
-| Automatic review (`opened`/`synchronize`/`ready_for_review`) and `review_requested` | The PR author | `check-org-membership` (`PR_AUTHOR` env, with a live PR-author API lookup as fallback) |
-| `review_requested` via the PR sidebar | The requester | **GitHub-native enforcement** — only users with triage/write access can request a reviewer; the workflow additionally gates on `requested_reviewer.login == 'docker-agent'` |
+| Automatic review (`opened`/`synchronize`/`ready_for_review`) | The PR author | `check-org-membership` resolves the PR author live via the GitHub API |
+| `review_requested` via the PR sidebar | The requester | The requesting org member is verified, so an external contributor's PR can be reviewed on request. The requester is taken only from a trusted source (`github.event.sender.login` on the direct same-repo path, re-derived from the PR timeline on the fork/`workflow_run` path), never from the trigger artifact. Also relies on **GitHub-native enforcement** (only users with triage/write access can request a reviewer) and gates on `requested_reviewer.login == 'docker-agent'` |
 
 The membership check **fails closed**: if no actor login can be resolved, or the
 actor is not an org member, the review is skipped. `src/check-org-membership`
-resolves the actor via `resolveUsername` so the directly-wired `pull_request`
-auto-review path verifies the PR author instead of an empty comment author.
+evaluates the authorization paths in order (the PR author for automatic review,
+then the trusted requester for `review_requested`), resolving the PR author live
+via the API so the directly-wired `pull_request` path verifies the author
+instead of an empty comment author.
 
 ### 2. All review requests are logged
 

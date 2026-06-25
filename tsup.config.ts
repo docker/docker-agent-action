@@ -34,6 +34,7 @@ const entry = {
   'migrate-consumer-refs': src('migrate-consumer-refs'),
   'post-mention-reply': src('post-mention-reply'),
   'rate-limit': src('rate-limit'),
+  'score-confidence': src('score-confidence'),
   'score-risk': src('score-risk'),
   security: src('security'),
   'signed-commit': src('signed-commit'),

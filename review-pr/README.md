@@ -156,6 +156,20 @@ pull_request:
 ```
 Adds `synchronize` to also trigger on every push to the PR branch. Opt in if your team wants the reviewer to automatically re-examine every update, at the cost of more workflow runs.
 
+### External and fork contributor PRs
+
+> [!NOTE]
+> The requester-authorized path below requires the `check-org-membership` update from PR #16 (merge that PR first). Until it ships, membership is checked against the PR author rather than the requesting org member, so requesting `docker-agent` on an external or fork PR is silently skipped.
+
+Auto-review only runs on PRs authored by org members. A PR opened by an external or fork contributor is **not** reviewed automatically. To get one reviewed, an org member drives it through GitHub's native UI in two steps:
+
+1. **Approve the workflow run.** For PRs from first-time and external contributors, GitHub holds all Actions runs until a maintainer approves them (governed by the repository's `Settings` → `Actions` → `General` fork-PR approval policy). Click **Approve and run workflows** on the PR; until then nothing runs, including the PR review trigger.
+2. **Request a review from `docker-agent`.** In the PR sidebar, under **Reviewers**, add `docker-agent`. This fires a `review_requested` event and starts the review, shown as a check run (if `checks: write` is granted).
+
+That is the entire flow. **No special commands or workflow inputs are needed**: not the deprecated `/review` comment, not `workflow_dispatch`, and no caller-side configuration. The review is authorized by the requesting org member rather than the PR author, which is what lets an external contributor's PR be reviewed on demand. The request is safe by construction: GitHub only lets users with triage or write access request a reviewer, and the reusable workflow verifies org membership before any review work runs. An external contributor cannot trigger a review of their own PR.
+
+To re-run the review after new commits, re-request the review from `docker-agent` in the sidebar (the refresh icon next to their name).
+
 ### Customizing
 
 ```yaml
@@ -167,15 +181,15 @@ with:
 
 | Trigger                              | Behavior                                                                                                                                 |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Request review from `docker-agent`   | **Primary trigger.** Add `docker-agent` as a reviewer in the PR sidebar — review starts automatically, shown as a check run.            |
-| PR opened/ready                      | Auto-reviews when a PR is opened or marked ready for review.                                                                             |
+| Request review from `docker-agent`   | **Primary trigger.** Add `docker-agent` as a reviewer in the PR sidebar — review starts automatically, shown as a check run. Authorized by the requesting org member, so it also works for external/fork contributors' PRs. |
+| PR opened/ready                      | Auto-reviews when a PR is opened or marked ready for review (org-member-authored PRs).                                                   |
 | ~~`/review`~~ _(deprecated)_         | Re-trigger a review, or trigger manually when auto-review hasn't run (e.g. after a force-push). Shows as a check run if `checks: write` is granted. |
 | Reply to review comment              | Responds in-thread and captures feedback to improve future reviews.                                                                      |
 | `@docker-agent` mention              | Answers questions and clarifies review findings. Works in both PR-level issue comments and inline file-line review comments, including on fork PRs (via the trigger workflow). |
 
 > **Built-in defense-in-depth:**
 >
-> 1. **Verifies org membership** before every review. Comment/mention/reply triggers check the commenter; auto-review and `review_requested` check the PR author. Requesting a review from `docker-agent` in the sidebar additionally relies on GitHub-native enforcement (only users with triage/write access can request reviewers).
+> 1. **Verifies org membership** before every review. Auto-review checks the **PR author** (so only org members' PRs are reviewed automatically); a **requested review** checks the **requester**, so a maintainer can pull an external contributor's PR into review on demand; `/review` checks the commenter
 > 2. **Prevents bot cascades** — replies from bots (except `docker-agent`) are ignored
 > 3. **Logs every review request** — one structured audit record per request (requester, time, trigger, PR, reviewed SHA, allow/deny/throttle decision) is emitted as a notice, a job-summary line, and a 90-day audit artifact, including on denial paths
 > 4. **Throttles rate anomalies** — per-PR `concurrency:` groups collapse same-trigger bursts, and a rate-limit check skips the review when too many requests land on one PR in a short window
@@ -189,7 +203,7 @@ The workflow YAML examples above are the complete, recommended setup. The reusab
 | Protection | How it's handled |
 | ---------- | ---------------- |
 | **Bot comment filtering** | All jobs in the reusable workflow filter out `docker-agent`, `docker-agent[bot]`, any `Bot`-type user, and comments with `<!-- docker-agent-review -->`/`<!-- docker-agent-review-reply -->` markers. No caller-side filtering needed. |
-| **Org membership / authorization** | A `check-org-membership` step runs before any review work. On comment/mention/reply triggers it verifies the commenter; on auto-review and `review_requested` it verifies the PR author (falling back to a live PR-author lookup when no author login is in the event). Callers never need `author_association` checks. |
+| **Org membership / authorization** | A `check-org-membership` step runs before any review work. Auto-review verifies the **PR author**; a requested review verifies the **requester** (so an external contributor's PR can be reviewed when an org member requests it); comment / `/review` paths verify the commenter. All via OIDC. Callers never need `author_association` checks. |
 | **PR vs issue comment** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are silently ignored. |
 | **Draft PR skipping** | Draft PRs are skipped internally — no caller condition needed. |
 | **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |
@@ -290,6 +304,8 @@ but the error check happens after this line accesses `user.ID`.
 
 Consider moving the nil check before accessing user properties.
 
+confidence: strong (92/100)
+
 <!-- docker-agent-review -->
 ```
 
@@ -304,8 +320,18 @@ When no issues are found:
 ### Review Pipeline
 
 ```
-AGENTS.md + PR Diff → Drafter (hypotheses) → Verifier (confirm) → Post Comments
+AGENTS.md + PR Diff → Drafter (hypotheses) → Verifier (confirm + evidence signals)
+                    → Confidence score (0–100) → Post Comments
 ```
+
+Each verified finding gets a precise **confidence score** (0–100) and a band
+(strong / moderate / weak / negligible), computed deterministically from the
+verifier's verdict, evidence strength, and context completeness, plus the
+drafter↔verifier severity agreement. High-confidence findings are posted as
+inline comments (labelled with their confidence); lower-confidence findings are
+listed separately rather than dropped. Security and high-severity findings are
+always surfaced regardless of score. The model is implemented and unit-tested in
+[`src/score-confidence/`](../src/score-confidence/score-confidence.ts).
 
 ### Learning System
 

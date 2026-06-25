@@ -30,7 +30,7 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   ├── add-reaction/                # Adds emoji reactions to issue/PR comments.
 │   │   ├── index.ts                 # Entry → bundled to dist/add-reaction.js
 │   │   └── __tests__/
-│   ├── check-org-membership/        # Verifies a user belongs to a GitHub org; also resolves PR author via pulls.get.
+│   ├── check-org-membership/        # Authorizes a review: auto-run on PR-author membership, review_requested on the (trusted, timeline-derived) requester. Resolves PR author via pulls.get.
 │   │   ├── index.ts                 # Entry → bundled to dist/check-org-membership.js (standalone CLI + library).
 │   │   └── __tests__/
 │   ├── credentials/                 # Fetches AWS secrets via OIDC, exports PAT and AI keys.
@@ -42,6 +42,11 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   ├── filter-diff/                 # Strips excluded-path sections from a unified diff.
 │   │   ├── index.ts                 # CLI entry → bundled to dist/filter-diff.js
 │   │   ├── filter-diff.ts           # Core filterDiff() pure function + applyFilter() I/O wrapper.
+│   │   └── __tests__/
+│   ├── score-confidence/            # Per-finding confidence scoring for the PR review pipeline.
+│   │   ├── index.ts                 # CLI entry → bundled to dist/score-confidence.js
+│   │   ├── score-confidence.ts      # Core scoreFinding()/scoreFindings() pure functions + posting policy.
+│   │   │                            #   Source of truth for the model mirrored in pr-review.yaml.
 │   │   └── __tests__/
 │   ├── score-risk/                  # Per-file risk scoring for the PR review pipeline.
 │   │   ├── index.ts                 # CLI entry → bundled to dist/score-risk.js
@@ -167,6 +172,7 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
   - `pull_request` action `review_requested` when `github.event.requested_reviewer.login == 'docker-agent'`
   - `@docker-agent` mentions on PR/issue comments — these run the `.github/actions/mention-reply` handler (sets `should-reply` and builds the context prompt) and then the `review-pr/mention-reply` sub-action (referenced from a pinned SHA, not present as a local path on every commit). The `pr-review-mention-reply.yaml` agent handles the actual reply.
 - Diffs over 1500 lines are **chunked at file boundaries** in `review-pr/action.yml` (see "Split diff into chunks"). Per-file **risk scoring** (security paths, line counts, error-handling patterns) prioritizes verifier attention.
+- Per-finding **confidence scoring** assigns each verified finding a precise 0–100 score (band: strong/moderate/weak/negligible) from the verifier's `verdict`, `evidence_strength`, and `context_completeness`, plus drafter↔verifier severity concordance and scope. `src/score-confidence/score-confidence.ts` is the **single source of truth** for the model (weights, bands, threshold, posting policy); the "Confidence Scoring" section of `review-pr/agents/pr-review.yaml` mirrors it as a strict lookup table so the orchestrator can apply it inline (the gitignored `dist/` is not available at agent runtime). Change one, change both — the unit tests pin every value. Security and high-severity CONFIRMED/LIKELY findings are always posted regardless of score; weak-band findings are surfaced in a summary rather than silently dropped.
 - Stale review threads on lines no longer in the diff are auto-resolved via GraphQL `resolveReviewThread`. Threads with no `<!-- docker-agent-review -->` marker are never touched.
 
 ### Workflows (`.github/workflows/`)
