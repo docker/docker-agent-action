@@ -107,16 +107,23 @@ export async function resolvePrAuthor(
 // Core function: review-requester resolution (trusted, server-side)
 // ---------------------------------------------------------------------------
 
-interface TimelineReviewRequestedEvent {
-  event?: string;
+interface TimelineReviewEvent {
+  /**
+   * 'review_requested' grants the request, 'review_request_removed' revokes it;
+   * any other timeline event type is ignored. Typed as a literal union (widened
+   * with `string` so the cast below still accepts the full timeline) to surface
+   * the revocation case to future readers.
+   */
+  event?: 'review_requested' | 'review_request_removed' | (string & {});
+  created_at?: string;
   actor?: { login?: string } | null;
   review_requester?: { login?: string } | null;
   requested_reviewer?: { login?: string } | null;
 }
 
 /**
- * Return the login of the user who most recently requested `reviewerLogin` as a
- * reviewer on the PR, or '' if no such request exists.
+ * Return the login of the user whose review request for `reviewerLogin` is still
+ * in effect on the PR, or '' if there is no such request (or it was revoked).
  *
  * Derived from the PR timeline via the GitHub API using `repoToken`. This is the
  * authoritative, non-forgeable source for the requester on the fork / workflow_run
@@ -131,21 +138,35 @@ export async function resolveReviewRequester(
   reviewerLogin: string,
 ): Promise<string> {
   const octokit = new Octokit({ auth: repoToken });
-  // Paginate: the relevant review_requested event may be anywhere in the timeline,
-  // and timelines are returned in chronological (ascending) order, so the latest
-  // matching event — the one we want — is towards the end.
   const events = (await octokit.paginate(octokit.rest.issues.listEventsForTimeline, {
     owner,
     repo,
     issue_number: prNumber,
     per_page: 100,
-  })) as unknown as TimelineReviewRequestedEvent[];
+  })) as unknown as TimelineReviewEvent[];
+
+  // Replay request/removal events for this reviewer in chronological order: a
+  // 'review_requested' sets the current requester, a later 'review_request_removed'
+  // clears it. This handles re-request-after-removal correctly and, critically,
+  // ensures a retracted request never authorizes the review on the fork /
+  // workflow_run path. Sort by created_at rather than trusting the array order: the
+  // timeline endpoint returns ascending order in practice but does not guarantee it,
+  // and an out-of-order request/removal pair would otherwise leave a retracted
+  // request live — which the org-membership re-check cannot catch, since the stale
+  // login is a real member. (ISO-8601 timestamps sort lexicographically.)
+  events.sort((a, b) => {
+    const at = a.created_at ?? '';
+    const bt = b.created_at ?? '';
+    return at < bt ? -1 : at > bt ? 1 : 0;
+  });
 
   let requester = '';
   for (const ev of events) {
-    if (ev.event === 'review_requested' && ev.requested_reviewer?.login === reviewerLogin) {
-      const actor = ev.review_requester?.login ?? ev.actor?.login ?? '';
-      if (actor) requester = actor;
+    if (ev.requested_reviewer?.login !== reviewerLogin) continue;
+    if (ev.event === 'review_requested') {
+      requester = ev.review_requester?.login ?? ev.actor?.login ?? '';
+    } else if (ev.event === 'review_request_removed') {
+      requester = '';
     }
   }
   return requester;
@@ -264,7 +285,9 @@ export async function evaluateMembership(inputs: MembershipInputs): Promise<Memb
     return { isMember: true, subject: requester, via: 'requester' };
   }
 
-  return { isMember: false, subject: author, via: 'none' };
+  // Report whoever actually failed the membership check: the requester when path 2
+  // was attempted (a requester was resolved), otherwise the PR author from path 1.
+  return { isMember: false, subject: requester || author, via: 'none' };
 }
 
 // ---------------------------------------------------------------------------

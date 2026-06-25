@@ -83,6 +83,16 @@ function reviewRequestedEvent(requester: string, reviewer = 'docker-agent') {
   };
 }
 
+/** Build a timeline review_request_removed event. */
+function reviewRequestRemovedEvent(remover: string, reviewer = 'docker-agent') {
+  return {
+    event: 'review_request_removed',
+    actor: { login: remover },
+    review_requester: { login: remover },
+    requested_reviewer: { login: reviewer },
+  };
+}
+
 function inputs(overrides: Partial<MembershipInputs> = {}): MembershipInputs {
   return {
     orgToken: ORG_TOKEN,
@@ -271,6 +281,78 @@ describe('resolveReviewRequester', () => {
     expect(requester).toBe('actor-m');
   });
 
+  it('returns empty string when the latest event removes the review request', async () => {
+    mockPaginate.mockResolvedValueOnce([
+      reviewRequestedEvent('maintainer'),
+      reviewRequestRemovedEvent('maintainer'),
+    ]);
+
+    const requester = await resolveReviewRequester(
+      REPO_TOKEN,
+      'docker',
+      'myrepo',
+      7,
+      'docker-agent',
+    );
+
+    expect(requester).toBe('');
+  });
+
+  it('honors a re-request after a removal (latest still-effective request wins)', async () => {
+    mockPaginate.mockResolvedValueOnce([
+      reviewRequestedEvent('maintainer'),
+      reviewRequestRemovedEvent('maintainer'),
+      reviewRequestedEvent('later-maintainer'),
+    ]);
+
+    const requester = await resolveReviewRequester(
+      REPO_TOKEN,
+      'docker',
+      'myrepo',
+      7,
+      'docker-agent',
+    );
+
+    expect(requester).toBe('later-maintainer');
+  });
+
+  it('replays chronologically even when the API returns events out of order', async () => {
+    // The removal happened after the request, but the timeline came back reversed.
+    // Sorting by created_at must still let the later retraction win, so a stale
+    // request never authorizes a fork PR regardless of array order.
+    mockPaginate.mockResolvedValueOnce([
+      { ...reviewRequestRemovedEvent('maintainer'), created_at: '2026-06-25T13:00:00Z' },
+      { ...reviewRequestedEvent('maintainer'), created_at: '2026-06-25T12:00:00Z' },
+    ]);
+
+    const requester = await resolveReviewRequester(
+      REPO_TOKEN,
+      'docker',
+      'myrepo',
+      7,
+      'docker-agent',
+    );
+
+    expect(requester).toBe('');
+  });
+
+  it('ignores a removal targeting a different reviewer', async () => {
+    mockPaginate.mockResolvedValueOnce([
+      reviewRequestedEvent('maintainer'),
+      reviewRequestRemovedEvent('maintainer', 'someone-else'),
+    ]);
+
+    const requester = await resolveReviewRequester(
+      REPO_TOKEN,
+      'docker',
+      'myrepo',
+      7,
+      'docker-agent',
+    );
+
+    expect(requester).toBe('maintainer');
+  });
+
   it('uses the repo token', async () => {
     mockPaginate.mockResolvedValueOnce([]);
 
@@ -343,7 +425,8 @@ describe('evaluateMembership', () => {
       inputs({ eventAction: 'review_requested', trustedRequester: 'outsider' }),
     );
 
-    expect(decision).toEqual({ isMember: false, subject: 'ext-author', via: 'none' });
+    // The denial subject is the requester who actually failed path 2, not the author.
+    expect(decision).toEqual({ isMember: false, subject: 'outsider', via: 'none' });
   });
 
   it('review_requested (fork/trigger): authorizes via the timeline-derived requester', async () => {
@@ -383,10 +466,32 @@ describe('evaluateMembership', () => {
   it('fork/trigger: a forged timeline requester is still validated against real org membership', async () => {
     // Even if the (fork-influenced) PR claimed a member, the requester is taken
     // from the trusted timeline AND re-checked against the org. A non-member there
-    // is denied.
+    // is denied, and the denial subject names that non-member requester.
     membersAre(); // the timeline actor is NOT actually a member
     mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'ext-author' } } });
     mockPaginate.mockResolvedValueOnce([reviewRequestedEvent('not-a-member')]);
+
+    const decision = await evaluateMembership(
+      inputs({
+        prSource: 'trigger',
+        eventName: 'workflow_run',
+        eventAction: 'completed',
+        prNumber: 7,
+      }),
+    );
+
+    expect(decision).toEqual({ isMember: false, subject: 'not-a-member', via: 'none' });
+  });
+
+  it('fork/trigger: a retracted review request does not authorize an external PR', async () => {
+    // Access-control regression: a maintainer requested docker-agent then removed
+    // that request. The stale requester must NOT authorize the external PR.
+    membersAre('maintainer');
+    mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'ext-author' } } });
+    mockPaginate.mockResolvedValueOnce([
+      reviewRequestedEvent('maintainer'),
+      reviewRequestRemovedEvent('maintainer'),
+    ]);
 
     const decision = await evaluateMembership(
       inputs({
