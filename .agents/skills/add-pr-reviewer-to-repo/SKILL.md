@@ -17,6 +17,8 @@ Use this skill when you are asked to add AI-powered PR review to a repo, or to u
 > **To re-trigger:** re-request a review from `docker-agent` in the sidebar (click the refresh icon next to their name). This fires a `review_requested` event and starts a fresh review.
 >
 > **`/review` comment:** still works but is deprecated. Prefer the sidebar workflow.
+>
+> **External / fork contributors:** auto-review only runs on org members' own PRs. To review an external contributor's PR, an org member requests `docker-agent` as a reviewer — the review is authorized by the **requester**, not the PR author.
 
 Make sure to communicate this to contributors when onboarding a repo — it's the main daily interaction pattern and easy to miss if someone only reads the workflow YAML.
 
@@ -29,7 +31,7 @@ The reusable workflow handles all of the following internally. **Do not add call
 | Concern | How it's handled internally |
 | ------- | --------------------------- |
 | **Bot comment filtering** | All jobs in the reusable workflow carry comprehensive `if:` conditions that skip `docker-agent`, `docker-agent[bot]`, any `Bot`-type user, and comments containing `<!-- docker-agent-review -->` / `<!-- docker-agent-review-reply -->` HTML markers. |
-| **Org membership / authorization** | A dedicated `check-org-membership` step runs before any review work begins. PR authors and comment authors are verified as org members or collaborators. Callers never need their own `author_association` checks. |
+| **Org membership / authorization** | A dedicated `check-org-membership` step runs before any review work begins. Auto-review verifies the **PR author**; a requested review verifies the **requester** (so a maintainer can pull an external contributor's PR into review); comment paths verify the commenter. Callers never need their own `author_association` checks. |
 | **PR vs issue comment disambiguation** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are ignored automatically. |
 | **Draft PR skipping** | Handled internally — draft PRs are not reviewed. |
 | **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |
