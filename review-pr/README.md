@@ -284,6 +284,8 @@ but the error check happens after this line accesses `user.ID`.
 
 Consider moving the nil check before accessing user properties.
 
+confidence: strong (92/100)
+
 <!-- docker-agent-review -->
 ```
 
@@ -298,8 +300,18 @@ When no issues are found:
 ### Review Pipeline
 
 ```
-AGENTS.md + PR Diff → Drafter (hypotheses) → Verifier (confirm) → Post Comments
+AGENTS.md + PR Diff → Drafter (hypotheses) → Verifier (confirm + evidence signals)
+                    → Confidence score (0–100) → Post Comments
 ```
+
+Each verified finding gets a precise **confidence score** (0–100) and a band
+(strong / moderate / weak / negligible), computed deterministically from the
+verifier's verdict, evidence strength, and context completeness, plus the
+drafter↔verifier severity agreement. High-confidence findings are posted as
+inline comments (labelled with their confidence); lower-confidence findings are
+listed separately rather than dropped. Security and high-severity findings are
+always surfaced regardless of score. The model is implemented and unit-tested in
+[`src/score-confidence/`](../src/score-confidence/score-confidence.ts).
 
 ### Learning System
 
