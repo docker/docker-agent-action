@@ -348,25 +348,6 @@ jobs:
           RATE_PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: node "$DOCKER_AGENT_ACTION_ROOT/dist/rate-limit.js"
 
-      # Force-push safeguard: compare the SHA the review was requested for against
-      # the current PR head. The review still runs against the latest commit
-      # (refs/pull/N/head); this records the SHA actually reviewed and posts a
-      # notice when the branch was force-pushed/rebased after the request.
-      - name: Check force-push staleness
-        id: staleness
-        if: |
-          steps.membership.outputs.is_member == 'true' &&
-          steps.command.outputs.is_review != 'false' &&
-          steps.draft.outputs.skip != 'true' &&
-          steps.rate.outputs.anomalous != 'true'
-        continue-on-error: true   # fail-open: a staleness-check error must not block reviews
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          STALE_PR_NUMBER: ${{ steps.pr.outputs.number }}
-          STALE_REQUESTED_SHA: ${{ needs.resolve-context.outputs.pr-head-sha || github.event.pull_request.head.sha }}
-        run: node "$DOCKER_AGENT_ACTION_ROOT/dist/check-staleness.js"
-
       - name: Create check run
         if: |
           (steps.pr.outputs.source == 'event' || steps.pr.outputs.source == 'trigger') &&
@@ -397,88 +378,6 @@ jobs:
               details_url: runUrl
             });
             core.setOutput('check-id', check.id);
-
-      # Audit safeguard: emit one structured record per review request that joins
-      # the requester, time, trigger, PR, reviewed SHA, and the authorize/deny/
-      # throttle decision. Runs on the allow AND deny paths so denied, throttled,
-      # and stale requests are all recorded, not just successful ones. If
-      # setup-credentials failed (no dist bundle / DOCKER_AGENT_ACTION_ROOT), the
-      # record is still emitted inline so even infra-failure denials are logged.
-      # Placed BEFORE "Checkout PR head" on purpose: the decision is fully known by
-      # now, and keeping this run-step ahead of the untrusted checkout avoids an
-      # execute-after-untrusted-checkout (TOCTOU) pattern.
-      - name: Audit review request
-        if: |
-          always() &&
-          steps.command.outputs.is_review != 'false' &&
-          steps.draft.outputs.skip != 'true'
-        continue-on-error: true
-        shell: bash
-        env:
-          IS_MEMBER: ${{ steps.membership.outputs.is_member }}
-          RATE_ANOMALOUS: ${{ steps.rate.outputs.anomalous }}
-          STALE: ${{ steps.staleness.outputs.stale }}
-          CURRENT_SHA: ${{ steps.staleness.outputs.current-sha }}
-          REQUESTED_SHA: ${{ needs.resolve-context.outputs.pr-head-sha || github.event.pull_request.head.sha }}
-          USER_REQUESTED: ${{ steps.trigger-type.outputs.user_requested }}
-          AUDIT_ACTOR: ${{ github.event.comment.user.login || github.event.sender.login || github.actor }}
-          AUDIT_PR_NUMBER: ${{ steps.pr.outputs.number }}
-          AUDIT_EVENT: ${{ github.event_name }}
-          REVIEW_AUDIT_FILE: ${{ runner.temp }}/review-audit/review-audit.jsonl
-        run: |
-          if [ "$IS_MEMBER" != "true" ]; then
-            DECISION=denied
-            REASON="requester is not a docker org member"
-          elif [ "$RATE_ANOMALOUS" = "true" ]; then
-            DECISION=throttled
-            REASON="rate anomaly: too many recent review requests on this PR"
-          else
-            DECISION=authorized
-            if [ "$STALE" = "true" ]; then
-              REASON="docker org member (PR head moved after request — reviewing latest commit)"
-            else
-              REASON="docker org member"
-            fi
-          fi
-          export AUDIT_DECISION="$DECISION"
-          export AUDIT_REASON="$REASON"
-          export AUDIT_TRIGGER="$([ "$USER_REQUESTED" = "true" ] && echo user-requested || echo automatic)"
-          export AUDIT_HEAD_SHA="${CURRENT_SHA:-$REQUESTED_SHA}"
-          export AUDIT_REQUESTED_SHA="$REQUESTED_SHA"
-
-          # If setup-credentials failed (OIDC/Secrets Manager misconfig), the dist
-          # bundle and DOCKER_AGENT_ACTION_ROOT are never set. Still record the
-          # denial inline so the "log every request, including denials" guarantee
-          # holds even on infra-failure paths.
-          if [ -z "$DOCKER_AGENT_ACTION_ROOT" ] || [ ! -f "$DOCKER_AGENT_ACTION_ROOT/dist/audit-log.js" ]; then
-            TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            REC=$(jq -nc \
-              --arg ts "$TS" --arg event "$AUDIT_EVENT" --arg trigger "$AUDIT_TRIGGER" \
-              --arg actor "${AUDIT_ACTOR:-unknown}" --arg repo "$GITHUB_REPOSITORY" \
-              --arg pr "$AUDIT_PR_NUMBER" --arg head "$AUDIT_HEAD_SHA" \
-              --arg requested "$AUDIT_REQUESTED_SHA" --arg decision "$AUDIT_DECISION" \
-              --arg reason "$AUDIT_REASON (audit-log bundle unavailable — emitted inline)" \
-              '{timestamp:$ts,event:$event,trigger:$trigger,actor:$actor,repository:$repo,prNumber:$pr,headSha:$head,requestedSha:$requested,decision:$decision,reason:$reason}')
-            echo "::notice title=Review request audit::[review-request-audit] $REC"
-            mkdir -p "$(dirname "$REVIEW_AUDIT_FILE")"
-            printf '%s\n' "$REC" >> "$REVIEW_AUDIT_FILE" || true
-            exit 0
-          fi
-
-          node "$DOCKER_AGENT_ACTION_ROOT/dist/audit-log.js" || echo "::warning::audit-log failed"
-
-      - name: Upload review audit log
-        if: |
-          always() &&
-          steps.command.outputs.is_review != 'false' &&
-          steps.draft.outputs.skip != 'true'
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: pr-review-audit-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/review-audit/
-          retention-days: 90
-          if-no-files-found: ignore
 
       - name: Checkout PR head
         if: |
