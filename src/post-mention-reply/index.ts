@@ -101,8 +101,9 @@ export async function run(config: PostMentionReplyConfig): Promise<void> {
   const prNum = parseInt(prNumber, 10);
 
   // Guard 7: dedup check (inline only — top-level has no dedup, see C1).
-  // Workflow-level concurrency lock and should-reply guards prevent double-posting
-  // for top-level mentions; only inline threads need per-thread deduplication.
+  // Top-level mentions rely on the per-PR `concurrency:` group in review-pr.yml
+  // (which serializes runs for one PR) plus the should-reply guards to bound
+  // double-posting; only inline threads need this per-thread deduplication.
   if (isInline) {
     let isDuplicate = false;
     try {

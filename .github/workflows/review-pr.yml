@@ -80,6 +80,20 @@ permissions:
   id-token: write
   actions: read   # download-artifact across workflow_run boundary
 
+# Rate-anomaly safeguard: serialize same-trigger bursts on a PR (e.g. rapid
+# force-pushes firing repeated auto-reviews) instead of running N in parallel.
+# The group is keyed per PR AND per trigger intent: the comment id (or event
+# name) suffix keeps distinct comments/replies in distinct groups, so a quick
+# conversational reply is never queued behind a 45-minute review. cancel-in-
+# progress is false so an in-flight review/reply is never killed mid-post.
+# Per-PR request *frequency* is enforced by the rate-limit check below, and the
+# in-action cache lock (review-pr/action.yml) prevents concurrent reviews; the
+# workflow_run/fork path (PR number only in the artifact) falls back to a per-run
+# group, where those two mechanisms still bound abuse.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr-number || github.run_id }}-${{ github.event.comment.id || github.event_name }}
+  cancel-in-progress: false
+
 jobs:
   resolve-context:
     if: inputs.trigger-run-id != ''
@@ -315,10 +329,36 @@ jobs:
           REQUESTER: ${{ github.event.sender.login }}
         run: node "$DOCKER_AGENT_ACTION_ROOT/dist/check-org-membership.js"
 
+      # Rate-anomaly safeguard: count how many docker-agent reviews and replies
+      # landed on this PR in the recent window (full reviews via the Reviews API
+      # plus marker-bearing reply comments). An authorized account can still drive
+      # the bot at high frequency (each request costs an LLM run), so a burst above
+      # the threshold is flagged and the expensive review is skipped. Runs BEFORE
+      # "Create check run" so a throttled request creates no check run (a skipped
+      # review must not surface as a green "PR Review" check).
+      #
+      # Scope: this gate guards the review run only. The conversational reply jobs
+      # (reply-to-feedback, reply-to-mention) are intentionally left unthrottled
+      # (see the note on each). The window count itself already spans reviews AND
+      # replies, so heavy reply traffic still throttles subsequent review runs.
+      - name: Check rate anomaly
+        id: rate
+        if: |
+          steps.membership.outputs.is_member == 'true' &&
+          steps.command.outputs.is_review != 'false' &&
+          steps.draft.outputs.skip != 'true'
+        continue-on-error: true   # fail-open: a rate-check error must not block reviews
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
+          RATE_PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: node "$DOCKER_AGENT_ACTION_ROOT/dist/rate-limit.js"
+
       - name: Create check run
         if: |
           (steps.pr.outputs.source == 'event' || steps.pr.outputs.source == 'trigger') &&
-          steps.membership.outputs.is_member == 'true'
+          steps.membership.outputs.is_member == 'true' &&
+          steps.rate.outputs.anomalous != 'true'
         id: create-check
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -349,7 +389,8 @@ jobs:
         if: |
           steps.membership.outputs.is_member == 'true' &&
           steps.command.outputs.is_review != 'false' &&
-          steps.draft.outputs.skip != 'true'
+          steps.draft.outputs.skip != 'true' &&
+          steps.rate.outputs.anomalous != 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
@@ -359,7 +400,8 @@ jobs:
         if: |
           steps.membership.outputs.is_member == 'true' &&
           steps.command.outputs.is_review != 'false' &&
-          steps.draft.outputs.skip != 'true'
+          steps.draft.outputs.skip != 'true' &&
+          steps.rate.outputs.anomalous != 'true'
         id: run-review
         continue-on-error: true
         uses: docker/docker-agent-action/review-pr@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
@@ -404,6 +446,12 @@ jobs:
               core.warning(`Failed to update check run: ${error.message}`);
             }
 
+  # No rate-anomaly gate here (unlike the review job): conversational replies are
+  # gated by org membership and serialized per-PR by the `concurrency:` group, and
+  # each reply requires a distinct human comment to trigger it, so they cannot be
+  # fanned out the way review requests can. The rate-limit window count does still
+  # include these replies, so a reply burst throttles subsequent review runs.
+  # Extending the same gate to the reply jobs is a deferred follow-up.
   reply-to-feedback:
     needs: [resolve-context]
     if: |
@@ -746,6 +794,10 @@ jobs:
           path: feedback/
           retention-days: 90
 
+  # No rate-anomaly gate here, same rationale as reply-to-feedback above:
+  # org-gated, per-PR-serialized, and trigger-bound to a human comment. The
+  # rate-limit window count includes these replies, so they still feed the
+  # review job's throttle. Gating the reply jobs themselves is a deferred follow-up.
   reply-to-mention:
     needs: [resolve-context]
     if: |

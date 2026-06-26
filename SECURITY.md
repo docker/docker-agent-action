@@ -26,6 +26,8 @@ This action includes **built-in security features for all agent executions**:
    - **Suspicious patterns** (strip + warn): Behavioral/natural-language injection attempts ("ignore previous instructions", "system mode", "reveal the token", base64/hex obfuscation, etc.) — matching lines are removed from the prompt before it reaches the agent
    - **Medium-risk patterns** (warn only): API key variable names in configuration (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, etc.)
 
+4. **Review-Request Abuse Safeguards** — the comment/event-triggered PR review pipeline is hardened against abuse on every trigger path: org-membership validation and rate-anomaly throttling. See [Review-Request Abuse Safeguards](#review-request-abuse-safeguards).
+
 ## Security Architecture
 
 The action implements a defense-in-depth approach:
@@ -68,6 +70,55 @@ The action implements a defense-in-depth approach:
 │    ✓ Prevent secret exposure in PR comments                    │
 └────────────────────────────────────────────────────────────────┘
 ```
+
+## Review-Request Abuse Safeguards
+
+The PR review pipeline (`.github/workflows/review-pr.yml` and the `review-pr/`
+composite actions) is comment- and event-triggered, which makes it the main
+abuse vector for cost/spam. Two safeguards harden the review-request flow on
+every trigger path (`review_requested`, the deprecated `/review` comment,
+`@docker-agent` mentions, automatic `opened`/`synchronize`, and the
+`workflow_run` fork path).
+
+### 1. Review requests come from org members
+
+Membership is verified before any review work runs, and which actor is checked
+depends on the trigger:
+
+| Trigger | Actor verified | Mechanism |
+|---------|----------------|-----------|
+| `/review` comment, `@docker-agent` mention, reply-to-feedback | The commenter | `check-org-membership` against the `docker` org (OIDC `org-membership-token`) |
+| Automatic review (`opened`/`synchronize`/`ready_for_review`) | The PR author | `check-org-membership` resolves the PR author live via the GitHub API |
+| `review_requested` via the PR sidebar | The requester | The requesting org member is verified, so an external contributor's PR can be reviewed on request. The requester is taken only from a trusted source (`github.event.sender.login` on the direct same-repo path, re-derived from the PR timeline on the fork/`workflow_run` path), never from the trigger artifact. Also relies on **GitHub-native enforcement** (only users with triage/write access can request a reviewer) and gates on `requested_reviewer.login == 'docker-agent'` |
+
+The membership check **fails closed**: if no actor login can be resolved, or the
+actor is not an org member, the review is skipped. `src/check-org-membership`
+evaluates the authorization paths in order (the PR author for automatic review,
+then the trusted requester for `review_requested`), resolving the PR author live
+via the API so the directly-wired `pull_request` path verifies the author
+instead of an empty comment author.
+
+### 2. Rate anomalies are detected and throttled
+
+Authorization gates *who* may trigger a review, not *how often*. Three layers
+bound request frequency:
+
+- **Per-PR `concurrency:` groups** on `review-pr.yml` and the trigger workflow
+  collapse same-trigger bursts (e.g. rapid force-pushes, repeated review
+  requests) instead of running them in parallel. Groups are scoped per trigger
+  intent so a quick conversational reply is never queued behind a long review.
+- **`src/rate-limit`** counts docker-agent review/reply outputs on the PR within
+  a sliding window (default 600 s) and, when the count crosses a threshold
+  (default 8), flags a rate anomaly. It counts one unit per LLM run: full reviews
+  via the Reviews API (`pulls.listReviews`, by bot author, covering findings,
+  zero-finding APPROVEs, and timeout/error/LGTM fallbacks, none of which carry an
+  inline marker) plus marker-bearing reply comments. The review job skips the
+  expensive review on a flagged anomaly; the conversational reply jobs are not
+  gated (they are org-gated and per-PR serialized), though their replies still
+  count toward the window. The check **fails open** so an API error never blocks a
+  legitimate review.
+- The existing in-action **cache lock** (`pr-review-lock-<repo>-<pr>-*`, 600 s
+  TTL) prevents concurrent reviews from racing on the same PR.
 
 ## Security Modules
 
