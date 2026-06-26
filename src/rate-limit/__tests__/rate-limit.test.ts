@@ -1,36 +1,45 @@
 // Copyright The Docker Agent Action authors
 // SPDX-License-Identifier: Apache-2.0
 
+import * as core from '@actions/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@actions/core');
 
-const { mockPaginate, mockListComments, mockListReviewComments, mockListReviews, MockOctokit } =
-  vi.hoisted(() => {
-    const mockListComments = { endpoint: 'issues.listComments' };
-    const mockListReviewComments = { endpoint: 'pulls.listReviewComments' };
-    const mockListReviews = { endpoint: 'pulls.listReviews' };
-    const mockPaginate = vi.fn();
+const {
+  mockPaginate,
+  mockPaginateIterator,
+  mockListComments,
+  mockListReviewComments,
+  mockListReviews,
+  MockOctokit,
+} = vi.hoisted(() => {
+  const mockListComments = { endpoint: 'issues.listComments' };
+  const mockListReviewComments = { endpoint: 'pulls.listReviewComments' };
+  const mockListReviews = { endpoint: 'pulls.listReviews' };
+  const mockPaginateIterator = vi.fn();
+  const mockPaginate = Object.assign(vi.fn(), { iterator: mockPaginateIterator });
 
-    class MockOctokit {
-      paginate = mockPaginate;
-      rest = {
-        issues: { listComments: mockListComments },
-        pulls: { listReviewComments: mockListReviewComments, listReviews: mockListReviews },
-      };
-    }
-    return {
-      mockPaginate,
-      mockListComments,
-      mockListReviewComments,
-      mockListReviews,
-      MockOctokit,
+  class MockOctokit {
+    paginate = mockPaginate;
+    rest = {
+      issues: { listComments: mockListComments },
+      pulls: { listReviewComments: mockListReviewComments, listReviews: mockListReviews },
     };
-  });
+  }
+  return {
+    mockPaginate,
+    mockPaginateIterator,
+    mockListComments,
+    mockListReviewComments,
+    mockListReviews,
+    MockOctokit,
+  };
+});
 
 vi.mock('@octokit/rest', () => ({ Octokit: MockOctokit }));
 
-import { detectRateAnomaly } from '../index.js';
+import { detectRateAnomaly, main } from '../index.js';
 
 const NOW = Date.parse('2026-06-24T10:10:00.000Z');
 const within = (secAgo: number) => new Date(NOW - secAgo * 1000).toISOString();
@@ -51,12 +60,14 @@ function review(secAgo: number, body = '### Assessment: 🟢 APPROVE', login = B
   return { user: { login }, body, submitted_at: within(secAgo) };
 }
 
-// Route paginate() to the right dataset based on which endpoint it was given.
+// Route paginate() and paginate.iterator() to the right dataset based on endpoint.
 function routePaginate(issue: unknown[], reviewComments: unknown[], reviews: unknown[]) {
   mockPaginate.mockImplementation((endpoint: unknown) => {
     if (endpoint === mockListReviewComments) return Promise.resolve(reviewComments);
-    if (endpoint === mockListReviews) return Promise.resolve(reviews);
     return Promise.resolve(issue);
+  });
+  mockPaginateIterator.mockImplementation(async function* () {
+    yield { data: reviews };
   });
 }
 
@@ -202,11 +213,119 @@ describe('detectRateAnomaly', () => {
     });
   });
 
-  it('queries listReviews without a since parameter (the API has none)', async () => {
+  it('queries listReviews via paginate.iterator without a since parameter (API has none)', async () => {
     routePaginate([], [], []);
     await detectRateAnomaly('tok', base);
-    const reviewCall = mockPaginate.mock.calls.find((c) => c[0] === mockListReviews);
-    expect(reviewCall?.[1]).toMatchObject({ owner: 'docker', repo: 'repo', pull_number: 5 });
-    expect(reviewCall?.[1]).not.toHaveProperty('since');
+    const iteratorCall = mockPaginateIterator.mock.calls.find((c) => c[0] === mockListReviews);
+    expect(iteratorCall?.[1]).toMatchObject({ owner: 'docker', repo: 'repo', pull_number: 5 });
+    expect(iteratorCall?.[1]).not.toHaveProperty('since');
+  });
+
+  it('throws RangeError for non-positive windowSeconds', async () => {
+    routePaginate([], [], []);
+    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: 0 })).rejects.toThrow(RangeError);
+    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: -1 })).rejects.toThrow(RangeError);
+    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: NaN })).rejects.toThrow(RangeError);
+  });
+
+  it('throws RangeError for non-positive threshold', async () => {
+    routePaginate([], [], []);
+    await expect(detectRateAnomaly('tok', { ...base, threshold: 0 })).rejects.toThrow(RangeError);
+    await expect(detectRateAnomaly('tok', { ...base, threshold: -1 })).rejects.toThrow(RangeError);
+  });
+});
+
+describe('main()', () => {
+  const mockedSetOutput = vi.mocked(core.setOutput);
+
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('fails open and emits all four outputs when token is missing', async () => {
+    vi.stubEnv('GITHUB_TOKEN', '');
+    vi.stubEnv('GH_TOKEN', '');
+    vi.stubEnv('RATE_PR_NUMBER', '5');
+    vi.stubEnv('RATE_WINDOW_SECONDS', '300');
+    vi.stubEnv('RATE_MAX_REQUESTS', '4');
+
+    await main();
+
+    expect(mockedSetOutput).toHaveBeenCalledWith('anomalous', 'false');
+    expect(mockedSetOutput).toHaveBeenCalledWith('count', '0');
+    expect(mockedSetOutput).toHaveBeenCalledWith('window', '300');
+    expect(mockedSetOutput).toHaveBeenCalledWith('threshold', '4');
+  });
+
+  it('fails open and emits all four outputs when PR number is missing', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'tok');
+    vi.stubEnv('GITHUB_REPOSITORY', 'docker/repo');
+    vi.stubEnv('RATE_PR_NUMBER', 'not-a-number');
+
+    await main();
+
+    expect(mockedSetOutput).toHaveBeenCalledWith('anomalous', 'false');
+    expect(mockedSetOutput).toHaveBeenCalledWith('count', '0');
+    expect(mockedSetOutput).toHaveBeenCalledWith('window', '600');
+    expect(mockedSetOutput).toHaveBeenCalledWith('threshold', '8');
+  });
+
+  it('fails open and emits all four outputs when GITHUB_REPOSITORY is invalid', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'tok');
+    vi.stubEnv('GITHUB_REPOSITORY', 'no-slash-here');
+    vi.stubEnv('RATE_PR_NUMBER', '5');
+
+    await main();
+
+    expect(mockedSetOutput).toHaveBeenCalledWith('anomalous', 'false');
+    expect(mockedSetOutput).toHaveBeenCalledWith('count', '0');
+    expect(mockedSetOutput).toHaveBeenCalledWith('window', '600');
+    expect(mockedSetOutput).toHaveBeenCalledWith('threshold', '8');
+  });
+
+  it('emits all four outputs on a successful non-anomalous run', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'tok');
+    vi.stubEnv('GITHUB_REPOSITORY', 'docker/repo');
+    vi.stubEnv('RATE_PR_NUMBER', '5');
+    vi.stubEnv('RATE_WINDOW_SECONDS', '600');
+    vi.stubEnv('RATE_MAX_REQUESTS', '8');
+    routePaginate([], [], []);
+
+    await main();
+
+    expect(mockedSetOutput).toHaveBeenCalledWith('anomalous', 'false');
+    expect(mockedSetOutput).toHaveBeenCalledWith('count', '0');
+    expect(mockedSetOutput).toHaveBeenCalledWith('window', '600');
+    expect(mockedSetOutput).toHaveBeenCalledWith('threshold', '8');
+  });
+
+  it('emits all four outputs on a successful anomalous run', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'tok');
+    vi.stubEnv('GITHUB_REPOSITORY', 'docker/repo');
+    vi.stubEnv('RATE_PR_NUMBER', '5');
+    vi.stubEnv('RATE_WINDOW_SECONDS', '600');
+    vi.stubEnv('RATE_MAX_REQUESTS', '2');
+    routePaginate([reply(60), reply(120)], [], []);
+
+    await main();
+
+    expect(mockedSetOutput).toHaveBeenCalledWith('anomalous', 'true');
+    expect(mockedSetOutput).toHaveBeenCalledWith('count', '2');
+    expect(mockedSetOutput).toHaveBeenCalledWith('window', '600');
+    expect(mockedSetOutput).toHaveBeenCalledWith('threshold', '2');
+  });
+
+  it('fails open and emits all four outputs when the API throws', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'tok');
+    vi.stubEnv('GITHUB_REPOSITORY', 'docker/repo');
+    vi.stubEnv('RATE_PR_NUMBER', '5');
+    mockPaginate.mockRejectedValue(new Error('API error'));
+
+    await main();
+
+    expect(mockedSetOutput).toHaveBeenCalledWith('anomalous', 'false');
+    expect(mockedSetOutput).toHaveBeenCalledWith('count', '0');
+    expect(mockedSetOutput).toHaveBeenCalledWith('window', '600');
+    expect(mockedSetOutput).toHaveBeenCalledWith('threshold', '8');
   });
 });

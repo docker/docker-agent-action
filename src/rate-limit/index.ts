@@ -122,41 +122,60 @@ export async function detectRateAnomaly(
   token: string,
   opts: RateAnomalyOptions,
 ): Promise<RateAnomalyResult> {
+  if (!Number.isFinite(opts.windowSeconds) || opts.windowSeconds <= 0) {
+    throw new RangeError(`windowSeconds must be a positive finite number, got ${opts.windowSeconds}`);
+  }
+  if (!Number.isFinite(opts.threshold) || opts.threshold <= 0) {
+    throw new RangeError(`threshold must be a positive integer, got ${opts.threshold}`);
+  }
+
   const octokit = new Octokit({ auth: token });
   const now = opts.nowMs ?? Date.now();
   const windowStartMs = now - opts.windowSeconds * 1000;
   const since = new Date(windowStartMs).toISOString();
 
   // `since` filters the comment endpoints server-side by updated_at; the
-  // per-comment created_at check below enforces the precise window. paginate()
-  // handles busy PRs.
-  const issueComments: CommentLike[] = await octokit.paginate(octokit.rest.issues.listComments, {
-    owner: opts.owner,
-    repo: opts.repo,
-    issue_number: opts.prNumber,
-    since,
-    per_page: 100,
-  });
-  const reviewComments: CommentLike[] = await octokit.paginate(
-    octokit.rest.pulls.listReviewComments,
-    {
+  // per-comment created_at check below enforces the precise window. All three
+  // fetches run in parallel to cut wall-clock time.
+  const [issueComments, reviewComments, reviews] = await Promise.all([
+    octokit.paginate(octokit.rest.issues.listComments, {
+      owner: opts.owner,
+      repo: opts.repo,
+      issue_number: opts.prNumber,
+      since,
+      per_page: 100,
+    }) as Promise<CommentLike[]>,
+    octokit.paginate(octokit.rest.pulls.listReviewComments, {
       owner: opts.owner,
       repo: opts.repo,
       pull_number: opts.prNumber,
       since,
       per_page: 100,
-    },
-  );
-  // The Reviews API has no `since` parameter, so paginate and filter by
-  // submitted_at below. This is the only endpoint where a review run is
-  // observable: the bot posts every review (findings, zero-finding APPROVE, and
-  // the timeout/error/LGTM fallbacks) here with no inline marker on the body.
-  const reviews: ReviewLike[] = await octokit.paginate(octokit.rest.pulls.listReviews, {
-    owner: opts.owner,
-    repo: opts.repo,
-    pull_number: opts.prNumber,
-    per_page: 100,
-  });
+    }) as Promise<CommentLike[]>,
+    // The Reviews API has no `since` parameter. Use paginate.iterator and stop
+    // early once the entire page predates the window (GitHub returns reviews
+    // oldest-first), avoiding unbounded API calls on heavily-reviewed PRs.
+    (async (): Promise<ReviewLike[]> => {
+      const acc: ReviewLike[] = [];
+      for await (const page of octokit.paginate.iterator(octokit.rest.pulls.listReviews, {
+        owner: opts.owner,
+        repo: opts.repo,
+        pull_number: opts.prNumber,
+        per_page: 100,
+      })) {
+        acc.push(...(page.data as ReviewLike[]));
+        if (
+          page.data.every(
+            (r) =>
+              !(r as ReviewLike).submitted_at ||
+              Date.parse((r as ReviewLike).submitted_at!) < windowStartMs,
+          )
+        )
+          break;
+      }
+      return acc;
+    })(),
+  ]);
 
   const replyCount = [...issueComments, ...reviewComments].filter((c) =>
     isAgentReplyComment(c, opts.botLogin, windowStartMs),
@@ -181,7 +200,7 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? '';
   const repository = process.env.GITHUB_REPOSITORY ?? '';
   const prNumber = Number.parseInt(process.env.RATE_PR_NUMBER ?? '', 10);
@@ -194,6 +213,8 @@ async function main(): Promise<void> {
     core.warning('rate-limit: missing token or PR number — skipping rate check (fail-open)');
     core.setOutput('anomalous', 'false');
     core.setOutput('count', '0');
+    core.setOutput('window', String(windowSeconds));
+    core.setOutput('threshold', String(threshold));
     return;
   }
 
@@ -202,6 +223,8 @@ async function main(): Promise<void> {
     core.warning(`rate-limit: invalid GITHUB_REPOSITORY '${repository}' — skipping (fail-open)`);
     core.setOutput('anomalous', 'false');
     core.setOutput('count', '0');
+    core.setOutput('window', String(windowSeconds));
+    core.setOutput('threshold', String(threshold));
     return;
   }
   const owner = repository.slice(0, slashIdx);
@@ -238,6 +261,8 @@ async function main(): Promise<void> {
     );
     core.setOutput('anomalous', 'false');
     core.setOutput('count', '0');
+    core.setOutput('window', String(windowSeconds));
+    core.setOutput('threshold', String(threshold));
   }
 }
 

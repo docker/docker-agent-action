@@ -14,7 +14,7 @@ on:
 # Distinct review comments stay independent (the comment id keys them into their
 # own group) so a real reply is never dropped by another comment on the same PR.
 concurrency:
-  group: pr-review-trigger-${{ github.event.pull_request.number }}-${{ github.event.comment.id || 'review-request' }}
+  group: pr-review-trigger-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.comment.id || 'review-request' }}
   cancel-in-progress: true
 
 permissions: {}
