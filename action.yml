@@ -71,6 +71,10 @@ inputs:
     description: "Base delay in seconds between retries (doubles each attempt)"
     required: false
     default: "5"
+  retry-on-timeout:
+    description: "Number of additional retry attempts when the agent times out (exit code 124). Independent of max-retries — both budgets can be consumed in the same run. Default 0 = no timeout retries."
+    required: false
+    default: "0"
   extra-args:
     description: "Additional arguments to pass to docker agent run"
     required: false
