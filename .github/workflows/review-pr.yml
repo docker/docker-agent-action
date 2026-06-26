@@ -329,12 +329,18 @@ jobs:
           REQUESTER: ${{ github.event.sender.login }}
         run: node "$DOCKER_AGENT_ACTION_ROOT/dist/check-org-membership.js"
 
-      # Rate-anomaly safeguard: count how many docker-agent review/reply comments
-      # were posted on this PR in the recent window. An authorized account can
-      # still drive the bot at high frequency (each request costs an LLM run), so
-      # a burst above the threshold is flagged and the expensive review is skipped.
-      # Runs BEFORE "Create check run" so a throttled request creates no check run
-      # (a skipped review must not surface as a green "PR Review" check).
+      # Rate-anomaly safeguard: count how many docker-agent reviews and replies
+      # landed on this PR in the recent window (full reviews via the Reviews API
+      # plus marker-bearing reply comments). An authorized account can still drive
+      # the bot at high frequency (each request costs an LLM run), so a burst above
+      # the threshold is flagged and the expensive review is skipped. Runs BEFORE
+      # "Create check run" so a throttled request creates no check run (a skipped
+      # review must not surface as a green "PR Review" check).
+      #
+      # Scope: this gate guards the review run only. The conversational reply jobs
+      # (reply-to-feedback, reply-to-mention) are intentionally left unthrottled
+      # (see the note on each). The window count itself already spans reviews AND
+      # replies, so heavy reply traffic still throttles subsequent review runs.
       - name: Check rate anomaly
         id: rate
         if: |
@@ -440,6 +446,12 @@ jobs:
               core.warning(`Failed to update check run: ${error.message}`);
             }
 
+  # No rate-anomaly gate here (unlike the review job): conversational replies are
+  # gated by org membership and serialized per-PR by the `concurrency:` group, and
+  # each reply requires a distinct human comment to trigger it, so they cannot be
+  # fanned out the way review requests can. The rate-limit window count does still
+  # include these replies, so a reply burst throttles subsequent review runs.
+  # Extending the same gate to the reply jobs is a deferred follow-up.
   reply-to-feedback:
     needs: [resolve-context]
     if: |
@@ -782,6 +794,10 @@ jobs:
           path: feedback/
           retention-days: 90
 
+  # No rate-anomaly gate here, same rationale as reply-to-feedback above:
+  # org-gated, per-PR-serialized, and trigger-bound to a human comment. The
+  # rate-limit window count includes these replies, so they still feed the
+  # review job's throttle. Gating the reply jobs themselves is a deferred follow-up.
   reply-to-mention:
     needs: [resolve-context]
     if: |

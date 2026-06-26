@@ -205,7 +205,7 @@ The workflow YAML examples above are the complete, recommended setup. The reusab
 | **PR vs issue comment** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are silently ignored. |
 | **Draft PR skipping** | Draft PRs are skipped internally — no caller condition needed. |
 | **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |
-| **Rate-anomaly throttling** | Per-PR `concurrency:` groups serialize same-trigger bursts, and a rate-limit check skips the review when too many docker-agent review/reply comments land on one PR within the window. No caller configuration needed. |
+| **Rate-anomaly throttling** | Per-PR `concurrency:` groups serialize same-trigger bursts, and a rate-limit check skips the review when too many docker-agent reviews and replies land on one PR within the window. No caller configuration needed. |
 
 **The only decision callers make** is which setup pattern to use: 1-workflow for same-repo PRs, 2-workflow for repos that accept fork PRs. That distinction is the caller's responsibility because it controls which event path delivers OIDC credentials to the reusable workflow.
 

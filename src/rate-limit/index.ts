@@ -8,14 +8,23 @@
  * The existing per-PR cache lock (review-pr/action.yml) only stops *concurrent*
  * reviews and only on the review path; an authorized account can still drive the
  * bot at high frequency (each request costs an LLM run). This module adds a
- * frequency check: it counts how many docker-agent review/reply comments were
- * posted on the PR within a recent time window and flags the request as a rate
- * anomaly when that count crosses a threshold. The workflow gates the expensive
- * review step on the result, so a burst is throttled rather than run N times.
+ * frequency check: it counts how many docker-agent review/reply outputs landed
+ * on the PR within a recent time window and flags the request as a rate anomaly
+ * when that count crosses a threshold. The workflow gates the expensive review
+ * step on the result, so a burst is throttled rather than run N times.
  *
- * Counting the bot's own marker comments (rather than raw triggers) is the
- * signal that is reliably observable with the repo-scoped token already present,
- * and it directly measures how hard the bot is being driven on that PR.
+ * Counting is per LLM run, so each run contributes exactly one unit:
+ *   - Reviews are posted via the Reviews API (POST /pulls/{n}/reviews) with no
+ *     inline marker — a findings review, a zero-finding APPROVE, and the
+ *     timeout/error/LGTM fallbacks all land there. They are counted from
+ *     `pulls.listReviews` by bot author (a real review run always carries an
+ *     assessment/status body); the inline finding comments such a review carries
+ *     are deliberately not counted, since that would be N units per single run.
+ *   - Replies are posted as issue comments or inline review-comment replies,
+ *     each carrying a `-reply` marker, and are counted from the comment
+ *     endpoints (one marker per reply run).
+ * Both signals are observable with the repo-scoped token already present and
+ * together measure how hard the bot is being driven on that PR.
  *
  * Exported:
  *   detectRateAnomaly(token, opts) → RateAnomalyResult
@@ -32,15 +41,21 @@
 import * as core from '@actions/core';
 import { Octokit } from '@octokit/rest';
 
-// Review markers also matched by review-pr.yml / review-pr/action.yml. Counting
-// any of these captures both full reviews and conversational replies, and the
-// legacy cagent-* markers keep older threads countable during migration.
-const REVIEW_MARKERS = [
-  '<!-- docker-agent-review -->',
-  '<!-- docker-agent-review-reply -->',
-  '<!-- cagent-review -->',
-  '<!-- cagent-review-reply -->',
-];
+// Reply markers identify the bot's conversational replies — one per reply LLM
+// run — posted as issue comments or inline review-comment replies. Full reviews
+// carry no marker on the review body and are counted separately (see
+// detectRateAnomaly), so the review/finding markers are intentionally absent
+// here: counting them would double-count a review run that already shows up via
+// the Reviews API. The legacy cagent-* marker keeps older reply threads
+// countable during migration.
+const REPLY_MARKERS = ['<!-- docker-agent-review-reply -->', '<!-- cagent-review-reply -->'];
+
+// GitHub presents the bot identity as "docker-agent" when posting with a machine
+// user token, or "docker-agent[bot]" through a GitHub App installation token.
+// Match both so the count is correct regardless of which token posted.
+function matchesBotLogin(login: string | null | undefined, botLogin: string): boolean {
+  return login === botLogin || login === `${botLogin}[bot]`;
+}
 
 export interface RateAnomalyOptions {
   owner: string;
@@ -69,19 +84,39 @@ interface CommentLike {
   created_at?: string;
 }
 
-function isAgentReviewComment(c: CommentLike, botLogin: string, windowStartMs: number): boolean {
-  if (c.user?.login !== botLogin) return false;
+interface ReviewLike {
+  user?: { login?: string } | null;
+  body?: string | null;
+  submitted_at?: string | null;
+}
+
+function isAgentReplyComment(c: CommentLike, botLogin: string, windowStartMs: number): boolean {
+  if (!matchesBotLogin(c.user?.login, botLogin)) return false;
   const body = c.body ?? '';
-  if (!REVIEW_MARKERS.some((m) => body.includes(m))) return false;
+  if (!REPLY_MARKERS.some((m) => body.includes(m))) return false;
   if (!c.created_at) return false;
   const created = Date.parse(c.created_at);
   return Number.isFinite(created) && created >= windowStartMs;
 }
 
+function isAgentReview(r: ReviewLike, botLogin: string, windowStartMs: number): boolean {
+  if (!matchesBotLogin(r.user?.login, botLogin)) return false;
+  // A real review run always carries an assessment/status body ("### Assessment:
+  // …", or a timeout/error/LGTM fallback). Standalone inline comments and replies
+  // surface in this endpoint as empty-body review entries; skipping them keeps
+  // each review run counted exactly once and avoids double-counting an inline
+  // reply (already counted via its reply marker on the comment endpoints).
+  if (!r.body || r.body.trim().length === 0) return false;
+  if (!r.submitted_at) return false;
+  const submitted = Date.parse(r.submitted_at);
+  return Number.isFinite(submitted) && submitted >= windowStartMs;
+}
+
 /**
- * Count docker-agent review/reply comments on `prNumber` created within the last
- * `windowSeconds`, across both issue comments and inline review comments, and
- * decide whether the count constitutes a rate anomaly.
+ * Count docker-agent review/reply outputs on `prNumber` within the last
+ * `windowSeconds` — full reviews (via the Reviews API) plus conversational
+ * replies (issue comments and inline review-comment replies) — and decide
+ * whether the count constitutes a rate anomaly.
  */
 export async function detectRateAnomaly(
   token: string,
@@ -92,8 +127,9 @@ export async function detectRateAnomaly(
   const windowStartMs = now - opts.windowSeconds * 1000;
   const since = new Date(windowStartMs).toISOString();
 
-  // `since` filters server-side by updated_at; the per-comment created_at check
-  // below enforces the precise creation window. paginate() handles busy PRs.
+  // `since` filters the comment endpoints server-side by updated_at; the
+  // per-comment created_at check below enforces the precise window. paginate()
+  // handles busy PRs.
   const issueComments: CommentLike[] = await octokit.paginate(octokit.rest.issues.listComments, {
     owner: opts.owner,
     repo: opts.repo,
@@ -111,10 +147,22 @@ export async function detectRateAnomaly(
       per_page: 100,
     },
   );
+  // The Reviews API has no `since` parameter, so paginate and filter by
+  // submitted_at below. This is the only endpoint where a review run is
+  // observable: the bot posts every review (findings, zero-finding APPROVE, and
+  // the timeout/error/LGTM fallbacks) here with no inline marker on the body.
+  const reviews: ReviewLike[] = await octokit.paginate(octokit.rest.pulls.listReviews, {
+    owner: opts.owner,
+    repo: opts.repo,
+    pull_number: opts.prNumber,
+    per_page: 100,
+  });
 
-  const count = [...issueComments, ...reviewComments].filter((c) =>
-    isAgentReviewComment(c, opts.botLogin, windowStartMs),
+  const replyCount = [...issueComments, ...reviewComments].filter((c) =>
+    isAgentReplyComment(c, opts.botLogin, windowStartMs),
   ).length;
+  const reviewCount = reviews.filter((r) => isAgentReview(r, opts.botLogin, windowStartMs)).length;
+  const count = replyCount + reviewCount;
 
   return {
     count,
@@ -175,12 +223,12 @@ async function main(): Promise<void> {
 
     if (result.anomalous) {
       core.warning(
-        `Rate anomaly on PR #${prNumber}: ${result.count} agent review/reply comments in the ` +
+        `Rate anomaly on PR #${prNumber}: ${result.count} agent reviews/replies in the ` +
           `last ${windowSeconds}s (threshold ${threshold}). Throttling this request.`,
       );
     } else {
       core.info(
-        `✅ Rate OK on PR #${prNumber}: ${result.count}/${threshold} agent comments in ${windowSeconds}s`,
+        `✅ Rate OK on PR #${prNumber}: ${result.count}/${threshold} agent reviews/replies in ${windowSeconds}s`,
       );
     }
   } catch (err: unknown) {

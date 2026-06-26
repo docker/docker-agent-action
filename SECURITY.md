@@ -107,10 +107,16 @@ bound request frequency:
   collapse same-trigger bursts (e.g. rapid force-pushes, repeated review
   requests) instead of running them in parallel. Groups are scoped per trigger
   intent so a quick conversational reply is never queued behind a long review.
-- **`src/rate-limit`** counts docker-agent review/reply comments posted on the PR
-  within a sliding window (default 600 s) and, when the count crosses a threshold
-  (default 8), flags a rate anomaly. The review job skips the expensive review.
-  The check **fails open** so an API error never blocks a legitimate review.
+- **`src/rate-limit`** counts docker-agent review/reply outputs on the PR within
+  a sliding window (default 600 s) and, when the count crosses a threshold
+  (default 8), flags a rate anomaly. It counts one unit per LLM run: full reviews
+  via the Reviews API (`pulls.listReviews`, by bot author, covering findings,
+  zero-finding APPROVEs, and timeout/error/LGTM fallbacks, none of which carry an
+  inline marker) plus marker-bearing reply comments. The review job skips the
+  expensive review on a flagged anomaly; the conversational reply jobs are not
+  gated (they are org-gated and per-PR serialized), though their replies still
+  count toward the window. The check **fails open** so an API error never blocks a
+  legitimate review.
 - The existing in-action **cache lock** (`pr-review-lock-<repo>-<pr>-*`, 600 s
   TTL) prevents concurrent reviews from racing on the same PR.
 
