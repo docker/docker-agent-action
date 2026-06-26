@@ -123,7 +123,9 @@ export async function detectRateAnomaly(
   opts: RateAnomalyOptions,
 ): Promise<RateAnomalyResult> {
   if (!Number.isFinite(opts.windowSeconds) || opts.windowSeconds <= 0) {
-    throw new RangeError(`windowSeconds must be a positive finite number, got ${opts.windowSeconds}`);
+    throw new RangeError(
+      `windowSeconds must be a positive finite number, got ${opts.windowSeconds}`,
+    );
   }
   if (!Number.isFinite(opts.threshold) || opts.threshold <= 0) {
     throw new RangeError(`threshold must be a positive integer, got ${opts.threshold}`);
@@ -164,14 +166,11 @@ export async function detectRateAnomaly(
         per_page: 100,
       })) {
         acc.push(...(page.data as ReviewLike[]));
-        if (
-          page.data.every(
-            (r) =>
-              !(r as ReviewLike).submitted_at ||
-              Date.parse((r as ReviewLike).submitted_at!) < windowStartMs,
-          )
-        )
-          break;
+        const allBeforeWindow = page.data.every((r) => {
+          const submittedAt = (r as ReviewLike).submitted_at;
+          return !submittedAt || Date.parse(submittedAt) < windowStartMs;
+        });
+        if (allBeforeWindow) break;
       }
       return acc;
     })(),

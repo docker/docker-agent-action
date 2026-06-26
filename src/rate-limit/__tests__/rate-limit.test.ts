@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import * as core from '@actions/core';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@actions/core');
 
@@ -223,9 +223,15 @@ describe('detectRateAnomaly', () => {
 
   it('throws RangeError for non-positive windowSeconds', async () => {
     routePaginate([], [], []);
-    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: 0 })).rejects.toThrow(RangeError);
-    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: -1 })).rejects.toThrow(RangeError);
-    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: NaN })).rejects.toThrow(RangeError);
+    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: 0 })).rejects.toThrow(
+      RangeError,
+    );
+    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: -1 })).rejects.toThrow(
+      RangeError,
+    );
+    await expect(detectRateAnomaly('tok', { ...base, windowSeconds: NaN })).rejects.toThrow(
+      RangeError,
+    );
   });
 
   it('throws RangeError for non-positive threshold', async () => {
@@ -238,8 +244,17 @@ describe('detectRateAnomaly', () => {
 describe('main()', () => {
   const mockedSetOutput = vi.mocked(core.setOutput);
 
+  // main() reads the clock via Date.now() (it cannot take an injected nowMs),
+  // so pin the system clock to NOW to keep the mocked comment timestamps inside
+  // the sliding window.
   beforeEach(() => {
     vi.unstubAllEnvs();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('fails open and emits all four outputs when token is missing', async () => {
