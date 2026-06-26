@@ -8,6 +8,15 @@ on:
   pull_request_review_comment:
     types: [ created ]
 
+# Rate-anomaly safeguard: collapse a burst of review_requested events on the same
+# PR at the source — re-requesting a review is redundant, so cancel-in-progress
+# drops superseded context-capture runs and only the latest fans out to a review.
+# Distinct review comments stay independent (the comment id keys them into their
+# own group) so a real reply is never dropped by another comment on the same PR.
+concurrency:
+  group: pr-review-trigger-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.comment.id || 'review-request' }}
+  cancel-in-progress: true
+
 permissions: {}
 
 jobs:

@@ -191,7 +191,8 @@ with:
 >
 > 1. **Verifies org membership** before every review. Auto-review checks the **PR author** (so only org members' PRs are reviewed automatically); a **requested review** checks the **requester**, so a maintainer can pull an external contributor's PR into review on demand; `/review` checks the commenter
 > 2. **Prevents bot cascades** — replies from bots (except `docker-agent`) are ignored
-> 3. **Fork PRs work automatically** with the two-workflow setup — the trigger → `workflow_run` pattern provides OIDC/secret access regardless of fork status
+> 3. **Throttles rate anomalies** — per-PR `concurrency:` groups collapse same-trigger bursts, and a rate-limit check skips the review when too many requests land on one PR in a short window
+> 4. **Fork PRs work automatically** with the two-workflow setup — the trigger → `workflow_run` pattern provides OIDC/secret access regardless of fork status
 
 ### What you don't need to add
 
@@ -204,6 +205,7 @@ The workflow YAML examples above are the complete, recommended setup. The reusab
 | **PR vs issue comment** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are silently ignored. |
 | **Draft PR skipping** | Draft PRs are skipped internally — no caller condition needed. |
 | **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |
+| **Rate-anomaly throttling** | Per-PR `concurrency:` groups serialize same-trigger bursts, and a rate-limit check skips the review when too many docker-agent reviews and replies land on one PR within the window. No caller configuration needed. |
 
 **The only decision callers make** is which setup pattern to use: 1-workflow for same-repo PRs, 2-workflow for repos that accept fork PRs. That distinction is the caller's responsibility because it controls which event path delivers OIDC credentials to the reusable workflow.
 
