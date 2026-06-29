@@ -719,7 +719,7 @@ runs:
           echo ""
           echo "Execute the review pipeline:"
           echo ""
-          echo "1. **Gather**: Read the pre-fetched \`pr.diff\` file. If missing, run \`gh pr diff https://github.com/${REPO}/pull/${PR_NUMBER}\` (use the full URL, not just the number)"
+          echo "1. **Gather**: Read the pre-fetched \`pr.diff\` file. If missing, run \`gh pr diff https://github.com/${REPO}/pull/${PR_NUMBER} > pr.diff\` (use the full URL, not just the number) so the validator reads the same diff"
           echo '2. **Draft**: Delegate to `drafter` agent to generate bug hypotheses'
           echo '3. **Verify**: For each hypothesis, delegate to `verifier` agent'
           echo '4. **Post**: Aggregate findings and post review via `gh api`'
@@ -752,6 +752,13 @@ runs:
       run: |
         mkdir -p /tmp/refs
         cp "$ACTION_PATH"/agents/refs/*.md /tmp/refs/
+        # Stage the suggestion-block validator where the agent can run it before
+        # posting (the agent's working dir is the consumer repo, not the action).
+        if [ -f "$ACTION_PATH/../dist/validate-suggestions.js" ]; then
+          cp "$ACTION_PATH/../dist/validate-suggestions.js" /tmp/validate-suggestions.js
+        else
+          echo "::warning::validate-suggestions.js not found in dist — suggestion validation will be skipped"
+        fi
 
     # ========================================
     # RUN REVIEW using root docker-agent-action

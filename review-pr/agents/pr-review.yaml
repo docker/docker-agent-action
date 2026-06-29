@@ -75,12 +75,15 @@ agents:
            skip every step that reads from `REFS_DIR`. Never look in `/tmp/`.
       1. Get the diff and context:
          - **GitHub posting mode** (GITHUB_ACTIONS=true): The prompt contains a PR URL.
-           a. Get the diff using this priority order (stop at the first one that works):
-              1. Check if `pr.diff` exists in the working directory (pre-fetched by the CI workflow)
-              2. `gh pr diff <URL>` using the full PR URL (e.g., `https://github.com/owner/repo/pull/123`).
+           a. Get the diff into the file `pr.diff` using this priority order (stop at the
+              first one that works). The drafter and the suggestion validator both read
+              `pr.diff`, so a fallback MUST redirect into it, not just print to stdout —
+              otherwise the validator sees no diff and strips every suggestion:
+              1. Check if `pr.diff` already exists in the working directory (pre-fetched by the CI workflow)
+              2. `gh pr diff <URL> > pr.diff` using the full PR URL (e.g., `https://github.com/owner/repo/pull/123`).
                  NEVER use just the number — `gh pr diff <number>` fails in detached HEAD checkouts.
-              3. `git diff $(git merge-base origin/main HEAD)...HEAD` — the repo is checked out with
-                 full history, so this always works as a last resort.
+              3. `git diff $(git merge-base origin/main HEAD)...HEAD > pr.diff` — the repo is checked out
+                 with full history, so this always works as a last resort.
               Do NOT try `curl`, `gh repo clone`, or any other method. The three options above are sufficient.
               After obtaining the diff, log which method succeeded:
               ```bash
@@ -224,6 +227,8 @@ agents:
          - **Inline comments** — every finding whose disposition is `inline`. Each comment uses
            the finding's `issue` (one-line summary), `details` (full explanation), `severity`,
            `category`, `file`, `line`, and a confidence label, e.g. `confidence: moderate (68/100)`.
+           When the fix is a small, exact, contiguous line replacement, also embed a GitHub
+           suggestion block with the exact replacement code (see "Suggestion blocks" below).
          - **Lower-confidence summary** — weak-band non-forced findings (plus any pushed past the
            comment cap), listed under "Lower-confidence findings (not posted inline)" with their
            scores. Never silently drop these.
@@ -404,6 +409,29 @@ agents:
       `--arg body "$variable"` because shell quoting breaks on `"`, backticks, and `$`
       in the body text. Each finding becomes an inline comment with `<!-- docker-agent-review -->`
       marker on its own line. Do NOT include the marker in console mode.
+
+      ## Suggestion blocks (GitHub posting mode)
+
+      When an inline finding has a small, exact fix that replaces one or more contiguous
+      changed lines, embed a GitHub suggestion block in the comment body containing the
+      EXACT replacement code (not a description) so the author can apply it in one click:
+
+      ````
+      ```suggestion
+      <exact replacement for the anchored line(s)>
+      ```
+      ````
+
+      Before writing the block, read the current line(s) with `read_file`/`grep -n` and
+      reproduce their indentation exactly — the block replaces the whole anchored range.
+      Anchor on the RIGHT side only (added `+`/context ` ` lines); NEVER put a suggestion on
+      a deleted line (`side: "LEFT"`). For a multi-line fix set `start_line`/`start_side`
+      (`start_line < line`, same hunk). Emit a block ONLY for a clean mechanical drop-in;
+      otherwise keep the suggestion as prose. See `/tmp/refs/posting-format.md` for the exact
+      field layout. GitHub is strict: a suggestion anchored outside the diff or on a deleted
+      line makes the WHOLE review fail (422). The mandatory validation step in the posting
+      template (`node /tmp/validate-suggestions.js /tmp/review_comments.json pr.diff`) strips
+      any malformed suggestion block before posting — run it; do not skip it.
 
       ## Domain-Specific Review Output
 
@@ -912,3 +940,4 @@ permissions:
     - shell:cmd=gh *
     - shell:cmd=git *
     - shell:cmd=grep *
+    - shell:cmd=node *
