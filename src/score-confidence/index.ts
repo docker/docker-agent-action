@@ -14,6 +14,10 @@
  *                 (the default — keeps the tool composable and avoids writing to a
  *                 fixed temp location).
  *
+ *   CONFIDENCE_THRESHOLD (env)  Optional. The minimum confidence for posting a finding
+ *                 inline — a band name (strong/moderate/medium/weak) or a 0–100 number.
+ *                 Resolved via resolvePostThreshold; defaults to the moderate band floor.
+ *
  * Each input record uses the agent's snake_case field names:
  *   {
  *     "file": "pkg/auth/oidc.go",
@@ -36,7 +40,7 @@
  * score-confidence.ts for the scoring rules and posting policy.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { type FindingInput, scoreFindings } from './score-confidence.js';
+import { type FindingInput, resolvePostThreshold, scoreFindings } from './score-confidence.js';
 
 /** Map one snake_case input record to the camelCase {@link FindingInput} shape. */
 export function parseRecord(raw: Record<string, unknown>, index: number): FindingInput {
@@ -121,7 +125,8 @@ function main(): void {
   const parsed = JSON.parse(readFileSync(findingsPath, 'utf-8')) as unknown;
   const records = toFindingRecords(parsed);
   const inputs = records.map(parseRecord);
-  const report = scoreFindings(inputs);
+  const postThreshold = resolvePostThreshold(process.env.CONFIDENCE_THRESHOLD);
+  const report = scoreFindings(inputs, { postThreshold });
 
   // Re-attach the original records so passthrough fields (issue/details) survive,
   // grouped by final posting disposition.
