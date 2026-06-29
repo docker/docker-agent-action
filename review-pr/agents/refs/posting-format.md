@@ -1,13 +1,15 @@
 # Posting Format (GitHub posting mode)
 
-Convert each CONFIRMED/LIKELY finding to an inline comment object for the `comments` array:
+Convert each CONFIRMED/LIKELY finding to an inline comment object for the `comments` array.
+These two examples show only the `line` vs `side: "LEFT"` wiring; `<confidence-table>` stands for
+the REQUIRED confidence table that must close every comment body — see the full body template below.
 - **Added/context lines** (`+` or ` ` in diff) — use `line` with the new-file line number:
   ```json
-  {"path": "file.go", "line": 123, "body": "**ISSUE**\n\nDETAILS\n\n<!-- docker-agent-review -->"}
+  {"path": "file.go", "line": 123, "body": "**ISSUE**\n\nDETAILS\n\n<confidence-table>\n\n<!-- docker-agent-review -->"}
   ```
 - **Deleted lines** (`-` in diff) — use `side: "LEFT"` with the old-file line number:
   ```json
-  {"path": "file.go", "line": 45, "side": "LEFT", "body": "**ISSUE**\n\nDETAILS\n\n<!-- docker-agent-review -->"}
+  {"path": "file.go", "line": 45, "side": "LEFT", "body": "**ISSUE**\n\nDETAILS\n\n<confidence-table>\n\n<!-- docker-agent-review -->"}
   ```
 
 The `line` field normally refers to the new file (right side of the diff). Deleted lines
@@ -48,7 +50,9 @@ cat > /tmp/comment_body.md << 'COMMENT_BODY_EOF'
 
 Detailed explanation of the bug, trigger path, and impact.
 
-confidence: moderate (68/100)
+| Confidence | Score |
+| :--: | :--: |
+| 🟡 moderate | 68/100 |
 
 <!-- docker-agent-review -->
 COMMENT_BODY_EOF
@@ -83,11 +87,19 @@ jq -n \
 The `<!-- docker-agent-review -->` marker MUST be on its own line, separated by a blank line
 from the content. Do NOT include it in console output mode.
 
-In GitHub posting mode every inline comment body is REQUIRED to carry a confidence label
-(`confidence: <band> (<score>/100)`, e.g. `confidence: moderate (68/100)`) on its own line as the
-last content line, immediately before the marker, exactly as shown in the template above. Before
-posting, verify each comment in `/tmp/review_comments.json` has it and add it to any that is
-missing one. A comment without a confidence label is malformed.
+In GitHub posting mode every inline comment body is REQUIRED to end with a confidence table as its
+last content block — a two-column mini markdown table, exactly as shown in the heredoc above:
+
+| Confidence | Score |
+| :--: | :--: |
+| &lt;emoji&gt; &lt;band&gt; | &lt;score&gt;/100 |
+
+`<emoji>` is the band dot (🟢 strong · 🟡 moderate · 🟠 weak · ⚪ negligible); substitute `<band>`
+and the integer `<score>` (0–100) from Confidence Scoring. Leave a blank line between the table and
+the `<!-- docker-agent-review -->` marker. Bake the table into the heredoc when you author the body
+— never splice it into `/tmp/review_comments.json` afterwards. Before posting, verify each comment
+ends with a valid confidence table; if one is missing or malformed, re-author that comment's body
+rather than editing the JSON. A comment without a valid confidence table is malformed.
 
 # Comment Scope (REQUIRED)
 

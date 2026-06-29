@@ -300,10 +300,16 @@ but the error check happens after this line accesses `user.ID`.
 
 Consider moving the nil check before accessing user properties.
 
-confidence: strong (92/100)
+| Confidence | Score |
+| :--: | :--: |
+| 🟢 strong | 92/100 |
 
 <!-- docker-agent-review -->
 ```
+
+Each inline comment ends with a small confidence table — a coloured band dot
+(🟢 strong · 🟡 moderate · 🟠 weak · ⚪ negligible) and the 0–100 score. The band is
+derived from the same thresholds as `src/score-confidence`.
 
 When no issues are found:
 
