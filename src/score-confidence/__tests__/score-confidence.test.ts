@@ -22,6 +22,7 @@ import {
   COMMENT_CAP,
   type ContextCompleteness,
   DEFAULT_POST_THRESHOLD,
+  describeThreshold,
   type EvidenceStrength,
   type FindingInput,
   MODERATE_THRESHOLD,
@@ -828,6 +829,122 @@ describe('resolvePostThreshold', () => {
     expect(resolvePostThreshold('banana')).toBe(DEFAULT_POST_THRESHOLD);
     expect(resolvePostThreshold('7x')).toBe(DEFAULT_POST_THRESHOLD);
     expect(resolvePostThreshold(Number.NaN)).toBe(DEFAULT_POST_THRESHOLD);
+  });
+});
+
+// ── describeThreshold (score + band + recognition) ───────────────────────────
+
+describe('describeThreshold', () => {
+  it('resolves band names to their score, band, and recognized=true', () => {
+    expect(describeThreshold('strong')).toEqual({
+      score: STRONG_THRESHOLD,
+      band: 'strong',
+      recognized: true,
+    });
+    expect(describeThreshold('moderate')).toEqual({
+      score: MODERATE_THRESHOLD,
+      band: 'moderate',
+      recognized: true,
+    });
+    expect(describeThreshold('weak')).toEqual({
+      score: WEAK_THRESHOLD,
+      band: 'weak',
+      recognized: true,
+    });
+  });
+
+  it('treats "medium" as a recognized alias for "moderate"', () => {
+    expect(describeThreshold('medium')).toEqual({
+      score: MODERATE_THRESHOLD,
+      band: 'moderate',
+      recognized: true,
+    });
+  });
+
+  it('is case- and (leading/trailing) whitespace-insensitive for band names', () => {
+    expect(describeThreshold('  STRONG ')).toMatchObject({ score: 80, recognized: true });
+    expect(describeThreshold('Medium')).toMatchObject({ score: 55, recognized: true });
+  });
+
+  it('accepts numbers and numeric strings (recognized), tagging the band by score', () => {
+    expect(describeThreshold(70)).toEqual({ score: 70, band: 'moderate', recognized: true });
+    expect(describeThreshold('70')).toEqual({ score: 70, band: 'moderate', recognized: true });
+    expect(describeThreshold(85)).toEqual({ score: 85, band: 'strong', recognized: true });
+  });
+
+  it('clamps numbers to [WEAK_THRESHOLD, 100] but keeps them recognized', () => {
+    // The "10 becomes 30" surprise the input docs now call out: still a recognized number.
+    expect(describeThreshold('10')).toEqual({ score: 30, band: 'weak', recognized: true });
+    expect(describeThreshold(5)).toEqual({ score: 30, band: 'weak', recognized: true });
+    expect(describeThreshold(150)).toEqual({ score: 100, band: 'strong', recognized: true });
+    // A negative NUMBER is finite, so it clamps to 30 and stays recognized.
+    expect(describeThreshold(-5)).toEqual({ score: 30, band: 'weak', recognized: true });
+  });
+
+  it('rounds fractional numbers before clamping', () => {
+    expect(describeThreshold(72.4)).toMatchObject({ score: 72, recognized: true });
+    expect(describeThreshold(3.7)).toMatchObject({ score: 30, recognized: true }); // 4 → clamp 30
+  });
+
+  it('defaults to the moderate floor for empty/undefined/null, marked recognized', () => {
+    for (const value of [undefined, null, '', '   '] as const) {
+      expect(describeThreshold(value)).toEqual({
+        score: DEFAULT_POST_THRESHOLD,
+        band: 'moderate',
+        recognized: true,
+      });
+    }
+  });
+
+  it('falls back to the default and marks recognized=false for unrecognized input', () => {
+    // This is exactly the surface the old bash resolver could not test. A negative or
+    // internally-spaced string is NOT a valid number (the /^\d+$/ guard rejects it),
+    // so it must default AND signal recognized=false so the CLI warns — matching the
+    // old bash `*[!0-9]*` warning arm rather than the silent TS-number path.
+    for (const value of ['banana', '7x', '-5', '8 0', '0x10'] as const) {
+      expect(describeThreshold(value)).toEqual({
+        score: DEFAULT_POST_THRESHOLD,
+        band: 'moderate',
+        recognized: false,
+      });
+    }
+    // A non-finite number is malformed: default score, recognized=false.
+    expect(describeThreshold(Number.NaN)).toMatchObject({
+      score: DEFAULT_POST_THRESHOLD,
+      recognized: false,
+    });
+    expect(describeThreshold(Number.POSITIVE_INFINITY)).toMatchObject({
+      score: DEFAULT_POST_THRESHOLD,
+      recognized: false,
+    });
+  });
+
+  it('always reports the band that bandFor would assign to the resolved score', () => {
+    for (const value of ['strong', 'weak', '85', '54', '29', '100', 'banana', undefined] as const) {
+      const { score, band } = describeThreshold(value);
+      expect(band).toBe(bandFor(score));
+    }
+  });
+
+  it('resolvePostThreshold returns exactly describeThreshold(...).score', () => {
+    for (const value of [
+      'strong',
+      'moderate',
+      'weak',
+      'medium',
+      '70',
+      70,
+      '10',
+      '150',
+      -5,
+      'banana',
+      '',
+      undefined,
+      null,
+      Number.NaN,
+    ] as const) {
+      expect(resolvePostThreshold(value)).toBe(describeThreshold(value).score);
+    }
   });
 });
 

@@ -104,8 +104,10 @@
  * band (< 30) is never posted inline by this rule — only the security/high-severity overrides
  * (rules 2,3) can surface a negligible finding, and they ignore the threshold entirely. Band
  * labels stay anchored to the constants regardless of the cutoff (they describe confidence; the
- * threshold only decides posting). The GitHub Action (review-pr/action.yml) mirrors
- * resolvePostThreshold in bash and injects the resolved number into the agent prompt.
+ * threshold only decides posting). The GitHub Action (review-pr/action.yml) resolves the
+ * input by invoking this module's `resolve-threshold` CLI (dist/score-confidence.js) and
+ * injects the resolved number into the agent prompt — the resolution is never reimplemented
+ * in bash, so there is only one place for it to live.
  */
 
 // ---------------------------------------------------------------------------
@@ -391,34 +393,71 @@ function buildSortKey(
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve a user-supplied confidence-threshold setting to a numeric inline-posting
- * cutoff in [{@link WEAK_THRESHOLD}, 100].
+ * A resolved confidence-threshold setting: the numeric inline-posting cutoff, its
+ * band label, and whether the original input was understood.
+ */
+export interface ResolvedThreshold {
+  /** Inline-posting cutoff in [{@link WEAK_THRESHOLD}, 100]. */
+  score: number;
+  /** Band label for {@link score} (per {@link bandFor}). */
+  band: ConfidenceBand;
+  /**
+   * Whether the input was understood. `true` for a recognized band name, any
+   * numeric value (even one clamped into range), or an empty/undefined/null value
+   * (which intentionally selects the default). `false` for unrecognized input — a
+   * typo, a negative or internally-spaced number, arbitrary text, or a non-finite
+   * number: {@link score} still falls back to {@link DEFAULT_POST_THRESHOLD}, but a
+   * caller may surface a warning.
+   */
+  recognized: boolean;
+}
+
+/**
+ * Resolve a user-supplied confidence-threshold setting to its inline-posting cutoff,
+ * band, and recognition flag. This is the single source of truth for how the
+ * `confidence-threshold` action input is interpreted.
  *
  * Accepts either a band name or a number:
  *   - `strong` → 80, `moderate`/`medium` → 55, `weak` → 30 (case- and whitespace-
  *     insensitive; `medium` is an alias for `moderate`).
  *   - a number / numeric string → used as-is, clamped to [{@link WEAK_THRESHOLD}, 100].
  *
- * An empty/undefined/null value yields {@link DEFAULT_POST_THRESHOLD}. An unrecognized
- * value (typo, garbage) also falls back to the default rather than throwing, so a
- * misconfigured input never aborts a review run — the GitHub Action additionally logs a
- * warning when it falls back. This is mirrored by the bash resolver in review-pr/action.yml;
- * keep the two in sync.
+ * An empty/undefined/null value yields {@link DEFAULT_POST_THRESHOLD} and is reported as
+ * recognized (the default is a legitimate selection). An unrecognized value (a typo,
+ * garbage, or a negative/internally-spaced number such as `-5` or `8 0`) also falls back
+ * to the default rather than throwing — so a misconfigured input never aborts a review run
+ * — but is reported as `recognized: false` so the caller (the `resolve-threshold` CLI in
+ * index.ts) can log a warning. Keeping the warning decision here, beside the resolution,
+ * means there is no separate bash reimplementation to drift out of sync.
  */
-export function resolvePostThreshold(value?: string | number | null): number {
-  if (value === undefined || value === null) return DEFAULT_POST_THRESHOLD;
+export function describeThreshold(value?: string | number | null): ResolvedThreshold {
+  const at = (score: number, recognized: boolean): ResolvedThreshold => ({
+    score,
+    band: bandFor(score),
+    recognized,
+  });
+  if (value === undefined || value === null) return at(DEFAULT_POST_THRESHOLD, true);
   if (typeof value === 'number') {
     return Number.isFinite(value)
-      ? clamp(Math.round(value), WEAK_THRESHOLD, 100)
-      : DEFAULT_POST_THRESHOLD;
+      ? at(clamp(Math.round(value), WEAK_THRESHOLD, 100), true)
+      : at(DEFAULT_POST_THRESHOLD, false);
   }
   const norm = value.trim().toLowerCase();
-  if (norm === '') return DEFAULT_POST_THRESHOLD;
-  if (norm === 'strong') return STRONG_THRESHOLD;
-  if (norm === 'moderate' || norm === 'medium') return MODERATE_THRESHOLD;
-  if (norm === 'weak') return WEAK_THRESHOLD;
-  if (/^\d+$/.test(norm)) return clamp(Number.parseInt(norm, 10), WEAK_THRESHOLD, 100);
-  return DEFAULT_POST_THRESHOLD;
+  if (norm === '') return at(DEFAULT_POST_THRESHOLD, true);
+  if (norm === 'strong') return at(STRONG_THRESHOLD, true);
+  if (norm === 'moderate' || norm === 'medium') return at(MODERATE_THRESHOLD, true);
+  if (norm === 'weak') return at(WEAK_THRESHOLD, true);
+  if (/^\d+$/.test(norm)) return at(clamp(Number.parseInt(norm, 10), WEAK_THRESHOLD, 100), true);
+  return at(DEFAULT_POST_THRESHOLD, false);
+}
+
+/**
+ * Resolve a confidence-threshold setting to just its numeric cutoff — a thin
+ * convenience over {@link describeThreshold} for callers that only need the score
+ * (e.g. the `postThreshold` option of {@link scoreFinding}/{@link scoreFindings}).
+ */
+export function resolvePostThreshold(value?: string | number | null): number {
+  return describeThreshold(value).score;
 }
 
 /**
