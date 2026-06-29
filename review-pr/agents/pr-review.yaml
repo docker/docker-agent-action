@@ -224,9 +224,9 @@ agents:
          - **Inline comments** — every finding whose disposition is `inline`. Each comment uses
            the finding's `issue` (one-line summary), `details` (full explanation), `severity`,
            `category`, `file`, `line`, and a confidence label, e.g. `confidence: moderate (68/100)`.
-         - **Lower-confidence summary** — weak-band non-forced findings (plus any pushed past the
-           comment cap), listed under "Lower-confidence findings (not posted inline)" with their
-           scores. Never silently drop these.
+         - **Lower-confidence summary** — non-forced findings scoring below the inline threshold T
+           (plus any pushed past the comment cap), listed under "Lower-confidence findings (not
+           posted inline)" with their scores. Never silently drop these.
          - **Dismissed security audit** — DISMISSED `security` findings, listed under "Dismissed
            security findings (review manually)" citing the verifier's stated mitigation.
          Then post the review.
@@ -350,14 +350,21 @@ agents:
 
       ### Posting policy (first match wins; the 5-comment cap is applied last)
 
+      **Inline confidence threshold T.** Read T from the prompt's "## Review Configuration"
+      section ("Inline confidence threshold: N/100"). T is the minimum score a non-forced
+      finding needs to post inline. If that section is absent (e.g. console output mode), use
+      the default T = 55 (the moderate band floor). T only affects rules 4–5 below; the
+      security floor and high-severity always-post rules (2–3) ignore it entirely. T is always
+      at least 30, so the negligible band is never posted inline by rule 4.
+
       1. Out-of-scope, or DISMISSED non-security → do not surface.
       2. **Security floor** — `category` security AND `verdict` CONFIRMED/LIKELY → ALWAYS post
          inline, whatever the score. Never auto-suppress a security finding. Exempt from the cap.
       3. **High-severity always-post** — verifier `severity` high AND `verdict` CONFIRMED/LIKELY
          → ALWAYS post inline, whatever the band. Exempt from the cap.
-      4. **Default** — band strong or moderate (score ≥ 55) → post inline.
-      5. **Weak band (30–54), non-forced** — do NOT post inline; list under "Lower-confidence
-         findings (not posted inline)" with the score.
+      4. **Default** — score ≥ T → post inline.
+      5. **Below threshold (30 ≤ score < T), non-forced** — do NOT post inline; list under
+         "Lower-confidence findings (not posted inline)" with the score.
       6. **Medium-severity floor** — a non-forced finding in the negligible band (< 30) whose
          verifier `severity` is `medium` is NOT dropped: list it in the lower-confidence summary.
          (Confidence rewards drafter↔verifier severity agreement, so a one-notch disagreement can
@@ -437,7 +444,7 @@ agents:
       details
 
       ### Lower-confidence findings (not posted inline)
-      - [SEVERITY] file:line — issue (confidence: weak SCORE/100)
+      - [SEVERITY] file:line — issue (confidence: BAND SCORE/100)
 
       ### Dismissed security findings (review manually)
       - file:line — issue (verifier mitigation: …)

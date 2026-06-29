@@ -70,6 +70,10 @@ inputs:
     description: "Auto-filter cap: if the diff exceeds this many lines after removing score-0 files, lowest-risk files are progressively excluded until it fits. Set to 0 to disable. Default: 3000."
     required: false
     default: "3000"
+  confidence-threshold:
+    description: "Minimum confidence for posting a finding as an inline comment. Accepts a band name (`strong`=80, `moderate`/`medium`=55, `weak`=30) or a number (clamped to 30-100; the weak-band floor is the lowest meaningful cutoff, so e.g. `10` is raised to `30`). Findings that score below the threshold (and are not security or high-severity) are collapsed into the lower-confidence summary instead of posted inline; they are never silently dropped. Security findings and high-severity CONFIRMED/LIKELY findings are always posted regardless. Default: moderate (55), which preserves the prior behavior."
+    required: false
+    default: "moderate"
 
 outputs:
   exit-code:
@@ -679,6 +683,22 @@ runs:
     # ========================================
     # BUILD REVIEW CONTEXT
     # ========================================
+    - name: Resolve confidence threshold
+      if: steps.lock-check.outputs.skip != 'true'
+      id: resolve-confidence
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CONFIDENCE_THRESHOLD_INPUT: ${{ inputs.confidence-threshold }}
+      run: |
+        # Resolve the confidence-threshold input to its inline-posting cutoff and band.
+        # All resolution logic lives in src/score-confidence (describeThreshold); this
+        # step only invokes the bundled CLI, which sets the `score` and `label` step
+        # outputs and warns on an unrecognized value. Per AGENTS.md, composite-action
+        # logic stays in TypeScript, so there is no bash mirror of resolvePostThreshold
+        # to keep in sync.
+        node "$ACTION_PATH/../dist/score-confidence.js" resolve-threshold "$CONFIDENCE_THRESHOLD_INPUT"
+
     - name: Build review context
       if: steps.lock-check.outputs.skip != 'true'
       id: context
@@ -687,6 +707,8 @@ runs:
         PR_NUMBER: ${{ steps.resolve-context.outputs.pr-number }}
         EXTRA_PROMPT: ${{ inputs.additional-prompt }}
         REPO: ${{ github.repository }}
+        CONFIDENCE_SCORE: ${{ steps.resolve-confidence.outputs.score }}
+        CONFIDENCE_LABEL: ${{ steps.resolve-confidence.outputs.label }}
       run: |
         title=$(jq -r '.title' pr_metadata.json)
         author=$(jq -r '.author.login' pr_metadata.json)
@@ -712,6 +734,11 @@ runs:
           echo "## Changed Files"
           echo ""
           cat changed_files.txt
+          echo ""
+          echo "## Review Configuration"
+          echo ""
+          echo "- **Inline confidence threshold**: ${CONFIDENCE_SCORE}/100 (${CONFIDENCE_LABEL} band). When applying the Confidence Scoring posting policy, post a non-forced finding as an inline comment only when its confidence score is **${CONFIDENCE_SCORE} or higher**. A finding that is in scope and not dismissed but scores **below ${CONFIDENCE_SCORE}** must NOT be posted inline — surface it under \"Lower-confidence findings (not posted inline)\" in the review body instead, exactly as the posting policy already prescribes for below-threshold findings (the policy's negligible-band rules still govern what is summarized vs. dropped)."
+          echo "- This threshold does NOT override the security floor or the high-severity always-post rule: \`security\` findings and high-severity CONFIRMED/LIKELY findings are ALWAYS posted inline regardless of the threshold."
           echo ""
           echo "---"
           echo ""

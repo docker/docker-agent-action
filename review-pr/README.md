@@ -261,6 +261,7 @@ When using `docker/docker-agent-action/.github/workflows/review-pr.yml`:
 | `additional-prompt` | Additional review guidelines                                           | -       |
 | `model`             | Model override (e.g., `anthropic/claude-haiku-4-5`)                    | -       |
 | `add-prompt-files`  | Comma-separated files to append to the prompt                          | -       |
+| `confidence-threshold` | Min confidence to post a finding inline: band (`strong`/`moderate`/`medium`/`weak`) or a number (clamped to 30–100) | `moderate` |
 
 ### `review-pr` (Composite Action)
 
@@ -283,6 +284,7 @@ PR number and comment ID are auto-detected from `github.event` when not provided
 | `mistral-api-key`          | Mistral API key                                                  | No\*     |
 | `github-token`             | GitHub token                                                     | No       |
 | `add-prompt-files`         | Comma-separated files to append to the prompt                    | No       |
+| `confidence-threshold`     | Min confidence to post a finding inline: band (`strong`/`moderate`/`medium`/`weak`) or a number clamped to 30–100 (default `moderate`) | No       |
 
 \*API keys are optional when using the reusable workflow (credentials are fetched via OIDC). Only required when using the composite action directly without OIDC.
 
@@ -328,6 +330,16 @@ inline comments (labelled with their confidence); lower-confidence findings are
 listed separately rather than dropped. Security and high-severity findings are
 always surfaced regardless of score. The model is implemented and unit-tested in
 [`src/score-confidence/`](../src/score-confidence/score-confidence.ts).
+
+The inline-posting cutoff is tunable via the **`confidence-threshold`** input — a
+band name (`strong` = 80, `moderate`/`medium` = 55, `weak` = 30) or a number
+(clamped to the 30–100 range — the weak band floor is the lowest meaningful
+cutoff, so negligible findings are never posted inline), defaulting to `moderate`
+(which preserves the prior behavior). Raising it
+(e.g. `strong`) posts only the highest-confidence findings inline and collapses
+the rest into the lower-confidence summary; lowering it (e.g. `weak`) posts weak
+findings inline too. The threshold never suppresses `security` or high-severity
+CONFIRMED/LIKELY findings — those are always posted inline.
 
 ### Learning System
 

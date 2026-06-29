@@ -11,8 +11,12 @@
  * gate), and `line` must be a usable positive integer (never NaN, which would
  * break the GitHub review line anchor).
  */
-import { describe, expect, it } from 'vitest';
-import { parseRecord, toFindingRecords } from '../index.js';
+import * as core from '@actions/core';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@actions/core');
+
+import { parseRecord, resolveThreshold, toFindingRecords } from '../index.js';
 
 /** A well-formed snake_case record (every required field present and valid). */
 function validRaw(): Record<string, unknown> {
@@ -125,5 +129,45 @@ describe('parseRecord — line must be a positive integer', () => {
     const raw = validRaw();
     delete raw.line;
     expect(() => parseRecord(raw, 0)).toThrow(/missing required field "line"/);
+  });
+});
+
+describe('resolveThreshold — CLI wiring for review-pr/action.yml', () => {
+  const setOutput = vi.mocked(core.setOutput);
+  const warning = vi.mocked(core.warning);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('sets the score and label step outputs for a band name (no warning)', () => {
+    resolveThreshold('strong');
+    expect(setOutput).toHaveBeenCalledWith('score', '80');
+    expect(setOutput).toHaveBeenCalledWith('label', 'strong');
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it('emits the clamped score and its band for a numeric input', () => {
+    resolveThreshold('10');
+    expect(setOutput).toHaveBeenCalledWith('score', '30');
+    expect(setOutput).toHaveBeenCalledWith('label', 'weak');
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it('defaults to moderate (55) without warning for an empty/undefined value', () => {
+    resolveThreshold(undefined);
+    expect(setOutput).toHaveBeenCalledWith('score', '55');
+    expect(setOutput).toHaveBeenCalledWith('label', 'moderate');
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it('warns and falls back to moderate for an unrecognized value (e.g. a negative number)', () => {
+    // The behavioral divergence the old bash mirror introduced: `-5` warned in bash but
+    // silently defaulted in TS. With a single TS implementation it warns consistently.
+    resolveThreshold('-5');
+    expect(setOutput).toHaveBeenCalledWith('score', '55');
+    expect(setOutput).toHaveBeenCalledWith('label', 'moderate');
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("'-5'"));
   });
 });
