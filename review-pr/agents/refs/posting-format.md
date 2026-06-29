@@ -83,6 +83,12 @@ jq -n \
 The `<!-- docker-agent-review -->` marker MUST be on its own line, separated by a blank line
 from the content. Do NOT include it in console output mode.
 
+In GitHub posting mode every inline comment body is REQUIRED to carry a confidence label
+(`confidence: <band> (<score>/100)`, e.g. `confidence: moderate (68/100)`) on its own line as the
+last content line, immediately before the marker, exactly as shown in the template above. Before
+posting, verify each comment in `/tmp/review_comments.json` has it and add it to any that is
+missing one. A comment without a confidence label is malformed.
+
 # Comment Scope (REQUIRED)
 
 Each comment must address a problem this PR **introduces** — one that would not exist if

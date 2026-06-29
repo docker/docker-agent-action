@@ -223,7 +223,10 @@ agents:
       9. Build the review from the confidence dispositions (see Confidence Scoring → Posting policy):
          - **Inline comments** — every finding whose disposition is `inline`. Each comment uses
            the finding's `issue` (one-line summary), `details` (full explanation), `severity`,
-           `category`, `file`, `line`, and a confidence label, e.g. `confidence: moderate (68/100)`.
+           `category`, `file`, `line`, and a REQUIRED confidence label. The label is on its own
+           line as the LAST line of the body, immediately before the `<!-- docker-agent-review -->`
+           marker, formatted exactly `confidence: <band> (<score>/100)` (e.g.
+           `confidence: moderate (68/100)`). A comment without this line is malformed; never post one.
          - **Lower-confidence summary** — weak-band non-forced findings (plus any pushed past the
            comment cap), listed under "Lower-confidence findings (not posted inline)" with their
            scores. Never silently drop these.
@@ -375,7 +378,11 @@ agents:
       rules 2–3) first, then the remaining comments by the same descending ranking, so a forced
       finding is never buried beneath a higher-scoring non-forced one.
 
-      Label every inline comment with its confidence, e.g. `confidence: moderate (68/100)`.
+      REQUIRED: every inline comment body MUST end with a confidence label on its own line,
+      immediately before the `<!-- docker-agent-review -->` marker, formatted exactly
+      `confidence: <band> (<score>/100)` (e.g. `confidence: moderate (68/100)`). Before posting,
+      check each comment in `/tmp/review_comments.json` and add the line to any that is missing it;
+      a comment without a confidence label is malformed and must never be posted.
 
       ## Decision Rules (MANDATORY — strict lookup, not a judgment call)
 
