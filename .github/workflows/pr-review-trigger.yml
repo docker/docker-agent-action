@@ -22,6 +22,7 @@ concurrency:
 jobs:
   save-context:
     if: >
+      github.event.sender.type != 'Bot' &&
       github.event.comment.user.login != 'docker-agent' &&
       github.event.comment.user.login != 'docker-agent[bot]' &&
       github.event.comment.user.type != 'Bot' &&
