@@ -2,7 +2,7 @@
 
 AI-powered pull request review using a multi-agent system. Analyzes code changes, posts inline comments, and learns from your feedback.
 
-> **Primary trigger:** Add `docker-agent` as a reviewer in the PR sidebar — the review starts automatically. To re-trigger a review, re-request a review from `docker-agent` in the PR sidebar. The `/review` comment still works but is deprecated.
+> **Primary trigger:** Add `docker-agent` as a reviewer in the PR sidebar — the review starts automatically. To re-trigger a review, re-request a review from `docker-agent` in the PR sidebar.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ If your repo only accepts PRs from branches within the same repo (no forks), you
 name: PR Review
 on:
   pull_request:
-    types: [ready_for_review, opened, review_requested]
+    types: [review_requested]
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -49,14 +49,24 @@ Fork PRs are subject to GitHub's security restrictions: `pull_request` and `pull
 name: PR Review - Trigger
 on:
   pull_request:
-    types: [ready_for_review, opened, review_requested]
+    types: [review_requested]
   pull_request_review_comment:
     types: [created]
 
 permissions: {}
 
+# Deduplicate simultaneous pull_request events for the same fork PR
+# (e.g. multiple review_requested events firing at once for the same PR).
+# Only the last trigger completes, producing a single workflow_run → one review.
+# Distinct review comments stay independent (the comment id keys them into their
+# own group) so a real reply is never dropped by another comment on the same PR.
+concurrency:
+  group: pr-review-trigger-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.comment.id || 'review-request' }}
+  cancel-in-progress: true
+
 jobs:
   save-context:
+    if: github.event.pull_request.head.repo.fork && github.event.sender.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - name: Save event context
@@ -120,7 +130,7 @@ jobs:
 #### How the two workflows interact
 
 ```
-pull_request (opened / ready_for_review / review_requested)
+pull_request (review_requested)
   → pr-review-trigger.yml (saves context as artifact, no secrets needed)
   → completes
   → workflow_run fires
@@ -138,30 +148,12 @@ pull_request_review_comment
 
 Adding `docker-agent` as a reviewer fires a `pull_request` event with `action: review_requested`, which follows the trigger-workflow path above. The `issue_comment` event (`/review` command and `@docker-agent` mentions) always has full permissions regardless of fork status, so those paths work directly without the trigger workflow.
 
-### Choosing a trigger mode
-
-The `pull_request` trigger types in your calling workflow control how often reviews run. Two modes are supported — the examples above use **Mode B**:
-
-**Mode B — recommended default:**
-```yaml
-pull_request:
-  types: [opened, ready_for_review, review_requested]
-```
-Reviews run when a PR is opened or marked ready for review. After the initial review, further `pull_request`-triggered reviews only run when `docker-agent` is explicitly re-requested as a reviewer. Re-request a review from `docker-agent` in the PR sidebar to re-trigger at any time. The `/review` comment still works but is deprecated.
-
-**Mode A — continuous re-review on every push:**
-```yaml
-pull_request:
-  types: [opened, ready_for_review, synchronize, review_requested]
-```
-Adds `synchronize` to also trigger on every push to the PR branch. Opt in if your team wants the reviewer to automatically re-examine every update, at the cost of more workflow runs.
-
 ### External and fork contributor PRs
 
 > [!NOTE]
 > The requester-authorized path below requires the `check-org-membership` update from PR #16 (merge that PR first). Until it ships, membership is checked against the PR author rather than the requesting org member, so requesting `docker-agent` on an external or fork PR is silently skipped.
 
-Auto-review only runs on PRs authored by org members. A PR opened by an external or fork contributor is **not** reviewed automatically. To get one reviewed, an org member drives it through GitHub's native UI in two steps:
+Reviews are exclusively triggered by explicitly requesting `docker-agent` as a reviewer. A PR opened by an external or fork contributor is not reviewed automatically. To get one reviewed, an org member drives it through GitHub's native UI in two steps:
 
 1. **Approve the workflow run.** For PRs from first-time and external contributors, GitHub holds all Actions runs until a maintainer approves them (governed by the repository's `Settings` → `Actions` → `General` fork-PR approval policy). Click **Approve and run workflows** on the PR; until then nothing runs, including the PR review trigger.
 2. **Request a review from `docker-agent`.** In the PR sidebar, under **Reviewers**, add `docker-agent`. This fires a `review_requested` event and starts the review, shown as a check run (if `checks: write` is granted).
@@ -182,14 +174,13 @@ with:
 | Trigger                              | Behavior                                                                                                                                 |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Request review from `docker-agent`   | **Primary trigger.** Add `docker-agent` as a reviewer in the PR sidebar — review starts automatically, shown as a check run. Authorized by the requesting org member, so it also works for external/fork contributors' PRs. |
-| PR opened/ready                      | Auto-reviews when a PR is opened or marked ready for review (org-member-authored PRs).                                                   |
-| ~~`/review`~~ _(deprecated)_         | Re-trigger a review, or trigger manually when auto-review hasn't run (e.g. after a force-push). Shows as a check run if `checks: write` is granted. |
+| ~~`/review`~~ _(deprecated)_         | Re-trigger a review. Shows as a check run if `checks: write` is granted. |
 | Reply to review comment              | Responds in-thread and captures feedback to improve future reviews.                                                                      |
 | `@docker-agent` mention              | Answers questions and clarifies review findings. Works in both PR-level issue comments and inline file-line review comments, including on fork PRs (via the trigger workflow). |
 
 > **Built-in defense-in-depth:**
 >
-> 1. **Verifies org membership** before every review. Auto-review checks the **PR author** (so only org members' PRs are reviewed automatically); a **requested review** checks the **requester**, so a maintainer can pull an external contributor's PR into review on demand; `/review` checks the commenter
+> 1. **Verifies org membership** before every review. A **requested review** checks the **requester**, so a maintainer can pull an external contributor's PR into review on demand; `/review` checks the commenter
 > 2. **Prevents bot cascades** — replies from bots (except `docker-agent`) are ignored
 > 3. **Throttles rate anomalies** — per-PR `concurrency:` groups collapse same-trigger bursts, and a rate-limit check skips the review when too many requests land on one PR in a short window
 > 4. **Fork PRs work automatically** with the two-workflow setup — the trigger → `workflow_run` pattern provides OIDC/secret access regardless of fork status
@@ -201,7 +192,7 @@ The workflow YAML examples above are the complete, recommended setup. The reusab
 | Protection | How it's handled |
 | ---------- | ---------------- |
 | **Bot comment filtering** | All jobs in the reusable workflow filter out `docker-agent`, `docker-agent[bot]`, any `Bot`-type user, and comments with `<!-- docker-agent-review -->`/`<!-- docker-agent-review-reply -->` markers. No caller-side filtering needed. |
-| **Org membership / authorization** | A `check-org-membership` step runs before any review work. Auto-review verifies the **PR author**; a requested review verifies the **requester** (so an external contributor's PR can be reviewed when an org member requests it); comment / `/review` paths verify the commenter. All via OIDC. Callers never need `author_association` checks. |
+| **Org membership / authorization** | A `check-org-membership` step runs before any review work. A requested review verifies the **requester** (so an external contributor's PR can be reviewed when an org member requests it); comment / `/review` paths verify the commenter. All via OIDC. Callers never need `author_association` checks. |
 | **PR vs issue comment** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are silently ignored. |
 | **Draft PR skipping** | Draft PRs are skipped internally — no caller condition needed. |
 | **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |

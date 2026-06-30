@@ -18,7 +18,7 @@ Use this skill when you are asked to add AI-powered PR review to a repo, or to u
 >
 > **`/review` comment:** still works but is deprecated. Prefer the sidebar workflow.
 >
-> **External / fork contributors:** auto-review only runs on org members' own PRs. To review an external contributor's PR, an org member requests `docker-agent` as a reviewer — the review is authorized by the **requester**, not the PR author.
+> **External / fork contributors:** reviews only run when someone explicitly requests `docker-agent` as a reviewer. There is no auto-review on PR open or ready-for-review. To review an external contributor's PR, an org member requests `docker-agent` as a reviewer — the review is authorized by the **requester**, not the PR author.
 
 Make sure to communicate this to contributors when onboarding a repo — it's the main daily interaction pattern and easy to miss if someone only reads the workflow YAML.
 
@@ -31,7 +31,7 @@ The reusable workflow handles all of the following internally. **Do not add call
 | Concern | How it's handled internally |
 | ------- | --------------------------- |
 | **Bot comment filtering** | All jobs in the reusable workflow carry comprehensive `if:` conditions that skip `docker-agent`, `docker-agent[bot]`, any `Bot`-type user, and comments containing `<!-- docker-agent-review -->` / `<!-- docker-agent-review-reply -->` HTML markers. |
-| **Org membership / authorization** | A dedicated `check-org-membership` step runs before any review work begins. Auto-review verifies the **PR author**; a requested review verifies the **requester** (so a maintainer can pull an external contributor's PR into review); comment paths verify the commenter. Callers never need their own `author_association` checks. |
+| **Org membership / authorization** | A dedicated `check-org-membership` step runs before any review work begins. A requested review verifies the **requester** (so a maintainer can pull an external contributor's PR into review); comment paths verify the commenter. Callers never need their own `author_association` checks. |
 | **PR vs issue comment disambiguation** | The reusable workflow checks `github.event.issue.pull_request` internally. Plain issue comments on non-PR issues are ignored automatically. |
 | **Draft PR skipping** | Handled internally — draft PRs are not reviewed. |
 | **Concurrent review guard** | A cache-based lock (`pr-review-lock-<repo>-<pr>-*`) prevents duplicate reviews from racing on the same PR. |
@@ -71,27 +71,9 @@ Use `@main` only for bleeding-edge / pre-release testing.
 
 ---
 
-## 3. Choose a Trigger Mode
+## 3. Trigger Mode
 
-The `pull_request` event types control how often reviews run. Pick one mode and apply it to the trigger section of the workflow(s) below.
-
-**Mode B — recommended default** (reviews on open, ready, and explicit re-request only):
-
-```yaml
-pull_request:
-  types: [opened, ready_for_review, review_requested]
-```
-
-**Mode A — continuous re-review on every push** (adds `synchronize`):
-
-```yaml
-pull_request:
-  types: [opened, ready_for_review, synchronize, review_requested]
-```
-
-Mode A costs more workflow minutes. Opt in only if the team wants the reviewer to automatically re-examine every push to the PR branch.
-
-The examples below use **Mode B**.
+Reviews are only triggered by explicitly requesting `docker-agent` as a reviewer (`review_requested`). There is no auto-review on PR open or ready-for-review. The examples below use `review_requested` only.
 
 ---
 
@@ -103,7 +85,7 @@ Create one file: **`.github/workflows/pr-review.yml`**
 name: PR Review
 on:
   pull_request:
-    types: [ready_for_review, opened, review_requested]
+    types: [review_requested]
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -142,14 +124,21 @@ Lightweight — no secrets needed, runs in the fork's context:
 name: PR Review - Trigger
 on:
   pull_request:
-    types: [ready_for_review, opened, review_requested]
+    types: [review_requested]
   pull_request_review_comment:
     types: [created]
 
 permissions: {}
 
+# Deduplicate simultaneous pull_request events for the same fork PR.
+# Only the last trigger completes, producing a single workflow_run → one review.
+concurrency:
+  group: pr-review-trigger-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.comment.id || 'review-request' }}
+  cancel-in-progress: true
+
 jobs:
   save-context:
+    if: github.event.pull_request.head.repo.fork && github.event.sender.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - name: Save event context
@@ -217,7 +206,7 @@ Replace `@VERSION` in the `uses:` line with the tag from Step 2 (e.g. `@v2.0.0`)
 ### How the two workflows interact
 
 ```
-pull_request (opened / ready_for_review / review_requested)
+pull_request (review_requested)
   → pr-review-trigger.yml  (saves context artifact, no secrets needed)
   → completes
   → workflow_run fires
@@ -292,9 +281,9 @@ jobs:
 
 ### Reviews don't run on fork PRs at all
 
-**Cause:** The trigger workflow (`pr-review-trigger.yml`) is missing, or its `pull_request` trigger types don't include `opened` / `ready_for_review` / `review_requested`.
+**Cause:** The trigger workflow (`pr-review-trigger.yml`) is missing, or its `pull_request` trigger types don't include `review_requested`.
 
-**Fix:** Confirm `pr-review-trigger.yml` exists in `.github/workflows/` on the default branch and that its `on.pull_request.types` list matches the desired trigger mode.
+**Fix:** Confirm `pr-review-trigger.yml` exists in `.github/workflows/` on the default branch and that its `on.pull_request.types` includes `review_requested`.
 
 ### Review doesn't appear as a check run
 
@@ -386,9 +375,7 @@ Check the `permissions:` block on the `review` job in `pr-review.yml`:
 
 Check `on.pull_request.types` in `pr-review.yml` (or `pr-review-trigger.yml` for fork setups):
 
-- [ ] Includes `review_requested` — the **primary trigger** (sidebar reviewer UX)
-- [ ] Includes `ready_for_review`
-- [ ] Includes `opened`
+- [ ] Includes `review_requested` — the **only supported trigger** (sidebar reviewer UX)
 
 #### Unnecessary caller-side `if:` guards
 

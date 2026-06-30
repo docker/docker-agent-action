@@ -177,7 +177,6 @@ jobs:
          !contains(github.event.comment.body, '<!-- docker-agent-review-reply -->') &&
          !contains(github.event.comment.body, '<!-- cagent-review -->') &&
          !contains(github.event.comment.body, '<!-- cagent-review-reply -->')) ||
-        (github.event_name == 'pull_request' && github.event.action != 'review_requested' && github.event.sender.type != 'Bot' && github.event.sender.login != 'docker-agent' && github.event.sender.login != 'docker-agent[bot]') ||
         (github.event_name == 'pull_request' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == 'docker-agent') ||
         inputs.pr-number != '' ||
         (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.trigger-event == 'pull_request')
@@ -271,6 +270,7 @@ jobs:
           IS_REVIEW_COMMAND: ${{ steps.command.outputs.is_review }}
         run: |
           # Classify whether this is a user-requested or automatic review.
+          # All pull_request-triggered reviews are now user-requested (review_requested only).
           # User-requested triggers bypass the draft check only; org-membership
           # check still applies on all paths via the downstream step.
           if [ "$EVENT_NAME" = "issue_comment" ] && [ "$IS_REVIEW_COMMAND" = "true" ]; then
@@ -287,7 +287,7 @@ jobs:
             echo "🎯 Trigger type: user-requested (trigger path via resolve-context)"
           else
             echo "user_requested=false" >> $GITHUB_OUTPUT
-            echo "🤖 Trigger type: automatic (pull_request event)"
+            echo "🤖 Trigger type: fallback (unclassified event)"
           fi
 
       - name: Check if PR is draft
