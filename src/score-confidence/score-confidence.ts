@@ -85,13 +85,29 @@
  *      → always inline, regardless of score/band, exempt from the cap.
  *   3. High-severity:   verifierSeverity === high AND verdict ∈ {CONFIRMED, LIKELY}
  *      → always inline, regardless of band, exempt from the cap.
- *   4. Default:         band ∈ {strong, moderate}  → inline (subject to the cap).
- *   5. Weak visibility: band === weak (30..54)      → summary list, not inline (no silent drop).
- *   6. Medium floor:    negligible band but verifierSeverity === medium → summary (kept visible).
+ *   4. Default:         score ≥ postThreshold → inline (subject to the cap).
+ *   5. Below threshold: WEAK_THRESHOLD ≤ score < postThreshold → summary list, not inline (no silent drop).
+ *   6. Medium floor:    negligible band (< WEAK_THRESHOLD) but verifierSeverity === medium → summary.
  *   7. Dismissed-security audit: DISMISSED security → audit list, not inline (human-reviewable).
  *   8. Cap:             non-forced inline comments capped at COMMENT_CAP (5); overflow → summary.
  *      Ranking keeps the highest sortKey first (score, then CONFIRMED>LIKELY, then subtotal,
  *      then evidence, then context). Forced comments (rules 2,3) are never displaced.
+ *
+ * ## Configurable inline threshold (rule 4)
+ *
+ * The inline cutoff in rule 4 is `postThreshold` — the minimum confidence a non-forced
+ * finding needs to be posted inline. It defaults to {@link DEFAULT_POST_THRESHOLD} (55, the
+ * moderate band floor), which reproduces the original "post strong/moderate, summarize weak"
+ * behavior exactly. A caller may raise it (post only higher-confidence findings) or lower it
+ * toward {@link WEAK_THRESHOLD} (also post weak findings) via {@link resolvePostThreshold} and
+ * the `postThreshold` option. It is clamped to [{@link WEAK_THRESHOLD}, 100] so the negligible
+ * band (< 30) is never posted inline by this rule — only the security/high-severity overrides
+ * (rules 2,3) can surface a negligible finding, and they ignore the threshold entirely. Band
+ * labels stay anchored to the constants regardless of the cutoff (they describe confidence; the
+ * threshold only decides posting). The GitHub Action (review-pr/action.yml) resolves the
+ * input by invoking this module's `resolve-threshold` CLI (dist/score-confidence.js) and
+ * injects the resolved number into the agent prompt — the resolution is never reimplemented
+ * in bash, so there is only one place for it to live.
  */
 
 // ---------------------------------------------------------------------------
@@ -213,8 +229,17 @@ export interface ConfidenceReport {
   dropped: ScoredFinding[];
 }
 
+/** Options for {@link scoreFinding}. */
+export interface ScoreFindingOptions {
+  /**
+   * Minimum confidence score for a non-forced finding to post inline (rule 4).
+   * Clamped to [{@link WEAK_THRESHOLD}, 100]. Default {@link DEFAULT_POST_THRESHOLD}.
+   */
+  postThreshold?: number;
+}
+
 /** Options for {@link scoreFindings}. */
-export interface ScoreFindingsOptions {
+export interface ScoreFindingsOptions extends ScoreFindingOptions {
   /** Max non-forced inline comments to keep (default {@link COMMENT_CAP}). */
   commentCap?: number;
 }
@@ -275,16 +300,26 @@ const CONTEXT_RANK: Record<ContextCompleteness, number> = {
 export const STRONG_THRESHOLD = 80;
 
 /**
- * Score at or above which a finding is at least `moderate`. This IS the default
- * posting threshold — there is no separate constant, so the band floor and the
- * "post by default" cutoff can never drift apart.
+ * Score at or above which a finding is at least `moderate`. This is also the
+ * *default* inline-posting cutoff (see {@link DEFAULT_POST_THRESHOLD}); callers may
+ * override the cutoff per run, but the band label always uses this fixed boundary,
+ * so band names never drift even when the posting threshold is tuned.
  */
 export const MODERATE_THRESHOLD = 55;
 
-/** Score at or above which a finding is at least `weak` (surfaced in the summary). */
+/**
+ * Score at or above which a finding is at least `weak` (surfaced in the summary).
+ * Also the lower bound the configurable posting threshold is clamped to, so the
+ * negligible band stays below every possible inline cutoff.
+ */
 export const WEAK_THRESHOLD = 30;
 
-/** Default posting threshold (alias of {@link MODERATE_THRESHOLD} for callers). */
+/**
+ * Default inline-posting threshold when a caller does not override it (alias of
+ * {@link MODERATE_THRESHOLD}). Using the moderate band floor as the default keeps
+ * the out-of-the-box behavior identical to the original "post strong/moderate,
+ * summarize weak" policy.
+ */
 export const DEFAULT_POST_THRESHOLD = MODERATE_THRESHOLD;
 
 /** Maximum non-forced inline comments kept; overflow is routed to the summary list. */
@@ -358,6 +393,74 @@ function buildSortKey(
 // ---------------------------------------------------------------------------
 
 /**
+ * A resolved confidence-threshold setting: the numeric inline-posting cutoff, its
+ * band label, and whether the original input was understood.
+ */
+export interface ResolvedThreshold {
+  /** Inline-posting cutoff in [{@link WEAK_THRESHOLD}, 100]. */
+  score: number;
+  /** Band label for {@link score} (per {@link bandFor}). */
+  band: ConfidenceBand;
+  /**
+   * Whether the input was understood. `true` for a recognized band name, any
+   * numeric value (even one clamped into range), or an empty/undefined/null value
+   * (which intentionally selects the default). `false` for unrecognized input — a
+   * typo, a negative or internally-spaced number, arbitrary text, or a non-finite
+   * number: {@link score} still falls back to {@link DEFAULT_POST_THRESHOLD}, but a
+   * caller may surface a warning.
+   */
+  recognized: boolean;
+}
+
+/**
+ * Resolve a user-supplied confidence-threshold setting to its inline-posting cutoff,
+ * band, and recognition flag. This is the single source of truth for how the
+ * `confidence-threshold` action input is interpreted.
+ *
+ * Accepts either a band name or a number:
+ *   - `strong` → 80, `moderate`/`medium` → 55, `weak` → 30 (case- and whitespace-
+ *     insensitive; `medium` is an alias for `moderate`).
+ *   - a number / numeric string → used as-is, clamped to [{@link WEAK_THRESHOLD}, 100].
+ *
+ * An empty/undefined/null value yields {@link DEFAULT_POST_THRESHOLD} and is reported as
+ * recognized (the default is a legitimate selection). An unrecognized value (a typo,
+ * garbage, or a negative/internally-spaced number such as `-5` or `8 0`) also falls back
+ * to the default rather than throwing — so a misconfigured input never aborts a review run
+ * — but is reported as `recognized: false` so the caller (the `resolve-threshold` CLI in
+ * index.ts) can log a warning. Keeping the warning decision here, beside the resolution,
+ * means there is no separate bash reimplementation to drift out of sync.
+ */
+export function describeThreshold(value?: string | number | null): ResolvedThreshold {
+  const at = (score: number, recognized: boolean): ResolvedThreshold => ({
+    score,
+    band: bandFor(score),
+    recognized,
+  });
+  if (value === undefined || value === null) return at(DEFAULT_POST_THRESHOLD, true);
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+      ? at(clamp(Math.round(value), WEAK_THRESHOLD, 100), true)
+      : at(DEFAULT_POST_THRESHOLD, false);
+  }
+  const norm = value.trim().toLowerCase();
+  if (norm === '') return at(DEFAULT_POST_THRESHOLD, true);
+  if (norm === 'strong') return at(STRONG_THRESHOLD, true);
+  if (norm === 'moderate' || norm === 'medium') return at(MODERATE_THRESHOLD, true);
+  if (norm === 'weak') return at(WEAK_THRESHOLD, true);
+  if (/^\d+$/.test(norm)) return at(clamp(Number.parseInt(norm, 10), WEAK_THRESHOLD, 100), true);
+  return at(DEFAULT_POST_THRESHOLD, false);
+}
+
+/**
+ * Resolve a confidence-threshold setting to just its numeric cutoff — a thin
+ * convenience over {@link describeThreshold} for callers that only need the score
+ * (e.g. the `postThreshold` option of {@link scoreFinding}/{@link scoreFindings}).
+ */
+export function resolvePostThreshold(value?: string | number | null): number {
+  return describeThreshold(value).score;
+}
+
+/**
  * Score a single finding and decide its provisional posting disposition.
  *
  * The disposition is provisional because the comment cap is a cross-finding
@@ -366,7 +469,10 @@ function buildSortKey(
  *
  * @throws if any enum field is missing or invalid.
  */
-export function scoreFinding(raw: FindingInput): ConfidenceResult {
+export function scoreFinding(
+  raw: FindingInput,
+  options: ScoreFindingOptions = {},
+): ConfidenceResult {
   const verdict = assertEnum(raw.verdict, ['CONFIRMED', 'LIKELY', 'DISMISSED'] as const, 'verdict');
   const evidence = assertEnum(
     raw.evidenceStrength,
@@ -472,29 +578,34 @@ export function scoreFinding(raw: FindingInput): ConfidenceResult {
       breakdown,
     };
   }
-  if (band === 'strong' || band === 'moderate') {
+  // Non-forced findings: the configurable inline threshold (rule 4) decides inline vs
+  // summary. It is clamped to [WEAK_THRESHOLD, 100] so the negligible band can never be
+  // posted inline by this default rule — only the security/high-severity overrides above
+  // (which ignore the threshold) can surface a negligible finding.
+  const postThreshold = clamp(options.postThreshold ?? DEFAULT_POST_THRESHOLD, WEAK_THRESHOLD, 100);
+  if (score >= postThreshold) {
     return {
       score,
       band,
       disposition: 'inline',
       forced: false,
-      reason: `default band (${band})`,
+      reason: `at or above the inline confidence threshold (score ${score} >= ${postThreshold})`,
       sortKey,
       breakdown,
     };
   }
-  if (band === 'weak') {
+  if (score >= WEAK_THRESHOLD) {
     return {
       score,
       band,
       disposition: 'summary',
       forced: false,
-      reason: 'weak band (lower-confidence summary, not inline)',
+      reason: `below the inline confidence threshold (score ${score} < ${postThreshold}); lower-confidence summary, not inline`,
       sortKey,
       breakdown,
     };
   }
-  // Negligible band. Confidence incorporates drafter↔verifier severity agreement, so
+  // Negligible band (< WEAK_THRESHOLD). Confidence incorporates drafter↔verifier severity agreement, so
   // it is intentionally NOT monotone in verifier severity — a one-notch disagreement can
   // nudge a borderline finding down a band. To prevent that from ever *silently dropping*
   // a finding the verifier still rates medium-or-worse, a medium-severity negligible
@@ -528,13 +639,21 @@ export function scoreFinding(raw: FindingInput): ConfidenceResult {
  * `commentCap`, keeping the highest-confidence ones; the overflow is demoted to
  * the summary list. Forced comments (security / high-severity) are exempt and
  * never displaced.
+ *
+ * `options.postThreshold` sets the per-finding inline cutoff (rule 4); it is
+ * forwarded to {@link scoreFinding} unchanged (which clamps it) and defaults to
+ * {@link DEFAULT_POST_THRESHOLD} there.
  */
 export function scoreFindings(
   findings: FindingInput[],
   options: ScoreFindingsOptions = {},
 ): ConfidenceReport {
   const commentCap = options.commentCap ?? COMMENT_CAP;
-  const scored: ScoredFinding[] = findings.map((input) => ({ input, result: scoreFinding(input) }));
+  const postThreshold = options.postThreshold;
+  const scored: ScoredFinding[] = findings.map((input) => ({
+    input,
+    result: scoreFinding(input, { postThreshold }),
+  }));
 
   // Identify non-forced inline candidates and demote everything past the cap.
   const nonForcedInline = scored

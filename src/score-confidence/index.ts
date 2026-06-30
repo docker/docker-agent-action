@@ -1,11 +1,13 @@
 // Copyright The Docker Agent Action authors
 // SPDX-License-Identifier: Apache-2.0
 
+import { readFileSync, writeFileSync } from 'node:fs';
 /**
  * score-confidence CLI entrypoint.
  *
  * Usage:
  *   node dist/score-confidence.js <findingsPath> [outputPath]
+ *   node dist/score-confidence.js resolve-threshold <value>
  *
  *   findingsPath  Path to a JSON file holding an array of merged finding records
  *                 (drafter hypothesis + verifier verdict). Read-only.
@@ -13,6 +15,18 @@
  *                 this caller-controlled path; otherwise it is written to stdout
  *                 (the default — keeps the tool composable and avoids writing to a
  *                 fixed temp location).
+ *
+ *   resolve-threshold <value>  Resolve the `confidence-threshold` action input to its
+ *                 inline-posting cutoff and band, set them as the `score` and `label`
+ *                 step outputs (via @actions/core), and warn on an unrecognized value.
+ *                 Lets review-pr/action.yml resolve the threshold with a single CLI call
+ *                 instead of reimplementing resolvePostThreshold in bash (see AGENTS.md:
+ *                 composite-action logic must live in src/, not as inline YAML scripting).
+ *
+ *   CONFIDENCE_THRESHOLD (env)  Optional. The minimum confidence for posting a finding
+ *                 inline — a band name (strong/moderate/medium/weak) or a number (clamped
+ *                 to 30–100). Resolved via resolvePostThreshold; defaults to the moderate
+ *                 band floor.
  *
  * Each input record uses the agent's snake_case field names:
  *   {
@@ -35,8 +49,15 @@
  * plus { score, band, disposition, forced, reason, breakdown }. See
  * score-confidence.ts for the scoring rules and posting policy.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
-import { type FindingInput, scoreFindings } from './score-confidence.js';
+import * as core from '@actions/core';
+import {
+  bandFor,
+  DEFAULT_POST_THRESHOLD,
+  describeThreshold,
+  type FindingInput,
+  resolvePostThreshold,
+  scoreFindings,
+} from './score-confidence.js';
 
 /** Map one snake_case input record to the camelCase {@link FindingInput} shape. */
 export function parseRecord(raw: Record<string, unknown>, index: number): FindingInput {
@@ -110,18 +131,56 @@ export function toFindingRecords(parsed: unknown): Record<string, unknown>[] {
   return parsed as Record<string, unknown>[];
 }
 
+/**
+ * `resolve-threshold` subcommand. Resolve the `confidence-threshold` action input
+ * (a band name, a number, or empty) to its inline-posting cutoff and band, expose
+ * them to the action as the `score` and `label` step outputs, and warn when the
+ * value was not understood. All interpretation lives in {@link describeThreshold}
+ * (the single source of truth); this wrapper only wires the result into the GitHub
+ * Actions step so the YAML layer carries no resolution logic of its own.
+ */
+export function resolveThreshold(rawValue: string | undefined): void {
+  const { score, band, recognized } = describeThreshold(rawValue);
+  if (!recognized) {
+    const defaultBand = bandFor(DEFAULT_POST_THRESHOLD);
+    core.warning(
+      `Unrecognized confidence-threshold '${rawValue ?? ''}'; falling back to '${defaultBand}' (${DEFAULT_POST_THRESHOLD}).`,
+    );
+  }
+  core.setOutput('score', String(score));
+  core.setOutput('label', band);
+  const from = rawValue && rawValue.trim() !== '' ? ` [from '${rawValue}']` : '';
+  core.info(`✅ Inline confidence threshold: ${score}/100 (${band})${from}`);
+}
+
 function main(): void {
-  const [, , findingsPath, outputPath] = process.argv;
+  const [, , command, arg] = process.argv;
+
+  // `resolve-threshold` subcommand: resolve the confidence-threshold input for the
+  // action and emit the step outputs (no findings file involved).
+  if (command === 'resolve-threshold') {
+    resolveThreshold(arg);
+    return;
+  }
+
+  // Default mode: score a findings file. The first positional is the findings path,
+  // the optional second is the output path.
+  const findingsPath = command;
+  const outputPath = arg;
 
   if (!findingsPath) {
-    process.stderr.write('Usage: score-confidence <findingsPath> [outputPath]\n');
+    process.stderr.write(
+      'Usage: score-confidence <findingsPath> [outputPath]\n' +
+        '       score-confidence resolve-threshold <value>\n',
+    );
     process.exit(1);
   }
 
   const parsed = JSON.parse(readFileSync(findingsPath, 'utf-8')) as unknown;
   const records = toFindingRecords(parsed);
   const inputs = records.map(parseRecord);
-  const report = scoreFindings(inputs);
+  const postThreshold = resolvePostThreshold(process.env.CONFIDENCE_THRESHOLD);
+  const report = scoreFindings(inputs, { postThreshold });
 
   // Re-attach the original records so passthrough fields (issue/details) survive,
   // grouped by final posting disposition.

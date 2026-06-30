@@ -21,9 +21,12 @@ import {
   bandFor,
   COMMENT_CAP,
   type ContextCompleteness,
+  DEFAULT_POST_THRESHOLD,
+  describeThreshold,
   type EvidenceStrength,
   type FindingInput,
   MODERATE_THRESHOLD,
+  resolvePostThreshold,
   type ScorableVerdict,
   type Severity,
   STRONG_THRESHOLD,
@@ -777,4 +780,289 @@ describe('locked-spec worked examples', () => {
       expect(r.disposition === 'inline').toBe(c.inline);
     });
   }
+});
+
+// ── resolvePostThreshold ─────────────────────────────────────────────────────
+
+describe('resolvePostThreshold', () => {
+  it('maps band names to their score floors', () => {
+    expect(resolvePostThreshold('strong')).toBe(STRONG_THRESHOLD);
+    expect(resolvePostThreshold('moderate')).toBe(MODERATE_THRESHOLD);
+    expect(resolvePostThreshold('weak')).toBe(WEAK_THRESHOLD);
+  });
+
+  it('accepts "medium" as an alias for "moderate"', () => {
+    expect(resolvePostThreshold('medium')).toBe(MODERATE_THRESHOLD);
+  });
+
+  it('is case- and whitespace-insensitive for band names', () => {
+    expect(resolvePostThreshold('  STRONG ')).toBe(STRONG_THRESHOLD);
+    expect(resolvePostThreshold('Medium')).toBe(MODERATE_THRESHOLD);
+  });
+
+  it('accepts numbers and numeric strings as the cutoff', () => {
+    expect(resolvePostThreshold(70)).toBe(70);
+    expect(resolvePostThreshold('70')).toBe(70);
+  });
+
+  it('clamps numbers to [WEAK_THRESHOLD, 100]', () => {
+    expect(resolvePostThreshold(5)).toBe(WEAK_THRESHOLD);
+    expect(resolvePostThreshold('5')).toBe(WEAK_THRESHOLD);
+    expect(resolvePostThreshold(150)).toBe(100);
+    expect(resolvePostThreshold('150')).toBe(100);
+    expect(resolvePostThreshold(-5)).toBe(WEAK_THRESHOLD);
+  });
+
+  it('rounds fractional numbers before clamping', () => {
+    expect(resolvePostThreshold(72.4)).toBe(72);
+    expect(resolvePostThreshold(3.7)).toBe(WEAK_THRESHOLD); // rounds to 4, clamps to 30
+  });
+
+  it('defaults to DEFAULT_POST_THRESHOLD for empty/undefined/null', () => {
+    expect(resolvePostThreshold(undefined)).toBe(DEFAULT_POST_THRESHOLD);
+    expect(resolvePostThreshold(null)).toBe(DEFAULT_POST_THRESHOLD);
+    expect(resolvePostThreshold('')).toBe(DEFAULT_POST_THRESHOLD);
+    expect(resolvePostThreshold('   ')).toBe(DEFAULT_POST_THRESHOLD);
+  });
+
+  it('falls back to the default for unrecognized or malformed values (never throws)', () => {
+    expect(resolvePostThreshold('banana')).toBe(DEFAULT_POST_THRESHOLD);
+    expect(resolvePostThreshold('7x')).toBe(DEFAULT_POST_THRESHOLD);
+    expect(resolvePostThreshold(Number.NaN)).toBe(DEFAULT_POST_THRESHOLD);
+  });
+});
+
+// ── describeThreshold (score + band + recognition) ───────────────────────────
+
+describe('describeThreshold', () => {
+  it('resolves band names to their score, band, and recognized=true', () => {
+    expect(describeThreshold('strong')).toEqual({
+      score: STRONG_THRESHOLD,
+      band: 'strong',
+      recognized: true,
+    });
+    expect(describeThreshold('moderate')).toEqual({
+      score: MODERATE_THRESHOLD,
+      band: 'moderate',
+      recognized: true,
+    });
+    expect(describeThreshold('weak')).toEqual({
+      score: WEAK_THRESHOLD,
+      band: 'weak',
+      recognized: true,
+    });
+  });
+
+  it('treats "medium" as a recognized alias for "moderate"', () => {
+    expect(describeThreshold('medium')).toEqual({
+      score: MODERATE_THRESHOLD,
+      band: 'moderate',
+      recognized: true,
+    });
+  });
+
+  it('is case- and (leading/trailing) whitespace-insensitive for band names', () => {
+    expect(describeThreshold('  STRONG ')).toMatchObject({ score: 80, recognized: true });
+    expect(describeThreshold('Medium')).toMatchObject({ score: 55, recognized: true });
+  });
+
+  it('accepts numbers and numeric strings (recognized), tagging the band by score', () => {
+    expect(describeThreshold(70)).toEqual({ score: 70, band: 'moderate', recognized: true });
+    expect(describeThreshold('70')).toEqual({ score: 70, band: 'moderate', recognized: true });
+    expect(describeThreshold(85)).toEqual({ score: 85, band: 'strong', recognized: true });
+  });
+
+  it('clamps numbers to [WEAK_THRESHOLD, 100] but keeps them recognized', () => {
+    // The "10 becomes 30" surprise the input docs now call out: still a recognized number.
+    expect(describeThreshold('10')).toEqual({ score: 30, band: 'weak', recognized: true });
+    expect(describeThreshold(5)).toEqual({ score: 30, band: 'weak', recognized: true });
+    expect(describeThreshold(150)).toEqual({ score: 100, band: 'strong', recognized: true });
+    // A negative NUMBER is finite, so it clamps to 30 and stays recognized.
+    expect(describeThreshold(-5)).toEqual({ score: 30, band: 'weak', recognized: true });
+  });
+
+  it('rounds fractional numbers before clamping', () => {
+    expect(describeThreshold(72.4)).toMatchObject({ score: 72, recognized: true });
+    expect(describeThreshold(3.7)).toMatchObject({ score: 30, recognized: true }); // 4 → clamp 30
+  });
+
+  it('defaults to the moderate floor for empty/undefined/null, marked recognized', () => {
+    for (const value of [undefined, null, '', '   '] as const) {
+      expect(describeThreshold(value)).toEqual({
+        score: DEFAULT_POST_THRESHOLD,
+        band: 'moderate',
+        recognized: true,
+      });
+    }
+  });
+
+  it('falls back to the default and marks recognized=false for unrecognized input', () => {
+    // This is exactly the surface the old bash resolver could not test. A negative or
+    // internally-spaced string is NOT a valid number (the /^\d+$/ guard rejects it),
+    // so it must default AND signal recognized=false so the CLI warns — matching the
+    // old bash `*[!0-9]*` warning arm rather than the silent TS-number path.
+    for (const value of ['banana', '7x', '-5', '8 0', '0x10'] as const) {
+      expect(describeThreshold(value)).toEqual({
+        score: DEFAULT_POST_THRESHOLD,
+        band: 'moderate',
+        recognized: false,
+      });
+    }
+    // A non-finite number is malformed: default score, recognized=false.
+    expect(describeThreshold(Number.NaN)).toMatchObject({
+      score: DEFAULT_POST_THRESHOLD,
+      recognized: false,
+    });
+    expect(describeThreshold(Number.POSITIVE_INFINITY)).toMatchObject({
+      score: DEFAULT_POST_THRESHOLD,
+      recognized: false,
+    });
+  });
+
+  it('always reports the band that bandFor would assign to the resolved score', () => {
+    for (const value of ['strong', 'weak', '85', '54', '29', '100', 'banana', undefined] as const) {
+      const { score, band } = describeThreshold(value);
+      expect(band).toBe(bandFor(score));
+    }
+  });
+
+  it('resolvePostThreshold returns exactly describeThreshold(...).score', () => {
+    for (const value of [
+      'strong',
+      'moderate',
+      'weak',
+      'medium',
+      '70',
+      70,
+      '10',
+      '150',
+      -5,
+      'banana',
+      '',
+      undefined,
+      null,
+      Number.NaN,
+    ] as const) {
+      expect(resolvePostThreshold(value)).toBe(describeThreshold(value).score);
+    }
+  });
+});
+
+// ── Configurable inline threshold (postThreshold) ────────────────────────────
+
+describe('configurable inline threshold', () => {
+  it('omitting postThreshold reproduces the default (55) behavior', () => {
+    // CONFIRMED/circumstantial/none, medium/medium → 73 (moderate), non-forced.
+    const input = makeFinding({ evidenceStrength: 'circumstantial', contextCompleteness: 'none' });
+    const dflt = scoreFinding(input);
+    const explicit = scoreFinding(input, { postThreshold: DEFAULT_POST_THRESHOLD });
+    expect(dflt.disposition).toBe('inline');
+    expect(explicit.disposition).toBe(dflt.disposition);
+  });
+
+  it('raising the threshold demotes a previously-inline moderate finding to summary', () => {
+    // Score 73 (moderate), verifier medium → inline at 55, summary at 80.
+    const input = makeFinding({ evidenceStrength: 'circumstantial', contextCompleteness: 'none' });
+    expect(scoreFinding(input).score).toBe(73);
+    expect(scoreFinding(input, { postThreshold: STRONG_THRESHOLD }).disposition).toBe('summary');
+  });
+
+  it('lowering the threshold promotes a previously-summary weak finding to inline', () => {
+    // LIKELY/circumstantial/none, medium/medium → 43 (weak), non-forced.
+    const input = makeFinding({
+      verdict: 'LIKELY',
+      evidenceStrength: 'circumstantial',
+      contextCompleteness: 'none',
+    });
+    expect(scoreFinding(input).score).toBe(43);
+    expect(scoreFinding(input).disposition).toBe('summary'); // default 55
+    expect(scoreFinding(input, { postThreshold: WEAK_THRESHOLD }).disposition).toBe('inline');
+  });
+
+  it('keeps the band label anchored to the score regardless of the threshold', () => {
+    // The band describes confidence on fixed boundaries; the threshold only moves the
+    // inline cutoff. A score-73 finding is 'moderate' whether it posts inline (T=55) or
+    // is demoted to the summary (T=80). Guards the documented "band labels never drift" claim.
+    const input = makeFinding({ evidenceStrength: 'circumstantial', contextCompleteness: 'none' });
+    expect(scoreFinding(input).score).toBe(73);
+    expect(scoreFinding(input, { postThreshold: WEAK_THRESHOLD }).band).toBe('moderate');
+    expect(scoreFinding(input, { postThreshold: MODERATE_THRESHOLD }).band).toBe('moderate');
+    expect(scoreFinding(input, { postThreshold: STRONG_THRESHOLD }).band).toBe('moderate');
+    // disposition flips, band does not.
+    expect(scoreFinding(input, { postThreshold: WEAK_THRESHOLD }).disposition).toBe('inline');
+    expect(scoreFinding(input, { postThreshold: STRONG_THRESHOLD }).disposition).toBe('summary');
+  });
+
+  it('a high threshold still posts security findings inline (forced; ignores the threshold)', () => {
+    // Security finding scoring 48 (weak) — forced inline even at threshold 80.
+    const input = makeFinding({
+      category: 'security',
+      evidenceStrength: 'speculative',
+      contextCompleteness: 'none',
+      drafterSeverity: 'high',
+      verifierSeverity: 'low',
+    });
+    const r = scoreFinding(input, { postThreshold: STRONG_THRESHOLD });
+    expect(r.score).toBe(48);
+    expect(r.disposition).toBe('inline');
+    expect(r.forced).toBe(true);
+  });
+
+  it('a high threshold still posts high-severity findings inline (forced)', () => {
+    // LIKELY/speculative/none, high/high → 31 (weak), high-severity → forced inline.
+    const input = makeFinding({
+      verdict: 'LIKELY',
+      evidenceStrength: 'speculative',
+      contextCompleteness: 'none',
+      drafterSeverity: 'high',
+      verifierSeverity: 'high',
+    });
+    const r = scoreFinding(input, { postThreshold: 100 });
+    expect(r.score).toBe(31);
+    expect(r.disposition).toBe('inline');
+    expect(r.forced).toBe(true);
+  });
+
+  it('clamps postThreshold to [WEAK_THRESHOLD, 100] so negligible findings never post inline', () => {
+    // Negligible LOW-severity finding (score 26): even with an absurdly low threshold it
+    // is clamped to 30, so 26 < 30 keeps it out of inline (drops as low-severity noise).
+    const negligible = makeFinding({
+      verdict: 'LIKELY',
+      evidenceStrength: 'speculative',
+      contextCompleteness: 'none',
+      drafterSeverity: 'medium',
+      verifierSeverity: 'low',
+    });
+    expect(scoreFinding(negligible, { postThreshold: 0 }).disposition).toBe('drop');
+    expect(scoreFinding(negligible, { postThreshold: 10 }).disposition).toBe('drop');
+
+    // Upper clamp: a threshold above 100 collapses to 100, so only a perfect score posts inline.
+    const perfect = makeFinding({ drafterSeverity: 'high', verifierSeverity: 'high' }); // score 100
+    const moderate = makeFinding({
+      evidenceStrength: 'circumstantial',
+      contextCompleteness: 'none',
+    }); // score 73
+    expect(scoreFinding(perfect, { postThreshold: 200 }).disposition).toBe('inline');
+    expect(scoreFinding(moderate, { postThreshold: 200 }).disposition).toBe('summary');
+  });
+
+  it('scoreFindings forwards postThreshold to every finding', () => {
+    const batch: FindingInput[] = [
+      // strong (95), non-forced
+      makeFinding({
+        file: 'a.go',
+        evidenceStrength: 'circumstantial',
+        contextCompleteness: 'full',
+      }),
+      // moderate (73), non-forced
+      makeFinding({
+        file: 'b.go',
+        evidenceStrength: 'circumstantial',
+        contextCompleteness: 'none',
+      }),
+    ];
+    const report = scoreFindings(batch, { postThreshold: STRONG_THRESHOLD });
+    expect(report.inline.map((s) => s.input.file)).toEqual(['a.go']);
+    expect(report.summary.map((s) => s.input.file)).toEqual(['b.go']);
+  });
 });

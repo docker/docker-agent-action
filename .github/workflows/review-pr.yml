@@ -41,6 +41,11 @@ on:
         required: false
         type: number
         default: 3000
+      confidence-threshold:
+        description: "Minimum confidence for posting a finding inline. A band name (`strong`=80, `moderate`/`medium`=55, `weak`=30) or a number (clamped to 30-100). Findings below it (other than security/high-severity) are collapsed into the lower-confidence summary instead of posted inline. Default: moderate (55)."
+        required: false
+        type: string
+        default: 'moderate'
       trigger-run-id:
         description: "Workflow run ID from pr-review-trigger.yml — used to download the event context artifact. When set, resolve-context job downloads the artifact and routes to the appropriate job."
         required: false
@@ -412,6 +417,7 @@ jobs:
           add-prompt-files: ${{ inputs.add-prompt-files }}
           exclude-paths: ${{ inputs.exclude-paths }}
           max-diff-lines: ${{ inputs.max-diff-lines }}
+          confidence-threshold: ${{ inputs.confidence-threshold }}
           model: ${{ inputs.model }}
           github-token: ${{ env.GITHUB_APP_TOKEN || github.token }}
           anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM || secrets.ANTHROPIC_API_KEY }}
