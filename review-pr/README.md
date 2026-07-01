@@ -307,6 +307,33 @@ confidence: strong (92/100)
 <!-- docker-agent-review -->
 ```
 
+When a finding has a small, exact fix, the comment also carries a GitHub
+[suggestion block](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/incorporating-feedback-in-your-pull-request)
+with the precise replacement code, so it can be applied in one click:
+
+````markdown
+**[medium] Timeout is never applied**
+
+`DefaultConfig()` returns a zero `Timeout`; set it before use.
+
+```suggestion
+	cfg := DefaultConfig()
+	cfg.Timeout = 30 * time.Second
+```
+
+confidence: moderate (68/100)
+
+<!-- docker-agent-review -->
+````
+
+GitHub is strict about the lines a suggestion can attach to: a suggestion
+anchored outside the diff, spanning more than one hunk, or on a deleted line
+makes the whole review fail (HTTP 422). Before posting, the agent runs a
+validator that checks every suggestion's line range against the diff and strips
+any malformed block (keeping the prose finding), so one bad suggestion can never
+lose the whole review. The validator is implemented and unit-tested in
+[`src/validate-suggestions/`](../src/validate-suggestions/validate-suggestions.ts).
+
 When no issues are found:
 
 ```markdown

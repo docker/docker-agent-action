@@ -36,6 +36,7 @@ const entry = {
   'score-risk': src('score-risk'),
   security: src('security'),
   'signed-commit': src('signed-commit'),
+  'validate-suggestions': src('validate-suggestions'),
 };
 
 export default defineConfig({
