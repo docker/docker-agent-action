@@ -302,10 +302,16 @@ but the error check happens after this line accesses `user.ID`.
 
 Consider moving the nil check before accessing user properties.
 
-confidence: strong (92/100)
+| Confidence | Score |
+| :--: | :--: |
+| 🟢 strong | 92/100 |
 
 <!-- docker-agent-review -->
 ```
+
+Each inline comment ends with a small confidence table — a coloured band dot
+(🟢 strong · 🟡 moderate · 🟠 weak · ⚪ negligible) and the 0–100 score. The band is
+derived from the same thresholds as `src/score-confidence`.
 
 When a finding has a small, exact fix, the comment also carries a GitHub
 [suggestion block](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/incorporating-feedback-in-your-pull-request)
@@ -321,7 +327,9 @@ with the precise replacement code, so it can be applied in one click:
 	cfg.Timeout = 30 * time.Second
 ```
 
-confidence: moderate (68/100)
+| Confidence | Score |
+| :--: | :--: |
+| 🟡 moderate | 68/100 |
 
 <!-- docker-agent-review -->
 ````
