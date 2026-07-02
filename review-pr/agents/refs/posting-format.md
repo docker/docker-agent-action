@@ -70,6 +70,21 @@ jq --arg path "$file_path" --argjson line "$old_line_number" --arg side "LEFT" \
   /tmp/review_comments.json > /tmp/review_comments.tmp \
   && mv /tmp/review_comments.tmp /tmp/review_comments.json
 
+# For a MULTI-LINE suggestion (replacing lines start..end within one hunk), add
+# start_line and start_side. start_line < line, both on the RIGHT side:
+jq --arg path "$file_path" --argjson start "$start_line_number" --argjson line "$end_line_number" \
+  --rawfile body /tmp/comment_body.md \
+  '. += [{path: $path, start_line: $start, start_side: "RIGHT", line: $line, side: "RIGHT", body: $body}]' \
+  /tmp/review_comments.json > /tmp/review_comments.tmp \
+  && mv /tmp/review_comments.tmp /tmp/review_comments.json
+
+# Validate & sanitize suggestion blocks BEFORE posting. GitHub rejects the
+# ENTIRE review (HTTP 422) if any one suggestion anchors outside the diff or to a
+# deleted line, so this strips malformed suggestion blocks (keeping the prose
+# finding) so one bad suggestion can't lose the whole review. Safe to run even
+# when there are no suggestions. `pr.diff` is the pre-fetched diff in the workdir.
+node /tmp/validate-suggestions.js /tmp/review_comments.json pr.diff
+
 # Defensive: remove any comments with empty bodies before posting
 jq '[.[] | select(.body | length > 0)]' /tmp/review_comments.json > /tmp/review_comments.tmp \
   && mv /tmp/review_comments.tmp /tmp/review_comments.json
@@ -100,6 +115,49 @@ the `<!-- docker-agent-review -->` marker. Bake the table into the heredoc when 
 — never splice it into `/tmp/review_comments.json` afterwards. Before posting, verify each comment
 ends with a valid confidence table; if one is missing or malformed, re-author that comment's body
 rather than editing the JSON. A comment without a valid confidence table is malformed.
+
+# Suggestion Blocks (actionable fixes)
+
+When an in-scope finding has a small, exact fix that REPLACES one or more contiguous
+changed lines, include a GitHub suggestion block in the comment body so the author can
+apply it in one click. Put the EXACT replacement code in the block — the verbatim lines
+that should replace the anchored range, never a description of the change:
+
+````markdown
+**[medium] One-line issue summary**
+
+Why this is wrong and what the fix does.
+
+```suggestion
+	cfg := DefaultConfig()
+	cfg.Timeout = 30 * time.Second
+```
+
+| Confidence | Score |
+| :--: | :--: |
+| 🟡 moderate | 68/100 |
+
+<!-- docker-agent-review -->
+````
+
+Because the comment body is written via a quoted heredoc (`<< 'EOF'`), the backticks and
+indentation inside the block are preserved verbatim — no extra escaping is needed.
+
+Rules GitHub enforces (a violation makes the ENTIRE review fail with HTTP 422):
+- **Right side only.** A suggestion replaces right-side content, so anchor it on an added
+  (`+`) or context (` `) line. NEVER attach a suggestion to a deleted line (`side: "LEFT"`).
+- **The anchor is the replaced range.** A single-line suggestion uses `line`; a multi-line
+  suggestion uses `start_line`..`line` with `start_line < line` and `start_side: "RIGHT"`,
+  and the whole range MUST stay inside ONE diff hunk.
+- **Match the real code.** Read the current line(s) with `read_file`/`grep -n` first and
+  reproduce the existing indentation exactly — the block replaces the entire line range.
+- **One block per comment, fence closed.** Open with ` ```suggestion ` and close with ` ``` `.
+- **Only when it is a clean drop-in.** If the fix needs prose, edits elsewhere, or spans
+  non-contiguous lines, describe it in prose instead — do not force a suggestion block.
+
+The validator (`node /tmp/validate-suggestions.js …`, run before posting above) strips any
+suggestion block whose anchor breaks these rules and keeps the prose finding, but emit valid
+suggestions in the first place so the actionable fix survives.
 
 # Comment Scope (REQUIRED)
 

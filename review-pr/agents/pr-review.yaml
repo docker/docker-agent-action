@@ -75,12 +75,15 @@ agents:
            skip every step that reads from `REFS_DIR`. Never look in `/tmp/`.
       1. Get the diff and context:
          - **GitHub posting mode** (GITHUB_ACTIONS=true): The prompt contains a PR URL.
-           a. Get the diff using this priority order (stop at the first one that works):
-              1. Check if `pr.diff` exists in the working directory (pre-fetched by the CI workflow)
-              2. `gh pr diff <URL>` using the full PR URL (e.g., `https://github.com/owner/repo/pull/123`).
+           a. Get the diff into the file `pr.diff` using this priority order (stop at the
+              first one that works). The drafter and the suggestion validator both read
+              `pr.diff`, so a fallback MUST redirect into it, not just print to stdout —
+              otherwise the validator sees no diff and strips every suggestion:
+              1. Check if `pr.diff` already exists in the working directory (pre-fetched by the CI workflow)
+              2. `gh pr diff <URL> > pr.diff` using the full PR URL (e.g., `https://github.com/owner/repo/pull/123`).
                  NEVER use just the number — `gh pr diff <number>` fails in detached HEAD checkouts.
-              3. `git diff $(git merge-base origin/main HEAD)...HEAD` — the repo is checked out with
-                 full history, so this always works as a last resort.
+              3. `git diff $(git merge-base origin/main HEAD)...HEAD > pr.diff` — the repo is checked out
+                 with full history, so this always works as a last resort.
               Do NOT try `curl`, `gh repo clone`, or any other method. The three options above are sufficient.
               After obtaining the diff, log which method succeeded:
               ```bash
@@ -230,13 +233,16 @@ agents:
            `<emoji>` is the band dot (🟢 strong · 🟡 moderate · 🟠 weak · ⚪ negligible). A comment
            without this table is malformed; never post one. (See the posting template for the exact
            layout. Console mode keeps its own text label — see Console Format.)
-         - **Lower-confidence summary** — weak-band non-forced findings (plus any pushed past the
-           comment cap), listed under "Lower-confidence findings (not posted inline)" with their
-           scores. Never silently drop these.
+           When the fix is a small, exact, contiguous line replacement, also embed a GitHub
+           suggestion block with the exact replacement code (see "Suggestion blocks" below).
+         - **Lower-confidence summary** — non-forced findings scoring below the inline threshold T
+           (plus any pushed past the comment cap), listed under "Lower-confidence findings (not
+           posted inline)" with their scores. Never silently drop these.
          - **Dismissed security audit** — DISMISSED `security` findings, listed under "Dismissed
            security findings (review manually)" citing the verifier's stated mitigation.
          Before posting, verify each inline comment per Confidence Scoring: its body ends with a
-         valid confidence table, and no non-forced comment scores below 55. Then post the review.
+         valid confidence table, and no non-forced comment scores below the inline threshold T.
+         Then post the review.
       10. Order inline comments forced-first: list the forced comments (high-severity and
           security CONFIRMED/LIKELY) first, then the remaining (non-forced) comments by confidence,
           highest first — so a forced finding is never buried beneath a higher-scoring non-forced
@@ -359,14 +365,21 @@ agents:
 
       ### Posting policy (first match wins; the 5-comment cap is applied last)
 
+      **Inline confidence threshold T.** Read T from the prompt's "## Review Configuration"
+      section ("Inline confidence threshold: N/100"). T is the minimum score a non-forced
+      finding needs to post inline. If that section is absent (e.g. console output mode), use
+      the default T = 55 (the moderate band floor). T only affects rules 4–5 below; the
+      security floor and high-severity always-post rules (2–3) ignore it entirely. T is always
+      at least 30, so the negligible band is never posted inline by rule 4.
+
       1. Out-of-scope, or DISMISSED non-security → do not surface.
       2. **Security floor** — `category` security AND `verdict` CONFIRMED/LIKELY → ALWAYS post
          inline, whatever the score. Never auto-suppress a security finding. Exempt from the cap.
       3. **High-severity always-post** — verifier `severity` high AND `verdict` CONFIRMED/LIKELY
          → ALWAYS post inline, whatever the band. Exempt from the cap.
-      4. **Default** — band strong or moderate (score ≥ 55) → post inline.
-      5. **Weak band (30–54), non-forced** — do NOT post inline; list under "Lower-confidence
-         findings (not posted inline)" with the score.
+      4. **Default** — score ≥ T → post inline.
+      5. **Below threshold (30 ≤ score < T), non-forced** — do NOT post inline; list under
+         "Lower-confidence findings (not posted inline)" with the score.
       6. **Medium-severity floor** — a non-forced finding in the negligible band (< 30) whose
          verifier `severity` is `medium` is NOT dropped: list it in the lower-confidence summary.
          (Confidence rewards drafter↔verifier severity agreement, so a one-notch disagreement can
@@ -384,10 +397,10 @@ agents:
       rules 2–3) first, then the remaining comments by the same descending ranking, so a forced
       finding is never buried beneath a higher-scoring non-forced one.
 
-      **Threshold is hard.** A non-forced finding scoring below 55 is NEVER an inline comment,
+      **Threshold is hard.** A non-forced finding scoring below T is NEVER an inline comment,
       no matter how compelling it reads — it goes to the lower-confidence summary (rule 5/6). Only
-      the forced rules (2 security, 3 high-severity) post below 55. Do not promote a weak score to
-      `moderate` to justify an inline comment.
+      the forced rules (2 security, 3 high-severity) post below T. Do not promote a score into a
+      higher band to justify an inline comment.
 
       REQUIRED (GitHub posting mode): every inline comment body MUST end with a confidence table —
       a two-column mini markdown table with header `| Confidence | Score |` and one data row
@@ -397,7 +410,7 @@ agents:
       the body when you author the comment (see the posting template) — do NOT post-process or
       splice `/tmp/review_comments.json` afterwards. Before posting, VERIFY each comment: (a) its
       last block is a well-formed confidence table whose band matches its score per Step 5; (b) its
-      score ≥ 55 OR it is forced. If a comment fails either check, re-author it (or move it to the
+      score ≥ T OR it is forced. If a comment fails either check, re-author it (or move it to the
       summary) — never edit the JSON in place. A comment without a valid confidence table is
       malformed and must never be posted.
 
@@ -428,6 +441,29 @@ agents:
       `--arg body "$variable"` because shell quoting breaks on `"`, backticks, and `$`
       in the body text. Each finding becomes an inline comment with `<!-- docker-agent-review -->`
       marker on its own line. Do NOT include the marker in console mode.
+
+      ## Suggestion blocks (GitHub posting mode)
+
+      When an inline finding has a small, exact fix that replaces one or more contiguous
+      changed lines, embed a GitHub suggestion block in the comment body containing the
+      EXACT replacement code (not a description) so the author can apply it in one click:
+
+      ````
+      ```suggestion
+      <exact replacement for the anchored line(s)>
+      ```
+      ````
+
+      Before writing the block, read the current line(s) with `read_file`/`grep -n` and
+      reproduce their indentation exactly — the block replaces the whole anchored range.
+      Anchor on the RIGHT side only (added `+`/context ` ` lines); NEVER put a suggestion on
+      a deleted line (`side: "LEFT"`). For a multi-line fix set `start_line`/`start_side`
+      (`start_line < line`, same hunk). Emit a block ONLY for a clean mechanical drop-in;
+      otherwise keep the suggestion as prose. See `/tmp/refs/posting-format.md` for the exact
+      field layout. GitHub is strict: a suggestion anchored outside the diff or on a deleted
+      line makes the WHOLE review fail (422). The mandatory validation step in the posting
+      template (`node /tmp/validate-suggestions.js /tmp/review_comments.json pr.diff`) strips
+      any malformed suggestion block before posting — run it; do not skip it.
 
       ## Domain-Specific Review Output
 
@@ -461,7 +497,7 @@ agents:
       details
 
       ### Lower-confidence findings (not posted inline)
-      - [SEVERITY] file:line — issue (confidence: weak SCORE/100)
+      - [SEVERITY] file:line — issue (confidence: BAND SCORE/100)
 
       ### Dismissed security findings (review manually)
       - file:line — issue (verifier mitigation: …)
@@ -936,3 +972,4 @@ permissions:
     - shell:cmd=gh *
     - shell:cmd=git *
     - shell:cmd=grep *
+    - shell:cmd=node *

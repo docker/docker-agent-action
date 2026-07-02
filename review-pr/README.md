@@ -261,6 +261,7 @@ When using `docker/docker-agent-action/.github/workflows/review-pr.yml`:
 | `additional-prompt` | Additional review guidelines                                           | -       |
 | `model`             | Model override (e.g., `anthropic/claude-haiku-4-5`)                    | -       |
 | `add-prompt-files`  | Comma-separated files to append to the prompt                          | -       |
+| `confidence-threshold` | Min confidence to post a finding inline: band (`strong`/`moderate`/`medium`/`weak`) or a number (clamped to 30–100) | `moderate` |
 
 ### `review-pr` (Composite Action)
 
@@ -283,6 +284,7 @@ PR number and comment ID are auto-detected from `github.event` when not provided
 | `mistral-api-key`          | Mistral API key                                                  | No\*     |
 | `github-token`             | GitHub token                                                     | No       |
 | `add-prompt-files`         | Comma-separated files to append to the prompt                    | No       |
+| `confidence-threshold`     | Min confidence to post a finding inline: band (`strong`/`moderate`/`medium`/`weak`) or a number clamped to 30–100 (default `moderate`) | No       |
 
 \*API keys are optional when using the reusable workflow (credentials are fetched via OIDC). Only required when using the composite action directly without OIDC.
 
@@ -311,6 +313,35 @@ Each inline comment ends with a small confidence table — a coloured band dot
 (🟢 strong · 🟡 moderate · 🟠 weak · ⚪ negligible) and the 0–100 score. The band is
 derived from the same thresholds as `src/score-confidence`.
 
+When a finding has a small, exact fix, the comment also carries a GitHub
+[suggestion block](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/incorporating-feedback-in-your-pull-request)
+with the precise replacement code, so it can be applied in one click:
+
+````markdown
+**[medium] Timeout is never applied**
+
+`DefaultConfig()` returns a zero `Timeout`; set it before use.
+
+```suggestion
+	cfg := DefaultConfig()
+	cfg.Timeout = 30 * time.Second
+```
+
+| Confidence | Score |
+| :--: | :--: |
+| 🟡 moderate | 68/100 |
+
+<!-- docker-agent-review -->
+````
+
+GitHub is strict about the lines a suggestion can attach to: a suggestion
+anchored outside the diff, spanning more than one hunk, or on a deleted line
+makes the whole review fail (HTTP 422). Before posting, the agent runs a
+validator that checks every suggestion's line range against the diff and strips
+any malformed block (keeping the prose finding), so one bad suggestion can never
+lose the whole review. The validator is implemented and unit-tested in
+[`src/validate-suggestions/`](../src/validate-suggestions/validate-suggestions.ts).
+
 When no issues are found:
 
 ```markdown
@@ -334,6 +365,16 @@ inline comments (labelled with their confidence); lower-confidence findings are
 listed separately rather than dropped. Security and high-severity findings are
 always surfaced regardless of score. The model is implemented and unit-tested in
 [`src/score-confidence/`](../src/score-confidence/score-confidence.ts).
+
+The inline-posting cutoff is tunable via the **`confidence-threshold`** input — a
+band name (`strong` = 80, `moderate`/`medium` = 55, `weak` = 30) or a number
+(clamped to the 30–100 range — the weak band floor is the lowest meaningful
+cutoff, so negligible findings are never posted inline), defaulting to `moderate`
+(which preserves the prior behavior). Raising it
+(e.g. `strong`) posts only the highest-confidence findings inline and collapses
+the rest into the lower-confidence summary; lowering it (e.g. `weak`) posts weak
+findings inline too. The threshold never suppresses `security` or high-severity
+CONFIRMED/LIKELY findings — those are always posted inline.
 
 ### Learning System
 
