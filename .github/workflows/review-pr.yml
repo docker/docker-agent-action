@@ -46,6 +46,11 @@ on:
         required: false
         type: string
         default: 'moderate'
+      incremental:
+        description: "When true (default), re-reviews only the commits pushed since the last completed docker-agent review instead of the full PR diff. Falls back to a full review when no previous review exists, the history was rewritten (force-push/rebase), or the base branch was merged in. Set to false to force full reviews."
+        required: false
+        type: boolean
+        default: true
       trigger-run-id:
         description: "Workflow run ID from pr-review-trigger.yml — used to download the event context artifact. When set, resolve-context job downloads the artifact and routes to the appropriate job."
         required: false
@@ -418,6 +423,7 @@ jobs:
           exclude-paths: ${{ inputs.exclude-paths }}
           max-diff-lines: ${{ inputs.max-diff-lines }}
           confidence-threshold: ${{ inputs.confidence-threshold }}
+          incremental: ${{ inputs.incremental }}
           model: ${{ inputs.model }}
           github-token: ${{ env.GITHUB_APP_TOKEN || github.token }}
           anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM || secrets.ANTHROPIC_API_KEY }}

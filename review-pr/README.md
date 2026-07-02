@@ -262,6 +262,7 @@ When using `docker/docker-agent-action/.github/workflows/review-pr.yml`:
 | `model`             | Model override (e.g., `anthropic/claude-haiku-4-5`)                    | -       |
 | `add-prompt-files`  | Comma-separated files to append to the prompt                          | -       |
 | `confidence-threshold` | Min confidence to post a finding inline: band (`strong`/`moderate`/`medium`/`weak`) or a number (clamped to 30–100) | `moderate` |
+| `incremental`       | Review only the commits pushed since the last completed review (falls back to a full review when unsafe)               | `true`  |
 
 ### `review-pr` (Composite Action)
 
@@ -285,6 +286,7 @@ PR number and comment ID are auto-detected from `github.event` when not provided
 | `github-token`             | GitHub token                                                     | No       |
 | `add-prompt-files`         | Comma-separated files to append to the prompt                    | No       |
 | `confidence-threshold`     | Min confidence to post a finding inline: band (`strong`/`moderate`/`medium`/`weak`) or a number clamped to 30–100 (default `moderate`) | No       |
+| `incremental`              | Review only commits since the last completed review (default `true`; falls back to full when unsafe) | No       |
 
 \*API keys are optional when using the reusable workflow (credentials are fetched via OIDC). Only required when using the composite action directly without OIDC.
 
@@ -356,6 +358,44 @@ When no issues are found:
 AGENTS.md + PR Diff → Drafter (hypotheses) → Verifier (confirm + evidence signals)
                     → Confidence score (0–100) → Post Comments
 ```
+
+### Incremental Reviews
+
+By default, a re-review only covers the **commits pushed since the last completed
+review** instead of re-reviewing the full PR diff. This saves tokens, avoids
+duplicate comments, and skips code that has not changed since the previous cycle.
+
+How it works:
+
+1. The last reviewed commit is read from the metadata GitHub records on every
+   posted review (`commit_id` on the Reviews API is the PR head SHA at posting
+   time), so the state survives across workflow runs with no extra bookkeeping.
+   Only completed reviews count — a timed-out or failed run does not mark
+   commits as reviewed.
+2. The diff handed to the agent becomes `git diff <last-reviewed-sha>..HEAD`,
+   restricted to files that are still part of the full PR diff (so inline
+   comments never anchor outside what GitHub accepts).
+3. The action **falls back to a full review** whenever incremental diffing
+   would be unsafe or meaningless:
+
+| Situation | Behavior |
+| --------- | -------- |
+| No previous completed review               | Full review |
+| Force-push or rebase rewrote the history   | Full review |
+| Base branch merged into the PR since last review | Full review |
+| Last reviewed SHA missing from the clone   | Full review |
+| Changes since last review cancel out       | Full review |
+| `incremental: false` input                 | Full review |
+
+4. On any full re-review, findings are **deduplicated** against the comments
+   already posted on the PR (matched by file path, line proximity, and finding
+   heading similarity — see [`src/dedupe-findings/`](../src/dedupe-findings/dedupe-findings.ts)),
+   so a rebase does not produce duplicate threads. The plumbing that decides
+   between incremental and full mode is implemented and unit-tested in
+   [`src/incremental-review/`](../src/incremental-review/incremental-review.ts).
+
+Set `incremental: false` (workflow or action input) to force a full review on
+every trigger.
 
 Each verified finding gets a precise **confidence score** (0–100) and a band
 (strong / moderate / weak / negligible), computed deterministically from the

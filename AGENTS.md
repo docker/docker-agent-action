@@ -39,9 +39,17 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   │   ├── aws-credentials.ts
 │   │   ├── github-app.ts            # Reads docker-agent-action/github-app from Secrets Manager; exports GITHUB_APP_TOKEN (a PAT) + ORG_MEMBERSHIP_TOKEN.
 │   │   └── __tests__/
+│   ├── dedupe-findings/             # Drops review comments duplicating findings from previous review cycles.
+│   │   ├── index.ts                 # CLI entry → bundled to dist/dedupe-findings.js (staged at /tmp/dedupe-findings.js for the agent).
+│   │   ├── dedupe-findings.ts       # Core dedupeComments() pure function (path + line proximity + heading similarity).
+│   │   └── __tests__/
 │   ├── filter-diff/                 # Strips excluded-path sections from a unified diff.
 │   │   ├── index.ts                 # CLI entry → bundled to dist/filter-diff.js
 │   │   ├── filter-diff.ts           # Core filterDiff() pure function + applyFilter() I/O wrapper.
+│   │   └── __tests__/
+│   ├── incremental-review/          # Narrows pr.diff to commits since the last completed review.
+│   │   ├── index.ts                 # CLI entry → bundled to dist/incremental-review.js
+│   │   ├── incremental-review.ts    # Core planIncrementalReview()/findLastReviewedSha() pure functions.
 │   │   └── __tests__/
 │   ├── score-confidence/            # Per-finding confidence scoring for the PR review pipeline.
 │   │   ├── index.ts                 # CLI entry → bundled to dist/score-confidence.js
@@ -172,6 +180,7 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
   - `pull_request` action `review_requested` when `github.event.requested_reviewer.login == 'docker-agent'`
   - `@docker-agent` mentions on PR/issue comments — these run the `.github/actions/mention-reply` handler (sets `should-reply` and builds the context prompt) and then the `review-pr/mention-reply` sub-action (referenced from a pinned SHA, not present as a local path on every commit). The `pr-review-mention-reply.yaml` agent handles the actual reply.
 - Diffs over 1500 lines are **chunked at file boundaries** in `review-pr/action.yml` (see "Split diff into chunks"). Per-file **risk scoring** (security paths, line counts, error-handling patterns) prioritizes verifier attention.
+- **Incremental reviews** (default on, `incremental` input): a re-review only diffs `last-reviewed-SHA..HEAD` instead of the full PR diff. The last reviewed SHA is read from the `commit_id` GitHub records on the bot's completed reviews (assessment or LGTM bodies only — timeout/failure fallbacks don't count), so state survives across runs with no extra writes. `src/incremental-review/` plans the mode and falls back to a full review on force-push/rebase (SHA missing or not an ancestor of HEAD), base-branch merge-ins, net-zero changes, or any error. In incremental mode the original full diff is preserved at `pr_full.diff` for stale-thread resolution and suggestion-anchor validation (GitHub validates anchors against the full PR diff). On re-reviews, `src/dedupe-findings/` (staged at `/tmp/dedupe-findings.js`, run by the agent per `posting-format.md` against the pre-fetched `/tmp/existing_review_comments.json`) drops findings matching already-posted bot comments by file path + line proximity (±3) + finding-heading similarity, so a full re-review after a rebase doesn't duplicate threads.
 - Per-finding **confidence scoring** assigns each verified finding a precise 0–100 score (band: strong/moderate/weak/negligible) from the verifier's `verdict`, `evidence_strength`, and `context_completeness`, plus drafter↔verifier severity concordance and scope. `src/score-confidence/score-confidence.ts` is the **single source of truth** for the model (weights, bands, threshold, posting policy); the "Confidence Scoring" section of `review-pr/agents/pr-review.yaml` mirrors it as a strict lookup table so the orchestrator can apply it inline (the gitignored `dist/` is not available at agent runtime). Change one, change both — the unit tests pin every value. Security and high-severity CONFIRMED/LIKELY findings are always posted regardless of score; below-threshold findings are surfaced in a summary rather than silently dropped. The inline-posting cutoff is configurable via the `confidence-threshold` action input (a band name or a number clamped to 30–100, default `moderate` = 55); the action resolves it by invoking the bundled `dist/score-confidence.js resolve-threshold` CLI (so the resolution logic stays in TypeScript, not bash) and injects it into the agent prompt, and `scoreFinding`/`scoreFindings` accept a matching `postThreshold` option.
 - Stale review threads on lines no longer in the diff are auto-resolved via GraphQL `resolveReviewThread`. Threads with no `<!-- docker-agent-review -->` marker are never touched.
 
