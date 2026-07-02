@@ -115,7 +115,7 @@ jobs:
       comment-author-type: ${{ steps.read.outputs.comment-author-type }}
     steps:
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/setup-credentials@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
 
       - name: Verify token for cross-run artifact download
         shell: bash
@@ -311,7 +311,7 @@ jobs:
         if: |
           steps.command.outputs.is_review != 'false' &&
           steps.draft.outputs.skip != 'true'
-        uses: docker/docker-agent-action/setup-credentials@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/setup-credentials@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
 
       - name: Check if org member
         id: membership
@@ -409,7 +409,7 @@ jobs:
           steps.rate.outputs.anomalous != 'true'
         id: run-review
         continue-on-error: true
-        uses: docker/docker-agent-action/review-pr@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/review-pr@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
         with:
           pr-number: ${{ steps.pr.outputs.number }}
           comment-id: ${{ inputs.comment-id || github.event.comment.id }}
@@ -477,7 +477,7 @@ jobs:
 
       - name: Setup credentials
         if: inputs.trigger-run-id != ''
-        uses: docker/docker-agent-action/setup-credentials@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/setup-credentials@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
 
       - name: Verify token for cross-run artifact download
         if: inputs.trigger-run-id != ''
@@ -600,7 +600,7 @@ jobs:
 
       - name: Setup credentials
         if: steps.check.outputs.is_agent == 'true'
-        uses: docker/docker-agent-action/setup-credentials@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/setup-credentials@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
 
       - name: Check authorization
         if: steps.check.outputs.is_agent == 'true'
@@ -759,7 +759,7 @@ jobs:
       - name: Run reply
         if: steps.check.outputs.is_agent == 'true' && steps.auth.outputs.authorized == 'true'
         continue-on-error: true
-        uses: docker/docker-agent-action/review-pr/reply@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/review-pr/reply@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
         with:
           thread-context: ${{ steps.thread.outputs.prompt }}
           comment-id: ${{ steps.feedback.outputs.comment-id }}
@@ -838,7 +838,7 @@ jobs:
 
     steps:
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/setup-credentials@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
 
       - name: Download trigger context
         if: inputs.trigger-run-id != ''
@@ -904,7 +904,7 @@ jobs:
       - name: Run mention-reply handler
         id: mention-context
         if: steps.resolve-event.outputs.path != ''
-        uses: docker/docker-agent-action/.github/actions/mention-reply@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/.github/actions/mention-reply@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
         env:
           GITHUB_EVENT_PATH: ${{ steps.resolve-event.outputs.path }}
           GITHUB_EVENT_NAME: ${{ steps.resolve-event.outputs.name }}
@@ -916,7 +916,7 @@ jobs:
         if: steps.mention-context.outputs.should-reply == 'true'
         id: run-reply
         continue-on-error: true
-        uses: docker/docker-agent-action/review-pr/mention-reply@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+        uses: docker/docker-agent-action/review-pr/mention-reply@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
         with:
           mention-context: ${{ steps.mention-context.outputs.prompt }}
           owner: ${{ steps.mention-context.outputs.owner }}

@@ -649,7 +649,7 @@ runs:
     - name: Process pending feedback
       if: steps.lock-check.outputs.skip != 'true' && steps.pending-feedback.outputs.has_feedback == 'true'
       continue-on-error: true
-      uses: docker/docker-agent-action@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+      uses: docker/docker-agent-action@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
@@ -793,7 +793,7 @@ runs:
     - name: Run PR Review
       if: steps.lock-check.outputs.skip != 'true'
       id: run-review
-      uses: docker/docker-agent-action@e96a4bb40cac114f64358621e1d08346c8eadc8c # v2.0.1
+      uses: docker/docker-agent-action@ac71c1659cc344408ee7e80757689ed69b2345ae # v2.0.2
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
