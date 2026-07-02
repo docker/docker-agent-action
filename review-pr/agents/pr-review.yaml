@@ -226,7 +226,13 @@ agents:
       9. Build the review from the confidence dispositions (see Confidence Scoring → Posting policy):
          - **Inline comments** — every finding whose disposition is `inline`. Each comment uses
            the finding's `issue` (one-line summary), `details` (full explanation), `severity`,
-           `category`, `file`, `line`, and a confidence label, e.g. `confidence: moderate (68/100)`.
+           `category`, `file`, `line`, and a REQUIRED confidence table — a two-column mini markdown
+           table with header `| Confidence | Score |` and one data row `| <emoji> <band> | <score>/100 |`
+           — as the LAST content block of the body, followed by a blank line and then the
+           `<!-- docker-agent-review -->` marker. `<band>`/`<score>` come from Confidence Scoring;
+           `<emoji>` is the band dot (🟢 strong · 🟡 moderate · 🟠 weak · ⚪ negligible). A comment
+           without this table is malformed; never post one. (See the posting template for the exact
+           layout. Console mode keeps its own text label — see Console Format.)
            When the fix is a small, exact, contiguous line replacement, also embed a GitHub
            suggestion block with the exact replacement code (see "Suggestion blocks" below).
          - **Lower-confidence summary** — non-forced findings scoring below the inline threshold T
@@ -234,6 +240,8 @@ agents:
            posted inline)" with their scores. Never silently drop these.
          - **Dismissed security audit** — DISMISSED `security` findings, listed under "Dismissed
            security findings (review manually)" citing the verifier's stated mitigation.
+         Before posting, verify each inline comment per Confidence Scoring: its body ends with a
+         valid confidence table, and no non-forced comment scores below the inline threshold T.
          Then post the review.
       10. Order inline comments forced-first: list the forced comments (high-severity and
           security CONFIRMED/LIKELY) first, then the remaining (non-forced) comments by confidence,
@@ -351,7 +359,9 @@ agents:
       **Step 4 — clamp.** score = min(100, max(0, subtotal + concordance)).
 
       **Step 5 — band.** strong: score ≥ 80; moderate: 55–79; weak: 30–54; negligible: < 30.
-      (Only CONFIRMED can reach strong; LIKELY tops out at 75.)
+      (Only CONFIRMED can reach strong; LIKELY tops out at 75.) The band is fixed by the numeric
+      score via these exact boundaries — read it off, never estimate. A 43 is `weak`, not
+      `moderate`; never round a score up into a higher band.
 
       ### Posting policy (first match wins; the 5-comment cap is applied last)
 
@@ -387,7 +397,22 @@ agents:
       rules 2–3) first, then the remaining comments by the same descending ranking, so a forced
       finding is never buried beneath a higher-scoring non-forced one.
 
-      Label every inline comment with its confidence, e.g. `confidence: moderate (68/100)`.
+      **Threshold is hard.** A non-forced finding scoring below T is NEVER an inline comment,
+      no matter how compelling it reads — it goes to the lower-confidence summary (rule 5/6). Only
+      the forced rules (2 security, 3 high-severity) post below T. Do not promote a score into a
+      higher band to justify an inline comment.
+
+      REQUIRED (GitHub posting mode): every inline comment body MUST end with a confidence table —
+      a two-column mini markdown table with header `| Confidence | Score |` and one data row
+      `| <emoji> <band> | <score>/100 |` — as the last content block, then a blank line, then the
+      `<!-- docker-agent-review -->` marker. `<emoji>` is the band dot (🟢 strong · 🟡 moderate ·
+      🟠 weak · ⚪ negligible); `<band>`/`<score>` are the Confidence Scoring values. Bake it into
+      the body when you author the comment (see the posting template) — do NOT post-process or
+      splice `/tmp/review_comments.json` afterwards. Before posting, VERIFY each comment: (a) its
+      last block is a well-formed confidence table whose band matches its score per Step 5; (b) its
+      score ≥ T OR it is forced. If a comment fails either check, re-author it (or move it to the
+      summary) — never edit the JSON in place. A comment without a valid confidence table is
+      malformed and must never be posted.
 
       ## Decision Rules (MANDATORY — strict lookup, not a judgment call)
 
