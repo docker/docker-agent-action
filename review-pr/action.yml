@@ -74,6 +74,10 @@ inputs:
     description: "Minimum confidence for posting a finding as an inline comment. Accepts a band name (`strong`=80, `moderate`/`medium`=55, `weak`=30) or a number (clamped to 30-100; the weak-band floor is the lowest meaningful cutoff, so e.g. `10` is raised to `30`). Findings that score below the threshold (and are not security or high-severity) are collapsed into the lower-confidence summary instead of posted inline; they are never silently dropped. Security findings and high-severity CONFIRMED/LIKELY findings are always posted regardless. Default: moderate (55), which preserves the prior behavior."
     required: false
     default: "moderate"
+  incremental:
+    description: "When 'true' (default), re-reviews only the commits pushed since the last completed docker-agent review instead of the full PR diff. Falls back to a full review when no previous review exists, the history was rewritten (force-push/rebase), or the base branch was merged in. Set to 'false' to force a full review."
+    required: false
+    default: "true"
 
 outputs:
   exit-code:
@@ -266,6 +270,25 @@ runs:
           fi
         fi
 
+    # Incremental review: when a previous completed review exists, narrow pr.diff
+    # to the commits pushed since it. The original full diff is preserved at
+    # pr_full.diff for stale-thread resolution and suggestion-anchor validation.
+    # All decision logic (state tracking via review commit_id metadata, rebase and
+    # force-push detection, base-merge detection) lives in src/incremental-review.
+    - name: Compute incremental review range
+      if: hashFiles('pr.diff') != '' && steps.lock-check.outputs.skip != 'true'
+      id: incremental
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        GITHUB_TOKEN: ${{ steps.resolve-token.outputs.token }}
+        PR_NUMBER: ${{ steps.resolve-context.outputs.pr-number }}
+        INCREMENTAL: ${{ inputs.incremental }}
+      run: |
+        BASE_REF=$(jq -r '.baseRefName // ""' pr_metadata.json 2>/dev/null || echo "")
+        export BASE_REF
+        node "$ACTION_PATH/../dist/incremental-review.js" pr.diff
+
     - name: Filter excluded paths from diff
       if: hashFiles('pr.diff') != '' && inputs.exclude-paths != ''
       shell: bash
@@ -398,8 +421,14 @@ runs:
         # A. Parse diff → file:line set
         # Tracks current file from "diff --git" headers, line numbers from @@ hunks,
         # and emits "file:line" for each added (+) line.
-        if [ ! -f pr.diff ]; then
-          echo "ℹ️  No pr.diff found — skipping stale thread resolution"
+        # In incremental mode pr.diff only covers commits since the last review, so
+        # staleness is judged against the preserved full PR diff (pr_full.diff).
+        DIFF_FILE=pr.diff
+        if [ -f pr_full.diff ]; then
+          DIFF_FILE=pr_full.diff
+        fi
+        if [ ! -f "$DIFF_FILE" ]; then
+          echo "ℹ️  No $DIFF_FILE found — skipping stale thread resolution"
           exit 0
         fi
 
@@ -426,7 +455,7 @@ runs:
           }
           /^ / { line++ }
           /^-/ { next }
-        ' pr.diff | sort -u > $DIFF_LINES_FILE
+        ' "$DIFF_FILE" | sort -u > $DIFF_LINES_FILE
 
         DIFF_LINE_COUNT=$(wc -l < $DIFF_LINES_FILE | tr -d ' ')
         echo "📄 Found $DIFF_LINE_COUNT unique file:line pairs in diff"
@@ -709,6 +738,8 @@ runs:
         REPO: ${{ github.repository }}
         CONFIDENCE_SCORE: ${{ steps.resolve-confidence.outputs.score }}
         CONFIDENCE_LABEL: ${{ steps.resolve-confidence.outputs.label }}
+        INCREMENTAL_MODE: ${{ steps.incremental.outputs.mode }}
+        LAST_REVIEWED_SHA: ${{ steps.incremental.outputs.last-reviewed-sha }}
       run: |
         title=$(jq -r '.title' pr_metadata.json)
         author=$(jq -r '.author.login' pr_metadata.json)
@@ -740,6 +771,15 @@ runs:
           echo "- **Inline confidence threshold**: ${CONFIDENCE_SCORE}/100 (${CONFIDENCE_LABEL} band). When applying the Confidence Scoring posting policy, post a non-forced finding as an inline comment only when its confidence score is **${CONFIDENCE_SCORE} or higher**. A finding that is in scope and not dismissed but scores **below ${CONFIDENCE_SCORE}** must NOT be posted inline — surface it under \"Lower-confidence findings (not posted inline)\" in the review body instead, exactly as the posting policy already prescribes for below-threshold findings (the policy's negligible-band rules still govern what is summarized vs. dropped)."
           echo "- This threshold does NOT override the security floor or the high-severity always-post rule: \`security\` findings and high-severity CONFIRMED/LIKELY findings are ALWAYS posted inline regardless of the threshold."
           echo ""
+          if [ "$INCREMENTAL_MODE" = "incremental" ]; then
+            echo "## Incremental Review"
+            echo ""
+            echo "This is an INCREMENTAL review: \`pr.diff\` contains only the changes pushed since the last completed review (commit \`${LAST_REVIEWED_SHA}\`). Earlier commits were already reviewed — do NOT re-review them or fetch the full PR diff yourself."
+            echo "- The \"Changed Files\" list above still describes the whole PR; review only the files present in \`pr.diff\`."
+            echo "- Start the review body with a note that this review covers only the commits since \`${LAST_REVIEWED_SHA:0:12}\`, and scope the assessment label to those changes."
+            echo "- If \`pr.diff\` is missing, do NOT fall back to fetching the full diff — post a COMMENT review explaining the incremental diff was unavailable."
+            echo ""
+          fi
           echo "---"
           echo ""
           echo "## Instructions"
@@ -785,6 +825,34 @@ runs:
           cp "$ACTION_PATH/../dist/validate-suggestions.js" /tmp/validate-suggestions.js
         else
           echo "::warning::validate-suggestions.js not found in dist — suggestion validation will be skipped"
+        fi
+        # Stage the finding deduplicator the same way (see posting-format.md).
+        if [ -f "$ACTION_PATH/../dist/dedupe-findings.js" ]; then
+          cp "$ACTION_PATH/../dist/dedupe-findings.js" /tmp/dedupe-findings.js
+        else
+          echo "::warning::dedupe-findings.js not found in dist — finding deduplication will be skipped"
+        fi
+
+    # Pre-fetch the PR's existing inline review comments so the agent can drop
+    # findings already posted in a previous review cycle (the dedupe CLI is
+    # fail-open: a missing or empty file simply skips deduplication).
+    - name: Fetch existing review comments
+      if: steps.lock-check.outputs.skip != 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.resolve-token.outputs.token }}
+        PR_NUMBER: ${{ steps.resolve-context.outputs.pr-number }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -o pipefail
+        if gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/comments" \
+          | jq -s 'map(if type == "array" then . else [.] end) | add // []' \
+          > /tmp/existing_review_comments.json; then
+          echo "✅ Fetched $(jq 'length' /tmp/existing_review_comments.json) existing review comment(s)"
+        else
+          rm -f /tmp/existing_review_comments.json
+          echo "::warning::Failed to fetch existing review comments — deduplication will be skipped"
         fi
 
     # ========================================
