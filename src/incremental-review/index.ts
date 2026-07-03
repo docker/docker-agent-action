@@ -28,7 +28,8 @@
  *   reason              "ok" for incremental, otherwise the fallback reason
  *   last-reviewed-sha   SHA of the last completed review ("" when none)
  *
- * Fail-open: every error path leaves the diff untouched and reports mode=full —
+ * Fail-open: every error path reports mode=full and leaves the full PR diff in
+ * place (restored from the preserved copy if the rewrite had already started) —
  * a full review is always correct, incremental is only an optimization.
  */
 import { spawnSync } from 'node:child_process';
@@ -143,6 +144,8 @@ export async function main(diffPath: string, deps: MainDeps = {}): Promise<void>
   // planIncrementalReview guarantees lastReviewedSha is a valid ancestor SHA here.
   const sha = plan.lastReviewedSha as string;
   const outPath = join(tmpdir(), `incremental-${process.pid}.diff`);
+  const preservedPath = fullDiffPath(diffPath);
+  let preserved = false;
   try {
     if (!git(['diff', sha, 'HEAD', `--output=${outPath}`]).ok) {
       core.warning('incremental-review: git diff failed — falling back to full review');
@@ -166,8 +169,8 @@ export async function main(diffPath: string, deps: MainDeps = {}): Promise<void>
       return;
     }
 
-    const preservedPath = fullDiffPath(diffPath);
     copyFileSync(diffPath, preservedPath);
+    preserved = true;
     writeFileSync(diffPath, result.restricted, 'utf-8');
 
     const fullLines = fullDiff.split('\n').length;
@@ -182,6 +185,17 @@ export async function main(diffPath: string, deps: MainDeps = {}): Promise<void>
     core.warning(
       `incremental-review failed (${err instanceof Error ? err.message : String(err)}) — falling back to full review`,
     );
+    if (preserved) {
+      // The rewrite may have left diffPath partial while mode=full is reported.
+      // Restore the original and drop the preserved copy, whose presence would
+      // signal incremental mode downstream.
+      try {
+        copyFileSync(preservedPath, diffPath);
+        rmSync(preservedPath, { force: true });
+      } catch {
+        // Keep the preserved copy: it is the only intact full diff left.
+      }
+    }
     setOutputs('full', 'error', sha);
   } finally {
     rmSync(outPath, { force: true });

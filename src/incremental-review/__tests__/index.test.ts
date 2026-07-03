@@ -6,15 +6,32 @@
  *
  * These pin the file effects and the fail-open contract: pr.diff is rewritten
  * only on the happy path (with the full diff preserved), and every error path
- * reports mode=full without touching the diff.
+ * reports mode=full with the full diff left in pr.diff — restored from the
+ * preserved copy when the rewrite had already started.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as core from '@actions/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@actions/core');
+
+// Passthrough fs mock: writeFileSync leaves a truncated file and throws when
+// targeting failWriteAt, simulating a mid-write failure (e.g. disk full).
+const fsControl = vi.hoisted(() => ({ failWriteAt: '' }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const writeFileSync: typeof actual.writeFileSync = (file, data, options) => {
+    if (fsControl.failWriteAt !== '' && file === fsControl.failWriteAt) {
+      actual.writeFileSync(file, '<truncated>', 'utf-8');
+      throw new Error('ENOSPC: no space left on device, write');
+    }
+    actual.writeFileSync(file, data, options);
+  };
+  return { ...actual, writeFileSync };
+});
 
 import type { GitResult, ReviewLike } from '../incremental-review.js';
 import { fullDiffPath, main } from '../index.js';
@@ -97,6 +114,7 @@ describe('incremental-review main', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    fsControl.failWriteAt = '';
     dir = mkdtempSync(join(tmpdir(), 'incremental-review-test-'));
     diffPath = join(dir, 'pr.diff');
     writeFileSync(diffPath, FULL_DIFF, 'utf-8');
@@ -213,6 +231,26 @@ describe('incremental-review main', () => {
 
     expect(outputsByName()).toMatchObject({ mode: 'full', reason: 'error' });
     expect(readFileSync(diffPath, 'utf-8')).toBe(FULL_DIFF);
+  });
+
+  it('restores pr.diff from the preserved copy when the incremental rewrite fails', async () => {
+    fsControl.failWriteAt = diffPath;
+
+    await main(diffPath, {
+      git: fakeGit(INCREMENTAL_DIFF),
+      fetchReviews: async () => [completedReview()],
+    });
+
+    const outputs = outputsByName();
+    expect(outputs.mode).toBe('full');
+    expect(outputs.reason).toBe('error');
+    expect(outputs['last-reviewed-sha']).toBe(SHA_A);
+    expect(vi.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('ENOSPC'));
+
+    // pr.diff must be intact and the preserved copy gone, so downstream steps
+    // see a plain full-review state.
+    expect(readFileSync(diffPath, 'utf-8')).toBe(FULL_DIFF);
+    expect(existsSync(fullDiffPath(diffPath))).toBe(false);
   });
 });
 
