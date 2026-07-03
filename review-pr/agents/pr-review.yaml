@@ -242,7 +242,10 @@ agents:
            security findings (review manually)" citing the verifier's stated mitigation.
          Before posting, verify each inline comment per Confidence Scoring: its body ends with a
          valid confidence table, and no non-forced comment scores below the inline threshold T.
-         Then post the review.
+         Then run the deduplication step from the posting template
+         (`node /tmp/dedupe-findings.js /tmp/review_comments.json /tmp/existing_review_comments.json`)
+         so findings already posted in a previous review cycle are not posted twice, and post
+         the review.
       10. Order inline comments forced-first: list the forced comments (high-severity and
           security CONFIRMED/LIKELY) first, then the remaining (non-forced) comments by confidence,
           highest first — so a forced finding is never buried beneath a higher-scoring non-forced
@@ -462,8 +465,10 @@ agents:
       otherwise keep the suggestion as prose. See `/tmp/refs/posting-format.md` for the exact
       field layout. GitHub is strict: a suggestion anchored outside the diff or on a deleted
       line makes the WHOLE review fail (422). The mandatory validation step in the posting
-      template (`node /tmp/validate-suggestions.js /tmp/review_comments.json pr.diff`) strips
-      any malformed suggestion block before posting — run it; do not skip it.
+      template strips any malformed suggestion block before posting — run it; do not skip it.
+      It validates against `pr_full.diff` when that file exists (incremental mode preserves
+      the full PR diff there — the diff GitHub validates anchors against) and `pr.diff`
+      otherwise; the posting template selects the right file.
 
       ## Domain-Specific Review Output
 
