@@ -71,14 +71,15 @@ const DEFAULT_SIMILARITY_THRESHOLD = 0.5;
 /**
  * Extract the normalized token set identifying a finding from a comment body.
  *
- * Prefers the first bold block (`**[severity] summary**` per the posting
- * format); falls back to the first non-empty line. A leading `[severity]` /
- * `[category]` tag is kept as tokens — it participates in the similarity so a
- * "security" and a "logic_error" finding on the same line don't collapse.
- * Returns null when no usable text exists.
+ * Prefers the first single-line bold block (`**[severity] summary**` per the
+ * posting format); falls back to the first non-empty line. Bold spans that
+ * wrap across lines are skipped so they cannot inflate the token set.
+ * A leading `[severity]` / `[category]` tag is kept as tokens — it
+ * participates in the similarity so a "security" and a "logic_error" finding
+ * on the same line don't collapse. Returns null when no usable text exists.
  */
 export function findingSignature(body: string): string[] | null {
-  const bold = body.match(/\*\*([^*]+)\*\*/);
+  const bold = body.match(/\*\*([^*\n]+)\*\*/);
   const heading = bold?.[1] ?? body.split('\n').find((line) => line.trim().length > 0) ?? '';
   const tokens = heading
     .toLowerCase()

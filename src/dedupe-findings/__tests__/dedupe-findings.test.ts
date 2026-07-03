@@ -59,6 +59,14 @@ describe('findingSignature', () => {
     ]);
   });
 
+  it('ignores bold spans that wrap across lines and falls back to the first line', () => {
+    expect(findingSignature('**[high] Race condition\nin cache-refresh**\n\nbody')).toEqual([
+      'high',
+      'race',
+      'condition',
+    ]);
+  });
+
   it('deduplicates repeated tokens', () => {
     expect(findingSignature('**error error error**')).toEqual(['error']);
   });
@@ -100,6 +108,18 @@ describe('dedupeComments', () => {
 
   it('drops a comment whose line shifted within the tolerance', () => {
     const result = dedupeComments([fresh({ line: 44 })], [existing()]);
+    expect(result.kept).toEqual([]);
+    expect(result.dropped).toHaveLength(1);
+  });
+
+  it('drops a duplicate even when the existing bold heading wraps across lines', () => {
+    const wrapped =
+      '**[high] Nil pointer dereference on user object\n' +
+      'which can crash the request handler when the session store returns an expired entry**';
+    const result = dedupeComments(
+      [fresh()],
+      [existing({ body: `${wrapped}\n\ndetails\n\n${MARKER}` })],
+    );
     expect(result.kept).toEqual([]);
     expect(result.dropped).toHaveLength(1);
   });
