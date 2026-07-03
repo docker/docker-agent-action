@@ -21,6 +21,7 @@
  * Exported functions:
  *   checkOrgMembership(orgToken, org, username) → boolean
  *   resolvePrAuthor(repoToken, owner, repo, prNumber) → string
+ *   checkRepositoryWritePermission(repoToken, owner, repo, username) → boolean
  *   resolveReviewRequester(repoToken, owner, repo, prNumber, reviewerLogin) → string
  *   evaluateMembership(inputs) → { isMember, subject, via }
  *
@@ -101,6 +102,40 @@ export async function resolvePrAuthor(
   const octokit = new Octokit({ auth: repoToken });
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   return pr.user?.login ?? '';
+}
+
+// ---------------------------------------------------------------------------
+// Core function: repository permission check
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether `username` has write-level permission on the repository.
+ *
+ * This is the API-key-only fallback when Docker's AWS-backed org membership
+ * token is unavailable.
+ * It keeps fork PRs safe by authorizing only repository collaborators or
+ * maintainers, including review-requested runs where the requester is resolved
+ * from the trusted PR timeline.
+ */
+export async function checkRepositoryWritePermission(
+  repoToken: string,
+  owner: string,
+  repo: string,
+  username: string,
+): Promise<boolean> {
+  const octokit = new Octokit({ auth: repoToken });
+  try {
+    const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
+      owner,
+      repo,
+      username,
+    });
+    return ['admin', 'maintain', 'write'].includes(data.permission ?? '');
+  } catch (err: unknown) {
+    const status = (err as { status?: number }).status;
+    if (status === 404) return false;
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,12 +284,26 @@ async function resolveTrustedRequester(
   return '';
 }
 
+async function isAuthorizedUser(
+  inputs: MembershipInputs,
+  owner: string,
+  repo: string,
+  username: string,
+): Promise<boolean> {
+  if (!username) return false;
+  if (inputs.orgToken && inputs.org) {
+    return checkOrgMembership(inputs.orgToken, inputs.org, username);
+  }
+  return checkRepositoryWritePermission(inputs.repoToken, owner, repo, username);
+}
+
 /**
  * Decide whether the review is authorized, returning the subject and the path
  * that granted it. See the module header for the two authorization paths.
  */
 export async function evaluateMembership(inputs: MembershipInputs): Promise<MembershipDecision> {
-  const { orgToken, org, prSource, eventName, commentAuthor } = inputs;
+  const { prSource, eventName, commentAuthor } = inputs;
+  const { owner, repo } = parseRepository(inputs.repository);
 
   // Comment-driven triggers (e.g. /review) authorize the commenter. EVENT_NAME may
   // be absent when called by an older caller; fall back to the presence of a
@@ -263,25 +312,24 @@ export async function evaluateMembership(inputs: MembershipInputs): Promise<Memb
     prSource === 'event' &&
     (eventName === 'issue_comment' || (eventName === '' && commentAuthor !== ''));
   if (isCommentTrigger) {
-    const ok = commentAuthor !== '' && (await checkOrgMembership(orgToken, org, commentAuthor));
+    const ok = await isAuthorizedUser(inputs, owner, repo, commentAuthor);
     return { isMember: ok, subject: commentAuthor, via: ok ? 'comment' : 'none' };
   }
 
-  const { owner, repo } = parseRepository(inputs.repository);
   if (!Number.isInteger(inputs.prNumber) || inputs.prNumber <= 0) {
     throw new Error(`Invalid pr-number: '${inputs.prNumber}' (expected positive integer)`);
   }
 
   // Path 1 — auto-run: the PR author must be an org member.
   const author = await resolvePrAuthor(inputs.repoToken, owner, repo, inputs.prNumber);
-  if (author && (await checkOrgMembership(orgToken, org, author))) {
+  if (author && (await isAuthorizedUser(inputs, owner, repo, author))) {
     return { isMember: true, subject: author, via: 'author' };
   }
 
   // Path 2 — review-requested: an org member who requested the review authorizes
   // it, even when the PR author is external (not an org member).
   const requester = await resolveTrustedRequester(inputs, owner, repo);
-  if (requester && (await checkOrgMembership(orgToken, org, requester))) {
+  if (requester && (await isAuthorizedUser(inputs, owner, repo, requester))) {
     return { isMember: true, subject: requester, via: 'requester' };
   }
 
@@ -296,15 +344,11 @@ export async function evaluateMembership(inputs: MembershipInputs): Promise<Memb
 
 async function main(): Promise<void> {
   const orgToken = process.env.ORG_MEMBERSHIP_TOKEN ?? '';
-  const repoToken = process.env.GITHUB_APP_TOKEN ?? '';
+  const repoToken = process.env.GITHUB_APP_TOKEN || process.env.GITHUB_TOKEN || '';
   const org = process.env.ORG ?? '';
 
-  if (!orgToken) {
-    core.setFailed('ORG_MEMBERSHIP_TOKEN is not set — ensure setup-credentials ran successfully.');
-    return;
-  }
   if (!repoToken) {
-    core.setFailed('GITHUB_APP_TOKEN is not set — ensure setup-credentials ran successfully.');
+    core.setFailed('GITHUB_APP_TOKEN or GITHUB_TOKEN is not set — cannot authorize the review.');
     return;
   }
 
@@ -328,8 +372,8 @@ async function main(): Promise<void> {
     if (decision.isMember) {
       const reason =
         decision.via === 'requester'
-          ? `review requested by ${org} org member @${decision.subject}`
-          : `@${decision.subject} is a ${org} org member`;
+          ? `review requested by authorized user @${decision.subject}`
+          : `@${decision.subject} is authorized`;
       core.info(`✅ ${reason} — proceeding with review`);
     } else {
       core.info(
@@ -346,7 +390,7 @@ async function main(): Promise<void> {
       );
     } else {
       core.setFailed(
-        `Failed to check org membership: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to authorize the review: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

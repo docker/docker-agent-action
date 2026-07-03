@@ -8,8 +8,9 @@ inputs:
     description: 'GitHub token for posting reactions and rejection replies'
     required: true
   org-membership-token:
-    description: 'PAT with read:org scope for docker org membership checks'
-    required: true
+    description: 'PAT with read:org scope for docker org membership checks. Optional: when absent, falls back to checking repository write permission using github-token.'
+    required: false
+    default: ''
 outputs:
   should-reply:
     description: "'true' if the reply agent should run; 'false' if the event was skipped or rejected"

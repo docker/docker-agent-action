@@ -33,7 +33,7 @@ jobs:
       pull-requests: write # Post review comments
       issues: write # Create security incident issues if secrets detected
       checks: write # (Optional) Show review progress as a check run
-      id-token: write # Required for OIDC authentication to AWS Secrets Manager
+      id-token: write # Preferred: OIDC authentication to AWS Secrets Manager
       actions: read # Required by reusable workflow for artifact operations
 ```
 
@@ -111,10 +111,25 @@ jobs:
       pull-requests: write # Post review comments
       issues: write # Create security incident issues if secrets detected
       checks: write # (Optional) Show review progress as a check run
-      id-token: write # Required for OIDC authentication to AWS Secrets Manager
+      id-token: write # Preferred: OIDC authentication to AWS Secrets Manager
       actions: read # Required by reusable workflow for artifact operations; also needed to download trigger artifacts
     with:
       trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
+```
+
+The preferred setup uses OIDC to fetch Docker-managed credentials from AWS Secrets Manager.
+If your repository provides a model API key directly instead, pass it through `secrets` and you may omit `id-token: write`:
+`actions: read` is always required — the workflow downloads event-context artifacts across runs regardless of which credential path is used.
+
+```yaml
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: write
+      actions: read
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 #### How the two workflows interact
