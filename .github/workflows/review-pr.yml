@@ -288,7 +288,9 @@ jobs:
         if: |
           steps.command.outputs.is_review != 'false' &&
           steps.draft.outputs.skip != 'true'
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
+        uses: docker/docker-agent-action/setup-credentials@5e46aee485641c251fdaeb9a05bd9977c711def8 # direct API key OIDC fix
+        with:
+          fetch-credentials: ${{ env.HAS_DIRECT_API_KEY != 'true' && 'true' || 'false' }}
 
       - name: Check if org member
         id: membership
@@ -560,7 +562,9 @@ jobs:
 
       - name: Setup credentials
         if: steps.check.outputs.is_agent == 'true' && env.HAS_DIRECT_API_KEY != 'true'
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
+        uses: docker/docker-agent-action/setup-credentials@5e46aee485641c251fdaeb9a05bd9977c711def8 # direct API key OIDC fix
+        with:
+          fetch-credentials: 'true'
 
       - name: Check authorization
         if: steps.check.outputs.is_agent == 'true'
@@ -792,7 +796,9 @@ jobs:
     steps:
       - name: Setup credentials
         if: env.HAS_DIRECT_API_KEY != 'true'
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
+        uses: docker/docker-agent-action/setup-credentials@5e46aee485641c251fdaeb9a05bd9977c711def8 # direct API key OIDC fix
+        with:
+          fetch-credentials: 'true'
 
       - name: Download trigger context
         if: inputs.trigger-run-id != ''
@@ -858,7 +864,7 @@ jobs:
       - name: Run mention-reply handler
         id: mention-context
         if: steps.resolve-event.outputs.path != ''
-        uses: docker/docker-agent-action/.github/actions/mention-reply@896eb4c0871ac3e755d51a14a08d7fa551b87853 # direct API key OIDC fix
+        uses: docker/docker-agent-action/.github/actions/mention-reply@5e46aee485641c251fdaeb9a05bd9977c711def8 # direct API key OIDC fix
         env:
           GITHUB_EVENT_PATH: ${{ steps.resolve-event.outputs.path }}
           GITHUB_EVENT_NAME: ${{ steps.resolve-event.outputs.name }}
