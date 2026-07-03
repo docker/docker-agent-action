@@ -211,6 +211,9 @@ export function restrictDiffToFiles(diffContent: string, allowed: Set<string>): 
     } else if (sectionLines.length > 0) {
       if (line.startsWith('--- a/')) sectionFiles.push(line.slice(6));
       else if (line.startsWith('+++ b/')) sectionFiles.push(line.slice(6));
+      if (line.startsWith('--- a/')) sectionFiles.push(line.slice(6));
+      else if (line.startsWith('+++ b/')) sectionFiles.push(line.slice(6));
+      else if (line.startsWith('rename from ')) sectionFiles.push(line.slice(12));
       else if (line.startsWith('rename to ')) sectionFiles.push(line.slice(10));
       sectionLines.push(line);
     } else {
