@@ -207,7 +207,7 @@ jobs:
       issues: write # Create security incident issues if secrets detected
       checks: write # (Optional) Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: write # Cache read/write for review-lock deduplication and binary cache; also needed to download trigger artifacts
+      actions: write # Cache read/write for review-lock deduplication and binary cache
     with:
       trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
 ```
