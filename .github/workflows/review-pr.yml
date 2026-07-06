@@ -112,6 +112,7 @@ jobs:
       trigger-event: ${{ steps.read.outputs.event-name }}
       pr-number: ${{ steps.read.outputs.pr-number }}
       pr-head-sha: ${{ steps.read.outputs.pr-head-sha }}
+      requested-reviewer: ${{ steps.read.outputs.requested-reviewer }}
       comment-json: ${{ steps.read.outputs.comment-json }}
       comment-author: ${{ steps.read.outputs.comment-author }}
       comment-in-reply-to-id: ${{ steps.read.outputs.comment-in-reply-to-id }}
@@ -154,6 +155,9 @@ jobs:
           if [ -f /tmp/context/pr_head_sha.txt ]; then
             echo "pr-head-sha=$(cat /tmp/context/pr_head_sha.txt)" >> $GITHUB_OUTPUT
           fi
+          if [ -f /tmp/context/requested_reviewer.txt ]; then
+            echo "requested-reviewer=$(cat /tmp/context/requested_reviewer.txt)" >> $GITHUB_OUTPUT
+          fi
           if [ -f /tmp/context/comment.json ]; then
             # Use heredoc output syntax — jq -c compacts JSON but comment bodies
             # can still contain literal newlines that break single-line echo.
@@ -171,6 +175,13 @@ jobs:
 
   review:
     needs: [resolve-context]
+    # The trigger (workflow_run) path additionally gates on the requested reviewer
+    # captured in the artifact: only a docker-agent request may start a review,
+    # mirroring the requested_reviewer.login gate on the direct pull_request path.
+    # Empty is allowed through — it means a legacy trigger artifact (predating
+    # requested_reviewer.txt) or an auto-review event (opened/ready_for_review).
+    # This is a cost gate, not authorization: the artifact is never trusted for
+    # auth, which stays server-side in check-org-membership.
     if: |
       always() && (
         (github.event_name == 'issue_comment' &&
@@ -185,7 +196,8 @@ jobs:
         (github.event_name == 'pull_request' && github.event.action != 'review_requested' && github.event.sender.type != 'Bot' && github.event.sender.login != 'docker-agent' && github.event.sender.login != 'docker-agent[bot]') ||
         (github.event_name == 'pull_request' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == 'docker-agent') ||
         inputs.pr-number != '' ||
-        (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.trigger-event == 'pull_request')
+        (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.trigger-event == 'pull_request' &&
+         (needs.resolve-context.outputs.requested-reviewer == 'docker-agent' || needs.resolve-context.outputs.requested-reviewer == ''))
       )
     runs-on: ubuntu-latest
     timeout-minutes: 50

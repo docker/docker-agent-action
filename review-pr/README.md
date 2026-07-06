@@ -57,18 +57,27 @@ permissions: {}
 
 jobs:
   save-context:
+    # A review request for anyone other than docker-agent must not fan out to a review
+    if: >
+      github.event_name != 'pull_request' ||
+      github.event.action != 'review_requested' ||
+      github.event.requested_reviewer.login == 'docker-agent'
     runs-on: ubuntu-latest
     steps:
       - name: Save event context
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REQUESTED_REVIEWER: ${{ github.event.requested_reviewer.login }}
           COMMENT_JSON: ${{ toJSON(github.event.comment) }}
         run: |
           mkdir -p context
           printf '%s' "${{ github.event_name }}" > context/event_name.txt
           printf '%s' "$PR_NUMBER" > context/pr_number.txt
           printf '%s' "$PR_HEAD_SHA" > context/pr_head_sha.txt
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            printf '%s' "$REQUESTED_REVIEWER" > context/requested_reviewer.txt
+          fi
           if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
             printf '%s' "$COMMENT_JSON" > context/comment.json
           fi
