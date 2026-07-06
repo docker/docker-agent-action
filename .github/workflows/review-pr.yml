@@ -112,6 +112,7 @@ jobs:
       trigger-event: ${{ steps.read.outputs.event-name }}
       pr-number: ${{ steps.read.outputs.pr-number }}
       pr-head-sha: ${{ steps.read.outputs.pr-head-sha }}
+      requested-reviewer: ${{ steps.read.outputs.requested-reviewer }}
       comment-json: ${{ steps.read.outputs.comment-json }}
       comment-author: ${{ steps.read.outputs.comment-author }}
       comment-in-reply-to-id: ${{ steps.read.outputs.comment-in-reply-to-id }}
@@ -119,10 +120,43 @@ jobs:
       comment-is-review-cmd: ${{ steps.read.outputs.comment-is-review-cmd }}
       comment-author-type: ${{ steps.read.outputs.comment-author-type }}
     steps:
+      # The trigger run concludes success even when its save-context job was
+      # skipped by the anti-loop filter (e.g. the bot's own inline replies), so
+      # a missing artifact is a normal outcome here. Detect it up front and turn
+      # the job into a no-op (empty outputs skip all downstream jobs) instead of
+      # failing the run on the download step.
+      - name: Check trigger context exists
+        id: context-exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.trigger-run-id }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::trigger-run-id must be a numeric run ID, got: $RUN_ID"
+            exit 1
+          fi
+          count=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts?name=pr-review-context" \
+            --jq '[.artifacts[] | select(.expired == false)] | length' 2>/dev/null) || count=""
+          if [ -z "$count" ]; then
+            # Fail-open: if the listing call itself fails, fall through to the
+            # download attempt so real infrastructure errors stay loud.
+            echo "::warning::Could not list artifacts for trigger run $RUN_ID — attempting download anyway"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          elif [ "$count" -gt 0 ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "⏭️ No pr-review-context artifact on trigger run $RUN_ID (event filtered at the trigger) — nothing to do"
+          fi
+
       - name: Setup credentials
+        if: steps.context-exists.outputs.exists == 'true'
         uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
 
       - name: Verify token for cross-run artifact download
+        if: steps.context-exists.outputs.exists == 'true'
         shell: bash
         run: |
           if [ -z "$GITHUB_APP_TOKEN" ]; then
@@ -132,6 +166,7 @@ jobs:
           fi
 
       - name: Download trigger context
+        if: steps.context-exists.outputs.exists == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-review-context
@@ -140,6 +175,7 @@ jobs:
           github-token: ${{ env.GITHUB_APP_TOKEN }}
 
       - name: Read context
+        if: steps.context-exists.outputs.exists == 'true'
         id: read
         shell: bash
         run: |
@@ -153,6 +189,9 @@ jobs:
           echo "pr-number=$(cat /tmp/context/pr_number.txt)" >> $GITHUB_OUTPUT
           if [ -f /tmp/context/pr_head_sha.txt ]; then
             echo "pr-head-sha=$(cat /tmp/context/pr_head_sha.txt)" >> $GITHUB_OUTPUT
+          fi
+          if [ -f /tmp/context/requested_reviewer.txt ]; then
+            echo "requested-reviewer=$(cat /tmp/context/requested_reviewer.txt)" >> $GITHUB_OUTPUT
           fi
           if [ -f /tmp/context/comment.json ]; then
             # Use heredoc output syntax — jq -c compacts JSON but comment bodies
@@ -171,6 +210,13 @@ jobs:
 
   review:
     needs: [resolve-context]
+    # The trigger (workflow_run) path additionally gates on the requested reviewer
+    # captured in the artifact: only a docker-agent request may start a review,
+    # mirroring the requested_reviewer.login gate on the direct pull_request path.
+    # Empty is allowed through — it means a legacy trigger artifact (predating
+    # requested_reviewer.txt) or an auto-review event (opened/ready_for_review).
+    # This is a cost gate, not authorization: the artifact is never trusted for
+    # auth, which stays server-side in check-org-membership.
     if: |
       always() && (
         (github.event_name == 'issue_comment' &&
@@ -185,7 +231,8 @@ jobs:
         (github.event_name == 'pull_request' && github.event.action != 'review_requested' && github.event.sender.type != 'Bot' && github.event.sender.login != 'docker-agent' && github.event.sender.login != 'docker-agent[bot]') ||
         (github.event_name == 'pull_request' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == 'docker-agent') ||
         inputs.pr-number != '' ||
-        (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.trigger-event == 'pull_request')
+        (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.trigger-event == 'pull_request' &&
+         (needs.resolve-context.outputs.requested-reviewer == 'docker-agent' || needs.resolve-context.outputs.requested-reviewer == ''))
       )
     runs-on: ubuntu-latest
     # Budget: review agent hard-capped at 2700 s total + feedback processing at
