@@ -78,12 +78,24 @@ jq --arg path "$file_path" --argjson start "$start_line_number" --argjson line "
   /tmp/review_comments.json > /tmp/review_comments.tmp \
   && mv /tmp/review_comments.tmp /tmp/review_comments.json
 
+# Deduplicate against previous review cycles BEFORE validating. On a re-review
+# the pipeline tends to re-derive findings that are already posted on the PR;
+# this drops any new comment matching an existing bot comment (same file,
+# nearby line, similar finding heading) so the PR never gets duplicate threads.
+# Fail-open: if either file is missing the step changes nothing.
+node /tmp/dedupe-findings.js /tmp/review_comments.json /tmp/existing_review_comments.json
+
 # Validate & sanitize suggestion blocks BEFORE posting. GitHub rejects the
 # ENTIRE review (HTTP 422) if any one suggestion anchors outside the diff or to a
 # deleted line, so this strips malformed suggestion blocks (keeping the prose
 # finding) so one bad suggestion can't lose the whole review. Safe to run even
-# when there are no suggestions. `pr.diff` is the pre-fetched diff in the workdir.
-node /tmp/validate-suggestions.js /tmp/review_comments.json pr.diff
+# when there are no suggestions. Validate against the FULL PR diff: in
+# incremental mode the workdir has both pr.diff (incremental) and pr_full.diff
+# (full PR diff — what GitHub validates anchors against); otherwise pr.diff IS
+# the full diff.
+VALIDATION_DIFF=pr.diff
+if [ -f pr_full.diff ]; then VALIDATION_DIFF=pr_full.diff; fi
+node /tmp/validate-suggestions.js /tmp/review_comments.json "$VALIDATION_DIFF"
 
 # Defensive: remove any comments with empty bodies before posting
 jq '[.[] | select(.body | length > 0)]' /tmp/review_comments.json > /tmp/review_comments.tmp \
