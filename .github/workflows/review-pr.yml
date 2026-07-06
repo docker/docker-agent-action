@@ -132,6 +132,10 @@ jobs:
           RUN_ID: ${{ inputs.trigger-run-id }}
           REPO: ${{ github.repository }}
         run: |
+          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::trigger-run-id must be a numeric run ID, got: $RUN_ID"
+            exit 1
+          fi
           count=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts?name=pr-review-context" \
             --jq '[.artifacts[] | select(.expired == false)] | length' 2>/dev/null) || count=""
           if [ -z "$count" ]; then
