@@ -195,6 +195,7 @@ jobs:
       issues: write
       id-token: write
       checks: write
+      actions: write  # cache delete for review-lock release cleanup; feedback artifact list/delete
     outputs:
       exit-code: ${{ steps.run-review.outputs.exit-code }}
 
