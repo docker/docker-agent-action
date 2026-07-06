@@ -975,27 +975,30 @@ runs:
           fi
         else
           STATUS="✅ **Review completed**"
-          # Defense-in-depth: if the log exists but no review was posted, post a fallback LGTM comment.
-          # This guards against the agent exiting 0 without calling gh api (e.g., zero-findings early exit).
+          # Defense-in-depth: if the log exists but no review was posted, post a neutral
+          # incomplete-run notice. Exit 0 without a posted review can be a degenerate agent
+          # run (e.g. a drafter loop), so the fallback must not read as a clean review and
+          # must not match the incremental-review completion markers.
           if [ -n "$VERBOSE_LOG_FILE" ] && [ -f "$VERBOSE_LOG_FILE" ] && ! grep -qE 'pullrequestreview-[0-9]+' "$VERBOSE_LOG_FILE" 2>/dev/null; then
-            # Dedup guard: skip posting if an identical fallback PR review already exists.
-            # Also check the old issue-comment endpoint for a one-time migration guard
-            # (prior runs posted to /issues/comments; this prevents a duplicate on the first
-            # run of this new code against PRs that already received an LGTM issue comment).
-            EXISTING=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" \
+            # Dedup guard: skip posting if a fallback PR review already exists. Matches the
+            # current notice plus the legacy LGTM fallback so PRs that already received
+            # either kind never get a second one. Paginated to cover PRs with >30 reviews.
+            # The old issue-comment endpoint is a one-time migration guard (prior runs
+            # posted the LGTM fallback to /issues/comments).
+            EXISTING=$(gh api --paginate "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" \
+              --jq '[.[] | select((.body // "") | (startswith("⚠️ **Review did not complete**") or startswith("🟢 **No issues found**")))] | length' \
+              2>/dev/null | jq -s 'add // 0' || true)
+            EXISTING_OLD=$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
               --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
-              2>/dev/null || echo "0")
-            EXISTING_OLD=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
-              2>/dev/null || echo "0")
+              2>/dev/null | jq -s 'add // 0' || true)
             if [ "${EXISTING:-0}" -gt 0 ] || [ "${EXISTING_OLD:-0}" -gt 0 ]; then
-              echo "ℹ️  Fallback LGTM review already exists — skipping duplicate post"
+              echo "ℹ️  Fallback review already exists — skipping duplicate post"
             else
-              echo "::warning::Agent exited 0 but no review was posted — posting fallback LGTM review"
-              jq -n --arg body "🟢 **No issues found** — LGTM! [View logs]($RUN_URL)." --arg event "COMMENT" \
+              echo "::warning::Agent exited 0 but no review was posted — posting incomplete-review notice"
+              jq -n --arg body "⚠️ **Review did not complete** — the agent finished without posting a review. Re-request a review from \`docker-agent\` to retry. [View logs]($RUN_URL)." --arg event "COMMENT" \
                 '{body: $body, event: $event, comments: []}' \
               | gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" --input - 2>&1 || \
-                echo "::warning::Failed to post fallback LGTM review to PR"
+                echo "::warning::Failed to post incomplete-review notice to PR"
             fi
           fi
         fi

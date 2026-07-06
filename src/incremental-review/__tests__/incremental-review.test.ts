@@ -53,8 +53,13 @@ describe('findLastReviewedSha', () => {
     expect(findLastReviewedSha(reviews)).toBe(SHA_B);
   });
 
-  it('accepts the LGTM fallback body as a completed review', () => {
-    expect(findLastReviewedSha([review({ body: '🟢 **No issues found** — LGTM!' })])).toBe(SHA_A);
+  it('ignores the incomplete-run fallback review (agent exited 0 without posting)', () => {
+    const body = '⚠️ **Review did not complete** — the agent finished without posting a review.';
+    expect(findLastReviewedSha([review({ body })])).toBeNull();
+  });
+
+  it('ignores the legacy LGTM fallback review (never a completed run)', () => {
+    expect(findLastReviewedSha([review({ body: '🟢 **No issues found** — LGTM!' })])).toBeNull();
   });
 
   it('accepts the GitHub App bot login variant', () => {

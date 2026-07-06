@@ -16,7 +16,7 @@
  * Counting is per LLM run, so each run contributes exactly one unit:
  *   - Reviews are posted via the Reviews API (POST /pulls/{n}/reviews) with no
  *     inline marker — a findings review, a zero-finding APPROVE, and the
- *     timeout/error/LGTM fallbacks all land there. They are counted from
+ *     timeout/error/incomplete-run fallbacks all land there. They are counted from
  *     `pulls.listReviews` by bot author (a real review run always carries an
  *     assessment/status body); the inline finding comments such a review carries
  *     are deliberately not counted, since that would be N units per single run.
@@ -102,7 +102,7 @@ function isAgentReplyComment(c: CommentLike, botLogin: string, windowStartMs: nu
 function isAgentReview(r: ReviewLike, botLogin: string, windowStartMs: number): boolean {
   if (!matchesBotLogin(r.user?.login, botLogin)) return false;
   // A real review run always carries an assessment/status body ("### Assessment:
-  // …", or a timeout/error/LGTM fallback). Standalone inline comments and replies
+  // …", or a timeout/error/incomplete-run fallback). Standalone inline comments and replies
   // surface in this endpoint as empty-body review entries; skipping them keeps
   // each review run counted exactly once and avoids double-counting an inline
   // reply (already counted via its reply marker on the comment endpoints).

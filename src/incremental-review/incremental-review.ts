@@ -13,9 +13,9 @@
  * SHA at posting time. This survives across workflow runs, requires no extra
  * writes, and cannot be edited away like a marker embedded in a comment body.
  * Only reviews that represent a *completed* run count — an assessment body
- * ("### Assessment:") or the zero-findings LGTM fallback. Timeout and failure
- * fallback reviews do NOT mark commits as reviewed, so the next run re-covers
- * them.
+ * ("### Assessment:", posted even for zero findings). Timeout, failure, and
+ * incomplete-run fallback reviews (including the retired zero-findings LGTM
+ * fallback) do NOT mark commits as reviewed, so the next run re-covers them.
  *
  * ## Fallbacks to a full review (see planIncrementalReview)
  *
@@ -64,10 +64,12 @@ export interface IncrementalPlan {
 // looser (e.g. a body that starts with "-") must never get through.
 const SHA40 = /^[0-9a-f]{40}$/i;
 
-// Bodies that mark a review run as completed. The timeout ("⏱️ **PR Review
-// Timed Out**") and failure ("❌ **PR Review Failed**") fallbacks match
-// neither, so unreviewed commits stay unreviewed.
-const COMPLETED_BODY_MARKERS = ['### Assessment:', '🟢 **No issues found**'];
+// Bodies that mark a review run as completed. Only the agent's own assessment
+// body counts: the timeout ("⏱️ **PR Review Timed Out**"), failure ("❌ **PR
+// Review Failed**"), and incomplete-run ("⚠️ **Review did not complete**")
+// fallbacks match nothing here, and neither does the retired "🟢 **No issues
+// found**" LGTM fallback, so commits covered only by a fallback stay unreviewed.
+const COMPLETED_BODY_MARKERS = ['### Assessment:'];
 
 // GitHub presents the bot identity as "docker-agent" when posting with a
 // machine user token, or "docker-agent[bot]" through a GitHub App installation
