@@ -180,10 +180,10 @@ let eventPayloadPath: string;
 /** Create a mock child process that closes with the given exit code. */
 function makeMockChild(exitCode: number) {
   const emitter = new EventEmitter() as EventEmitter & {
-    stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+    stdin: EventEmitter & { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
     kill: ReturnType<typeof vi.fn>;
   };
-  emitter.stdin = { write: vi.fn(), end: vi.fn() };
+  emitter.stdin = Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn() });
   emitter.kill = vi.fn();
   setImmediate(() => emitter.emit('close', exitCode));
   return emitter;
