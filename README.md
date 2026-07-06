@@ -179,8 +179,10 @@ permissions:
   pull-requests: write # Post review comments and approve/request changes
   issues: write # Create security incident issues if secrets are detected in output
   checks: write # (Optional) Show review progress as a check run on the PR
-  id-token: write # Required for OIDC authentication to AWS Secrets Manager
 ```
+
+Add `id-token: write` only when you use the optional AWS Secrets Manager credential setup.
+It is not required when you pass a model API key directly, such as `anthropic-api-key`.
 
 ## Examples
 

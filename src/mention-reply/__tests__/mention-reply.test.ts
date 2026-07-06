@@ -15,12 +15,14 @@ vi.mock('@actions/core');
 const {
   mockAddReaction,
   mockCheckOrgMembership,
+  mockCheckRepositoryWritePermission,
   mockPostComment,
   mockPostReviewCommentReply,
   mockGetPrMeta,
 } = vi.hoisted(() => ({
   mockAddReaction: vi.fn().mockResolvedValue(undefined),
   mockCheckOrgMembership: vi.fn().mockResolvedValue(true),
+  mockCheckRepositoryWritePermission: vi.fn().mockResolvedValue(true),
   mockPostComment: vi.fn().mockResolvedValue(undefined),
   mockPostReviewCommentReply: vi.fn().mockResolvedValue(undefined),
   mockGetPrMeta: vi.fn().mockResolvedValue({
@@ -34,6 +36,7 @@ const {
 vi.mock('../../add-reaction/index.js', () => ({ addReaction: mockAddReaction }));
 vi.mock('../../check-org-membership/index.js', () => ({
   checkOrgMembership: mockCheckOrgMembership,
+  checkRepositoryWritePermission: mockCheckRepositoryWritePermission,
 }));
 vi.mock('../../post-comment/index.js', () => ({
   postComment: mockPostComment,
@@ -156,6 +159,7 @@ beforeEach(() => {
   // Re-apply defaults after clearAllMocks
   mockAddReaction.mockResolvedValue(undefined);
   mockCheckOrgMembership.mockResolvedValue(true);
+  mockCheckRepositoryWritePermission.mockResolvedValue(true);
   mockPostComment.mockResolvedValue(undefined);
   mockPostReviewCommentReply.mockResolvedValue(undefined);
   mockGetPrMeta.mockResolvedValue({
@@ -172,6 +176,7 @@ afterEach(() => {
   delete process.env.GITHUB_EVENT_NAME;
   delete process.env.GITHUB_APP_TOKEN;
   delete process.env.ORG_MEMBERSHIP_TOKEN;
+  delete process.env.GITHUB_TOKEN;
 });
 
 // ---------------------------------------------------------------------------
@@ -742,5 +747,60 @@ describe('run() — pull_request_review_comment', () => {
     expect(prompt).toContain('FILE_PATH=src/foo.ts');
     expect(prompt).toContain('LINE=42');
     expect(prompt).toContain('IN_REPLY_TO_ID=77');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// run() — repo write-permission fallback (no ORG_MEMBERSHIP_TOKEN)
+// ---------------------------------------------------------------------------
+
+describe('run() — repo write-permission fallback', () => {
+  beforeEach(() => {
+    delete process.env.ORG_MEMBERSHIP_TOKEN;
+    process.env.GITHUB_TOKEN = 'fake-github-token';
+  });
+
+  it('calls checkRepositoryWritePermission instead of checkOrgMembership when no org token', async () => {
+    await run();
+
+    expect(mockCheckOrgMembership).not.toHaveBeenCalled();
+    expect(mockCheckRepositoryWritePermission).toHaveBeenCalledWith(
+      'fake-app-token',
+      'docker',
+      'myrepo',
+      'alice',
+    );
+    expect(core.setOutput).toHaveBeenCalledWith('should-reply', 'true');
+  });
+
+  it('posts rejection when commenter lacks write permission', async () => {
+    mockCheckRepositoryWritePermission.mockResolvedValueOnce(false);
+
+    await run();
+
+    expect(mockCheckRepositoryWritePermission).toHaveBeenCalled();
+    expect(mockCheckOrgMembership).not.toHaveBeenCalled();
+    expect(mockPostComment).toHaveBeenCalledWith(
+      'fake-app-token',
+      'docker',
+      'myrepo',
+      42,
+      expect.stringContaining('<!-- docker-agent-review-reply -->'),
+    );
+    expect(core.setOutput).toHaveBeenCalledWith('should-reply', 'false');
+  });
+
+  it('uses GITHUB_TOKEN as the repo token when GITHUB_APP_TOKEN is also absent', async () => {
+    delete process.env.GITHUB_APP_TOKEN;
+
+    await run();
+
+    expect(mockCheckRepositoryWritePermission).toHaveBeenCalledWith(
+      'fake-github-token',
+      'docker',
+      'myrepo',
+      'alice',
+    );
+    expect(core.setOutput).toHaveBeenCalledWith('should-reply', 'true');
   });
 });

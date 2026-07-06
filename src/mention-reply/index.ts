@@ -28,7 +28,10 @@
 import { readFileSync } from 'node:fs';
 import * as core from '@actions/core';
 import { addReaction, type CommentType } from '../add-reaction/index.js';
-import { checkOrgMembership } from '../check-org-membership/index.js';
+import {
+  checkOrgMembership,
+  checkRepositoryWritePermission,
+} from '../check-org-membership/index.js';
 import { getPrMeta, type PrMeta } from '../get-pr-meta/index.js';
 import { postComment, postReviewCommentReply } from '../post-comment/index.js';
 
@@ -256,14 +259,16 @@ export async function run(): Promise<void> {
   //    Use the correct API endpoint based on comment type.
   await addReaction(token, ctx.owner, ctx.repo, ctx.commentId, 'eyes', ctx.commentType);
 
-  // 5. Org membership check
-  const orgToken = process.env.ORG_MEMBERSHIP_TOKEN ?? core.getInput('org-membership-token');
-  if (!orgToken) throw new Error('ORG_MEMBERSHIP_TOKEN or org-membership-token input is required');
+  // 5. Auth check: org membership when available, repo write permission as fallback
+  // for callers that supply a direct model API key instead of AWS-backed creds.
+  const orgToken = process.env.ORG_MEMBERSHIP_TOKEN || core.getInput('org-membership-token');
+  const isMember = orgToken
+    ? await checkOrgMembership(orgToken, 'docker', ctx.commentAuthor)
+    : await checkRepositoryWritePermission(token, ctx.owner, ctx.repo, ctx.commentAuthor);
 
-  const isMember = await checkOrgMembership(orgToken, 'docker', ctx.commentAuthor);
   if (!isMember) {
-    core.info(`⏭️  ${ctx.commentAuthor} is not a docker org member — posting rejection`);
-    const rejectionBody = `Sorry @${ctx.commentAuthor}, I can only respond to Docker org members.\n\n<!-- docker-agent-review-reply -->`;
+    core.info(`⏭️  ${ctx.commentAuthor} is not authorized — posting rejection`);
+    const rejectionBody = `Sorry @${ctx.commentAuthor}, I can only respond to authorized contributors.\n\n<!-- docker-agent-review-reply -->`;
     try {
       // Reply in the same inline thread when triggered from an inline comment;
       // fall back to a PR-level Issues comment otherwise.
@@ -287,7 +292,7 @@ export async function run(): Promise<void> {
     core.setOutput('should-reply', 'false');
     return;
   }
-  core.info(`✅ ${ctx.commentAuthor} is a docker org member`);
+  core.info(`✅ ${ctx.commentAuthor} is authorized`);
 
   // 6. Fetch PR metadata
   const pr = await getPrMeta(token, ctx.owner, ctx.repo, ctx.prNumber);

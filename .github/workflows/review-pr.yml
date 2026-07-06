@@ -83,13 +83,6 @@ on:
         description: "Exit code from the review"
         value: ${{ jobs.review.outputs.exit-code }}
 
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
-  actions: read   # download-artifact across workflow_run boundary
-
 # Rate-anomaly safeguard: serialize same-trigger bursts on a PR (e.g. rapid
 # force-pushes firing repeated auto-reviews) instead of running N in parallel.
 # The group is keyed per PR AND per trigger intent: the comment id (or event
@@ -119,25 +112,13 @@ jobs:
       comment-is-review-cmd: ${{ steps.read.outputs.comment-is-review-cmd }}
       comment-author-type: ${{ steps.read.outputs.comment-author-type }}
     steps:
-      - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
-
-      - name: Verify token for cross-run artifact download
-        shell: bash
-        run: |
-          if [ -z "$GITHUB_APP_TOKEN" ]; then
-            echo "::error::GITHUB_APP_TOKEN is not set. setup-credentials may have failed (check OIDC and AWS Secrets Manager configuration)."
-            echo "::error::Cross-run artifact download requires a token with actions:read scope."
-            exit 1
-          fi
-
       - name: Download trigger context
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-review-context
           path: /tmp/context
           run-id: ${{ inputs.trigger-run-id }}
-          github-token: ${{ env.GITHUB_APP_TOKEN }}
+          github-token: ${{ github.token }}
 
       - name: Read context
         id: read
@@ -189,12 +170,8 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 50
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      id-token: write
-      checks: write
+    env:
+      HAS_DIRECT_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' || secrets.AWS_BEARER_TOKEN_BEDROCK != '' || secrets.XAI_API_KEY != '' || secrets.NEBIUS_API_KEY != '' || secrets.MISTRAL_API_KEY != '' }}
     outputs:
       exit-code: ${{ steps.run-review.outputs.exit-code }}
 
@@ -316,7 +293,9 @@ jobs:
         if: |
           steps.command.outputs.is_review != 'false' &&
           steps.draft.outputs.skip != 'true'
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
+        uses: docker/docker-agent-action/setup-credentials@5e46aee485641c251fdaeb9a05bd9977c711def8 # direct API key OIDC fix
+        with:
+          fetch-credentials: ${{ env.HAS_DIRECT_API_KEY != 'true' && 'true' || 'false' }}
 
       - name: Check if org member
         id: membership
@@ -337,6 +316,8 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
           REQUESTER: ${{ github.event.sender.login }}
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_LOGIN: docker-agent
         run: node "$DOCKER_AGENT_ACTION_ROOT/dist/check-org-membership.js"
 
       # Rate-anomaly safeguard: count how many docker-agent reviews and replies
@@ -472,29 +453,10 @@ jobs:
         (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.trigger-event == 'pull_request_review_comment' && needs.resolve-context.outputs.comment-in-reply-to-id != '' && needs.resolve-context.outputs.comment-author != 'docker-agent' && needs.resolve-context.outputs.comment-author-type != 'Bot' && needs.resolve-context.outputs.comment-author != 'docker-agent[bot]')
       )
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      id-token: write
-      actions: read   # download cross-run artifacts
+    env:
+      HAS_DIRECT_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' || secrets.AWS_BEARER_TOKEN_BEDROCK != '' || secrets.XAI_API_KEY != '' || secrets.NEBIUS_API_KEY != '' || secrets.MISTRAL_API_KEY != '' }}
 
     steps:
-
-      - name: Setup credentials
-        if: inputs.trigger-run-id != ''
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
-
-      - name: Verify token for cross-run artifact download
-        if: inputs.trigger-run-id != ''
-        shell: bash
-        run: |
-          if [ -z "$GITHUB_APP_TOKEN" ]; then
-            echo "::error::GITHUB_APP_TOKEN is not set. setup-credentials may have failed (check OIDC and AWS Secrets Manager configuration)."
-            echo "::error::Cross-run artifact download requires a token with actions:read scope."
-            exit 1
-          fi
-
       - name: Download trigger context
         # Bypass secret-masking: instead of consuming comment-json from
         # resolve-context job outputs (which GitHub Actions silently drops when
@@ -505,7 +467,7 @@ jobs:
           name: pr-review-context
           path: /tmp/context
           run-id: ${{ inputs.trigger-run-id }}
-          github-token: ${{ env.GITHUB_APP_TOKEN }}
+          github-token: ${{ github.token }}
 
       - name: Parse comment context
         id: feedback
@@ -605,48 +567,47 @@ jobs:
           fi
 
       - name: Setup credentials
-        if: steps.check.outputs.is_agent == 'true'
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
+        if: steps.check.outputs.is_agent == 'true' && env.HAS_DIRECT_API_KEY != 'true'
+        uses: docker/docker-agent-action/setup-credentials@5e46aee485641c251fdaeb9a05bd9977c711def8 # direct API key OIDC fix
+        with:
+          fetch-credentials: 'true'
 
       - name: Check authorization
         if: steps.check.outputs.is_agent == 'true'
         id: auth
         shell: bash
         env:
-          GH_TOKEN: ${{ env.ORG_MEMBERSHIP_TOKEN }}
+          GH_TOKEN: ${{ env.ORG_MEMBERSHIP_TOKEN || github.token }}
           ORG: docker
+          REPO: ${{ github.repository }}
           USERNAME: ${{ steps.feedback.outputs.comment-author }}
+          HAS_ORG_TOKEN: ${{ env.ORG_MEMBERSHIP_TOKEN != '' }}
         run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::error::ORG_MEMBERSHIP_TOKEN is not set — org membership check cannot run (ensure id-token: write permission is configured)"
-            echo "authorized=false" >> $GITHUB_OUTPUT
+          if [ "$HAS_ORG_TOKEN" = "true" ]; then
+            # Check org membership with explicit error handling.
+            if ! RESPONSE=$(gh api "orgs/$ORG/members/$USERNAME" --silent -i 2>/dev/null); then
+              echo "authorized=false" >> $GITHUB_OUTPUT
+              echo "⏭️ API call failed or @$USERNAME is not a $ORG org member — not authorized"
+              exit 0
+            fi
+            STATUS=$(echo "$RESPONSE" | head -1 | grep -oP 'HTTP/[0-9.]+ \K[0-9]+' || true)
+            if [ "$STATUS" = "204" ]; then
+              echo "authorized=true" >> $GITHUB_OUTPUT
+              echo "✅ @$USERNAME is a $ORG org member — authorized"
+            else
+              echo "authorized=false" >> $GITHUB_OUTPUT
+              echo "⏭️ @$USERNAME is not a $ORG org member — not authorized"
+            fi
             exit 0
           fi
-          # Check org membership with explicit error handling
-          if ! RESPONSE=$(gh api "orgs/$ORG/members/$USERNAME" --silent -i 2>/dev/null); then
-            echo "authorized=false" >> $GITHUB_OUTPUT
-            echo "⏭️ API call failed or @$USERNAME is not a $ORG org member — not authorized"
-            exit 0
-          fi
-          # Verify response starts with HTTP status line before parsing
-          if ! echo "$RESPONSE" | head -1 | grep -q '^HTTP/'; then
-            echo "::warning::Unexpected API response format"
-            echo "authorized=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          # Extract status code from HTTP/1.1 204 No Content format
-          STATUS=$(echo "$RESPONSE" | head -1 | grep -oP 'HTTP/[0-9.]+ \K[0-9]+')
-          if [ -z "$STATUS" ]; then
-            echo "::warning::Failed to extract HTTP status code"
-            echo "authorized=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          if [ "$STATUS" = "204" ]; then
+
+          PERMISSION=$(gh api "repos/$REPO/collaborators/$USERNAME/permission" --jq '.permission' 2>/dev/null || echo "none")
+          if [ "$PERMISSION" = "admin" ] || [ "$PERMISSION" = "maintain" ] || [ "$PERMISSION" = "write" ]; then
             echo "authorized=true" >> $GITHUB_OUTPUT
-            echo "✅ @$USERNAME is a $ORG org member — authorized"
+            echo "✅ @$USERNAME has $PERMISSION access to $REPO — authorized"
           else
             echo "authorized=false" >> $GITHUB_OUTPUT
-            echo "⏭️ @$USERNAME is not a $ORG org member — not authorized"
+            echo "⏭️ @$USERNAME does not have write access to $REPO — not authorized"
           fi
 
       - name: Notify unauthorized user
@@ -662,7 +623,7 @@ jobs:
         run: |
 
           jq -n \
-            --arg body "Sorry @$AUTHOR, conversational replies are currently available to repository collaborators only. Your feedback has still been captured and will be used to improve future reviews.
+            --arg body "Sorry @$AUTHOR, conversational replies are currently available to authorized contributors only. Your feedback has still been captured and will be used to improve future reviews.
 
           <!-- docker-agent-review-reply -->" \
             --argjson reply_to "$ROOT_COMMENT_ID" \
@@ -835,16 +796,15 @@ jobs:
         needs.resolve-context.outputs.comment-author-type != 'Bot')
       )
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-      id-token: write
-      actions: read   # download cross-run artifacts
+    env:
+      HAS_DIRECT_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.OPENAI_API_KEY != '' || secrets.GOOGLE_API_KEY != '' || secrets.AWS_BEARER_TOKEN_BEDROCK != '' || secrets.XAI_API_KEY != '' || secrets.NEBIUS_API_KEY != '' || secrets.MISTRAL_API_KEY != '' }}
 
     steps:
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
+        if: env.HAS_DIRECT_API_KEY != 'true'
+        uses: docker/docker-agent-action/setup-credentials@5e46aee485641c251fdaeb9a05bd9977c711def8 # direct API key OIDC fix
+        with:
+          fetch-credentials: 'true'
 
       - name: Download trigger context
         if: inputs.trigger-run-id != ''
@@ -853,7 +813,7 @@ jobs:
           name: pr-review-context
           path: /tmp/context
           run-id: ${{ inputs.trigger-run-id }}
-          github-token: ${{ env.GITHUB_APP_TOKEN }}
+          github-token: ${{ env.GITHUB_APP_TOKEN || github.token }}
 
       - name: Synthesize mention-reply event context
         if: inputs.trigger-run-id != ''
@@ -910,7 +870,7 @@ jobs:
       - name: Run mention-reply handler
         id: mention-context
         if: steps.resolve-event.outputs.path != ''
-        uses: docker/docker-agent-action/.github/actions/mention-reply@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
+        uses: docker/docker-agent-action/.github/actions/mention-reply@5e46aee485641c251fdaeb9a05bd9977c711def8 # direct API key OIDC fix
         env:
           GITHUB_EVENT_PATH: ${{ steps.resolve-event.outputs.path }}
           GITHUB_EVENT_NAME: ${{ steps.resolve-event.outputs.name }}

@@ -3,24 +3,36 @@
 
 name: 'Setup Credentials'
 description: 'Fetch credentials from AWS Secrets Manager via OIDC'
+inputs:
+  fetch-credentials:
+    description: 'Fetch AWS-backed credentials. Set to false when the caller supplies credentials directly.'
+    required: false
+    default: 'true'
 runs:
   using: composite
   steps:
+    - name: Export action root
+      shell: bash
+      run: echo "DOCKER_AGENT_ACTION_ROOT=$(cd "$GITHUB_ACTION_PATH/.." && pwd)" >> "$GITHUB_ENV"
+
     - name: Setup Node.js
+      # Always runs — even when fetch-credentials is false — because callers
+      # invoke dist/ scripts (check-org-membership.js, rate-limit.js) via
+      # `node "$DOCKER_AGENT_ACTION_ROOT/dist/..."` after this action returns.
       uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
       with:
         node-version: '24'
 
     - name: Fetch credentials
+      if: inputs.fetch-credentials == 'true'
       shell: bash
       run: node "$GITHUB_ACTION_PATH/../dist/credentials.js"
 
     - name: Verify credentials were obtained
+      if: inputs.fetch-credentials == 'true'
       shell: bash
       run: |
         if [ -z "$GITHUB_APP_TOKEN" ]; then
           echo "::error::GITHUB_APP_TOKEN was not set — setup-credentials failed silently."
           exit 1
         fi
-        # Export the repo root so callers can reach dist/ bundles via $DOCKER_AGENT_ACTION_ROOT
-        echo "DOCKER_AGENT_ACTION_ROOT=$(cd "$GITHUB_ACTION_PATH/.." && pwd)" >> "$GITHUB_ENV"

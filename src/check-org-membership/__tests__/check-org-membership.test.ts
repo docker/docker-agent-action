@@ -7,6 +7,7 @@ vi.mock('@actions/core');
 
 const {
   mockCheckMembershipForUser,
+  mockGetCollaboratorPermissionLevel,
   mockGetPull,
   mockListEventsForTimeline,
   mockPaginate,
@@ -14,6 +15,9 @@ const {
   constructorTokens,
 } = vi.hoisted(() => {
   const mockCheckMembershipForUser = vi.fn().mockResolvedValue({}); // 204 = member
+  const mockGetCollaboratorPermissionLevel = vi
+    .fn()
+    .mockResolvedValue({ data: { permission: 'write' } });
   const mockGetPull = vi.fn().mockResolvedValue({ data: { user: { login: 'bob' } } });
   const mockListEventsForTimeline = vi.fn();
   const mockPaginate = vi.fn().mockResolvedValue([]);
@@ -28,6 +32,7 @@ const {
       orgs: { checkMembershipForUser: mockCheckMembershipForUser },
       pulls: { get: mockGetPull },
       issues: { listEventsForTimeline: mockListEventsForTimeline },
+      repos: { getCollaboratorPermissionLevel: mockGetCollaboratorPermissionLevel },
     };
     constructor({ auth }: { auth: string }) {
       constructorTokens.push(auth);
@@ -36,6 +41,7 @@ const {
 
   return {
     mockCheckMembershipForUser,
+    mockGetCollaboratorPermissionLevel,
     mockGetPull,
     mockListEventsForTimeline,
     mockPaginate,
@@ -48,6 +54,7 @@ vi.mock('@octokit/rest', () => ({ Octokit: MockOctokit }));
 
 import {
   checkOrgMembership,
+  checkRepositoryWritePermission,
   evaluateMembership,
   type MembershipInputs,
   resolvePrAuthor,
@@ -201,6 +208,43 @@ describe('resolvePrAuthor', () => {
     mockGetPull.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }));
 
     await expect(resolvePrAuthor(REPO_TOKEN, 'docker', 'myrepo', 999)).rejects.toThrow('Not Found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkRepositoryWritePermission
+// ---------------------------------------------------------------------------
+
+describe('checkRepositoryWritePermission', () => {
+  it('returns true for write-level repository permission', async () => {
+    mockGetCollaboratorPermissionLevel.mockResolvedValueOnce({ data: { permission: 'maintain' } });
+
+    const ok = await checkRepositoryWritePermission(REPO_TOKEN, 'docker', 'myrepo', 'maintainer');
+
+    expect(ok).toBe(true);
+    expect(mockGetCollaboratorPermissionLevel).toHaveBeenCalledWith({
+      owner: 'docker',
+      repo: 'myrepo',
+      username: 'maintainer',
+    });
+  });
+
+  it('returns false for read-only repository permission', async () => {
+    mockGetCollaboratorPermissionLevel.mockResolvedValueOnce({ data: { permission: 'read' } });
+
+    const ok = await checkRepositoryWritePermission(REPO_TOKEN, 'docker', 'myrepo', 'reader');
+
+    expect(ok).toBe(false);
+  });
+
+  it('returns false for users without repository permission', async () => {
+    mockGetCollaboratorPermissionLevel.mockRejectedValueOnce(
+      Object.assign(new Error('Not Found'), { status: 404 }),
+    );
+
+    const ok = await checkRepositoryWritePermission(REPO_TOKEN, 'docker', 'myrepo', 'external');
+
+    expect(ok).toBe(false);
   });
 });
 
@@ -429,6 +473,29 @@ describe('evaluateMembership', () => {
     expect(decision).toEqual({ isMember: false, subject: 'outsider', via: 'none' });
   });
 
+  it('review_requested (direct): authorizes requester by repo permission without org token', async () => {
+    mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'ext-author' } } });
+    mockGetCollaboratorPermissionLevel
+      .mockResolvedValueOnce({ data: { permission: 'read' } })
+      .mockResolvedValueOnce({ data: { permission: 'write' } });
+
+    const decision = await evaluateMembership(
+      inputs({ orgToken: '', eventAction: 'review_requested', trustedRequester: 'maintainer' }),
+    );
+
+    expect(decision).toEqual({ isMember: true, subject: 'maintainer', via: 'requester' });
+    expect(mockGetCollaboratorPermissionLevel).toHaveBeenNthCalledWith(1, {
+      owner: 'docker',
+      repo: 'myrepo',
+      username: 'ext-author',
+    });
+    expect(mockGetCollaboratorPermissionLevel).toHaveBeenNthCalledWith(2, {
+      owner: 'docker',
+      repo: 'myrepo',
+      username: 'maintainer',
+    });
+  });
+
   it('review_requested (fork/trigger): authorizes via the timeline-derived requester', async () => {
     membersAre('maintainer');
     mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'ext-author' } } });
@@ -461,6 +528,26 @@ describe('evaluateMembership', () => {
     );
 
     expect(decision).toEqual({ isMember: false, subject: 'ext-author', via: 'none' });
+  });
+
+  it('fork/trigger review_requested: authorizes timeline requester by repo permission without org token', async () => {
+    mockGetPull.mockResolvedValueOnce({ data: { user: { login: 'ext-author' } } });
+    mockGetCollaboratorPermissionLevel
+      .mockResolvedValueOnce({ data: { permission: 'read' } })
+      .mockResolvedValueOnce({ data: { permission: 'maintain' } });
+    mockPaginate.mockResolvedValueOnce([reviewRequestedEvent('maintainer')]);
+
+    const decision = await evaluateMembership(
+      inputs({
+        orgToken: '',
+        prSource: 'trigger',
+        eventName: 'workflow_run',
+        eventAction: 'completed',
+        prNumber: 7,
+      }),
+    );
+
+    expect(decision).toEqual({ isMember: true, subject: 'maintainer', via: 'requester' });
   });
 
   it('fork/trigger: a forged timeline requester is still validated against real org membership', async () => {
@@ -526,6 +613,27 @@ describe('evaluateMembership', () => {
     );
 
     expect(decision).toEqual({ isMember: false, subject: 'ext', via: 'none' });
+  });
+
+  it('issue_comment: authorizes commenter by repo permission without org token', async () => {
+    mockGetCollaboratorPermissionLevel.mockResolvedValueOnce({ data: { permission: 'write' } });
+
+    const decision = await evaluateMembership(
+      inputs({
+        orgToken: '',
+        eventName: 'issue_comment',
+        eventAction: 'created',
+        commentAuthor: 'collaborator',
+      }),
+    );
+
+    expect(decision).toEqual({ isMember: true, subject: 'collaborator', via: 'comment' });
+    expect(mockGetPull).not.toHaveBeenCalled();
+    expect(mockGetCollaboratorPermissionLevel).toHaveBeenCalledWith({
+      owner: 'docker',
+      repo: 'myrepo',
+      username: 'collaborator',
+    });
   });
 
   it('throws on an invalid PR number for PR-driven paths', async () => {
