@@ -75,6 +75,14 @@ inputs:
     description: "Number of additional retry attempts when the agent times out (exit code 124). Independent of max-retries — both budgets can be consumed in the same run. Default 0 = no timeout retries."
     required: false
     default: "0"
+  total-timeout:
+    description: "Total wall-clock budget in seconds across all attempts, retry delays included (0 = unlimited). The last attempt is capped to the remaining budget and a retry only starts with at least 60 s left, so the action always finishes within this budget. Set it below the job's timeout-minutes to keep post-run cleanup steps alive."
+    required: false
+    default: "0"
+  no-retry-pattern:
+    description: "Regex tested against the verbose agent log after a failed attempt. On match, remaining retries are skipped — use it when a retry would repeat a side effect the failed attempt already committed (e.g. 'pullrequestreview-[0-9]+' once a PR review was posted). Empty = disabled."
+    required: false
+    default: ""
   extra-args:
     description: "Additional arguments to pass to docker agent run"
     required: false

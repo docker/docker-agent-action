@@ -29,7 +29,7 @@ vi.mock('node:child_process', () => ({
   spawn: mockSpawn,
 }));
 
-import { buildArgs, runAgent, TIMEOUT_EXIT_CODE } from '../exec.js';
+import { buildArgs, MIN_RETRY_BUDGET_SECONDS, runAgent, TIMEOUT_EXIT_CODE } from '../exec.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +70,8 @@ function baseOpts(overrides: Partial<Parameters<typeof runAgent>[0]> = {}) {
     maxRetries: 0,
     retryDelay: 0,
     retryOnTimeout: 0,
+    totalTimeout: 0,
+    noRetryPattern: '',
     debug: false,
     anthropicApiKey: 'sk-ant-test',
     telemetryTags: 'source=test',
@@ -388,5 +390,121 @@ describe('runAgent', () => {
     expect(envPassed.MISTRAL_API_KEY).toBe('mis-key');
     expect(envPassed.GH_TOKEN).toBe('gh-token');
     expect(envPassed.TELEMETRY_TAGS).toBe('source=ci');
+  });
+});
+
+// ── total-timeout budget ──────────────────────────────────────────────────────────────────
+
+describe('runAgent total-timeout', () => {
+  it('enforces the total budget as a kill timer even when per-attempt timeout is 0', async () => {
+    // Child would exit naturally in 5 s; the 50 ms total budget must kill it first.
+    const child = makeMockChild(0, 5000);
+    mockSpawn.mockReturnValue(child);
+
+    const result = await runAgent(baseOpts({ timeout: 0, totalTimeout: 0.05, maxRetries: 0 }));
+
+    expect(result.exitCode).toBe(TIMEOUT_EXIT_CODE);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+  }, 3000);
+
+  it('skips the retry when the remaining budget is under the minimum floor', async () => {
+    mockSpawn.mockImplementation(() => makeMockChild(1));
+
+    // Budget (10 s) minus elapsed leaves < MIN_RETRY_BUDGET_SECONDS (60) → no retry.
+    const result = await runAgent(baseOpts({ maxRetries: 2, retryDelay: 0, totalTimeout: 10 }));
+
+    expect(result.exitCode).toBe(1);
+    expect(mockSpawn).toHaveBeenCalledOnce();
+    expect(MIN_RETRY_BUDGET_SECONDS).toBeGreaterThan(10);
+  });
+
+  it('allows retries while the remaining budget stays above the floor', async () => {
+    mockSpawn
+      .mockImplementationOnce(() => makeMockChild(1))
+      .mockImplementation(() => makeMockChild(0));
+
+    const result = await runAgent(baseOpts({ maxRetries: 1, retryDelay: 0, totalTimeout: 300 }));
+
+    expect(result.exitCode).toBe(0);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('caps the per-attempt timeout to the remaining budget', async () => {
+    // totalTimeout (0.05 s) < timeout (600 s): the budget, not the attempt cap,
+    // must kill the child.
+    const child = makeMockChild(0, 5000);
+    mockSpawn.mockReturnValue(child);
+
+    const result = await runAgent(baseOpts({ timeout: 600, totalTimeout: 0.05, maxRetries: 0 }));
+
+    expect(result.exitCode).toBe(TIMEOUT_EXIT_CODE);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+  }, 3000);
+});
+
+// ── no-retry-pattern ──────────────────────────────────────────────────────────────────────
+
+describe('runAgent no-retry-pattern', () => {
+  it('skips retries when the verbose log matches the pattern', async () => {
+    mockSpawn.mockImplementation(() => {
+      // Simulate the agent posting a review before failing.
+      fsSync.appendFileSync(verboseLogFile, 'posted pullrequestreview-123456\n', 'utf-8');
+      return makeMockChild(1);
+    });
+
+    const result = await runAgent(
+      baseOpts({ maxRetries: 2, retryDelay: 0, noRetryPattern: 'pullrequestreview-[0-9]+' }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(mockSpawn).toHaveBeenCalledOnce();
+  });
+
+  it('skips timeout retries when the verbose log matches the pattern', async () => {
+    mockSpawn.mockImplementation(() => {
+      fsSync.appendFileSync(verboseLogFile, 'posted pullrequestreview-123456\n', 'utf-8');
+      return makeMockChild(TIMEOUT_EXIT_CODE);
+    });
+
+    const result = await runAgent(
+      baseOpts({
+        retryOnTimeout: 1,
+        retryDelay: 0,
+        noRetryPattern: 'pullrequestreview-[0-9]+',
+      }),
+    );
+
+    expect(result.exitCode).toBe(TIMEOUT_EXIT_CODE);
+    expect(mockSpawn).toHaveBeenCalledOnce();
+  });
+
+  it('retries normally when the log does not match', async () => {
+    mockSpawn
+      .mockImplementationOnce(() => makeMockChild(1))
+      .mockImplementation(() => makeMockChild(0));
+
+    const result = await runAgent(
+      baseOpts({ maxRetries: 1, retryDelay: 0, noRetryPattern: 'pullrequestreview-[0-9]+' }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores an invalid regex and keeps retrying', async () => {
+    const { warning } = await import('@actions/core');
+    mockSpawn
+      .mockImplementationOnce(() => makeMockChild(1))
+      .mockImplementation(() => makeMockChild(0));
+
+    const result = await runAgent(
+      baseOpts({ maxRetries: 1, retryDelay: 0, noRetryPattern: '([unclosed' }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Invalid no-retry-pattern'),
+    );
   });
 });
