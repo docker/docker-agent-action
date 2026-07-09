@@ -1,0 +1,49 @@
+# Copyright The Docker Agent Action authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Example: AI PR reviewer built on docker/docker-agent-action.
+#
+# Setup (see examples/reviewer/README.md for details):
+#   1. Copy agent.yaml into your repo as .github/agents/reviewer.yaml
+#   2. Copy this file into your repo as .github/workflows/review-pr.yml
+#   3. Replace @VERSION below with a released tag
+#   4. Add an ANTHROPIC_API_KEY secret to your repository
+
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write # Lets the action open a security incident issue if a secret leak is detected in agent output
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Fetch PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr diff "$PR_NUMBER" > /tmp/pr.diff
+
+      - name: Review PR
+        id: review
+        uses: docker/docker-agent-action@VERSION
+        with:
+          agent: .github/agents/reviewer.yaml
+          prompt: "Review the pull request diff at /tmp/pr.diff and output the review markdown."
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          skip-summary: false
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --body-file "${{ steps.review.outputs.output-file }}"

@@ -16,19 +16,16 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  id-token: write
 
 jobs:
   update-version:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
-
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          token: ${{ env.GITHUB_APP_TOKEN }}
+          # optional PAT so created PRs trigger CI; falls back to github.token
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
@@ -49,7 +46,7 @@ jobs:
         env:
           DISPATCH_VERSION: ${{ github.event.client_payload.version }}
           INPUT_VERSION: ${{ inputs.version }}
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "$INPUT_VERSION" ]; then
             VERSION="$INPUT_VERSION"
@@ -67,7 +64,7 @@ jobs:
 
       - name: Validate version exists
         env:
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           echo "Validating that $VERSION exists as a release on docker/docker-agent..."
@@ -106,7 +103,8 @@ jobs:
       - name: Create or update PR
         if: steps.check.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN }}
+          # optional PAT so created PRs trigger CI; falls back to github.token
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           CURRENT: ${{ steps.check.outputs.current }}
         run: |

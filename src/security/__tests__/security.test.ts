@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Unit tests for the security module.
+ * Unit tests for the security module (sanitize-input / sanitize-output).
  *
- * Covers all 21 cases from tests/test-security.sh and all 6 cases from
- * tests/test-exploits.sh.  Each it() description matches the original
- * bash test name verbatim so results are easy to correlate.
+ * Cases were originally ported from the legacy bash suites
+ * (test-security.sh / test-exploits.sh); each it() description keeps the
+ * original bash test name so results are easy to correlate historically.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -17,7 +17,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@actions/core');
 
-import { checkAuth } from '../check-auth.js';
 import { sanitizeInput } from '../sanitize-input.js';
 import { sanitizeOutput } from '../sanitize-output.js';
 
@@ -49,7 +48,7 @@ function readOutput(p: string): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Tests ported from tests/test-security.sh (21 cases)
+// Tests ported from tests/test-security.sh
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('test-security.sh: sanitize-input', () => {
@@ -418,25 +417,8 @@ describe('test-security.sh: sanitize-output', () => {
   });
 });
 
-describe('test-security.sh: check-auth', () => {
-  it('Test 6: Authorization - OWNER (should pass)', () => {
-    const result = checkAuth('OWNER', ['OWNER', 'MEMBER', 'COLLABORATOR']);
-    expect(result).toBe(true);
-  });
-
-  it('Test 7: Authorization - COLLABORATOR (should pass)', () => {
-    const result = checkAuth('COLLABORATOR', ['OWNER', 'MEMBER', 'COLLABORATOR']);
-    expect(result).toBe(true);
-  });
-
-  it('Test 8: Authorization - CONTRIBUTOR (should block)', () => {
-    const result = checkAuth('CONTRIBUTOR', ['OWNER', 'MEMBER']);
-    expect(result).toBe(false);
-  });
-});
-
 // ═══════════════════════════════════════════════════════════════════════════
-// Tests ported from tests/test-exploits.sh (6 cases)
+// Tests ported from tests/test-exploits.sh
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('test-exploits.sh', () => {
@@ -509,17 +491,5 @@ describe('test-exploits.sh', () => {
     expect(parsed[0]).toBe('OWNER');
     expect(parsed[1]).toBe('MEMBER');
     expect(parsed[2]).toBe('COLLABORATOR');
-  });
-
-  it('Test 6: Extra args with quoted strings (should preserve quotes)', () => {
-    // Verify JSON.parse correctly handles role names that contain spaces
-    // (edge case: the JSON serialization must round-trip correctly).
-    const roles = ['OWNER', 'MEMBER', 'SUPER ADMIN'];
-    const roundTripped = JSON.parse(JSON.stringify(roles)) as string[];
-
-    expect(roundTripped).toHaveLength(3);
-    expect(roundTripped[2]).toBe('SUPER ADMIN');
-    // Confirm checkAuth works with the parsed values
-    expect(checkAuth('SUPER ADMIN', roundTripped)).toBe(true);
   });
 });

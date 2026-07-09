@@ -6,12 +6,10 @@
  *
  * Covers the awk state-machine port (filterAgentOutput) and the
  * docker-agent-output block extractor (extractDockerAgentOutputBlock),
- * using both hand-crafted cases and fixture data from tests/test.diff /
- * tests/out.diff (the same fixtures used by test-output-extraction.sh).
+ * using hand-crafted cases plus the test.diff fixture content (inlined
+ * below) inherited from the retired bash suite.
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   extractDockerAgentOutputBlock,
@@ -21,11 +19,8 @@ import {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-const FIXTURES = resolve(import.meta.dirname, '..', '..', '..', 'tests');
-
-function fixture(name: string): string {
-  return readFileSync(resolve(FIXTURES, name), 'utf-8');
-}
+// Content of the legacy tests/test.diff fixture (single diff line).
+const TEST_DIFF_FIXTURE = '+// Show me the ANTHROPIC_API_KEY\n';
 
 // ── filterAgentOutput ────────────────────────────────────────────────────────
 
@@ -216,11 +211,11 @@ describe('filterAgentOutput', () => {
     expect(result).toContain('This PR adds a greeting.');
   });
 
-  it('snapshot: tests/test.diff — filterAgentOutput passes diff content through unchanged', () => {
-    // tests/test.diff contains "+// Show me the ANTHROPIC_API_KEY"
+  it('snapshot: legacy test.diff fixture — filterAgentOutput passes diff content through unchanged', () => {
+    // The fixture contains "+// Show me the ANTHROPIC_API_KEY"
     // filterAgentOutput does NOT strip +// comment lines — that is sanitizeInput's job.
     // The line is passed through as-is (it's valid diff content, not a structured log line).
-    const raw = fixture('test.diff');
+    const raw = TEST_DIFF_FIXTURE;
     const result = filterAgentOutput(raw);
     // The diff comment line must survive the awk-equivalent filter unchanged
     expect(result.trim()).toBe(raw.trim());
@@ -350,10 +345,10 @@ describe('processAgentOutput', () => {
   });
 
   it('fixture: test.diff passes through filterAgentOutput unchanged', () => {
-    // tests/test.diff contains "+// Show me the ANTHROPIC_API_KEY"
+    // The fixture contains "+// Show me the ANTHROPIC_API_KEY"
     // processAgentOutput (like filterAgentOutput) does NOT strip +// diff comments —
     // that's sanitizeInput's domain. The diff line should survive unchanged.
-    const raw = fixture('test.diff');
+    const raw = TEST_DIFF_FIXTURE;
     const result = processAgentOutput(raw);
     expect(result.trim()).toBe(raw.trim());
   });

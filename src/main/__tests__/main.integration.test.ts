@@ -8,10 +8,10 @@
  *   - @actions/core   (getInput, setOutput, setFailed, summary, …)
  *   - @actions/tool-cache / @actions/cache / @actions/exec  (binary setup)
  *   - @actions/artifact (DefaultArtifactClient)
- *   - @octokit/rest  (Octokit — trusted-bot bypass)
+ *   - @octokit/rest  (Octokit — security incident issue creation)
  *   - node:child_process (spawn — agent execution)
  *
- * The security modules (sanitizeInput, sanitizeOutput, checkAuth) run real code
+ * The security modules (sanitizeInput, sanitizeOutput) run real code
  * so the integration test validates their wiring too.
  *
  * File: src/main/__tests__/main.integration.test.ts
@@ -44,7 +44,6 @@ const {
   mockError,
   mockDebug,
   mockSummary,
-  mockGetAuthenticated,
   MockOctokit,
   mockFind,
   mockDownloadTool,
@@ -68,10 +67,8 @@ const {
   mockSummary.addTable.mockReturnValue(mockSummary);
 
   // @octokit/rest
-  const mockGetAuthenticated = vi.fn().mockResolvedValue({ data: { login: 'some-bot' } });
   class MockOctokit {
     rest = {
-      users: { getAuthenticated: mockGetAuthenticated },
       issues: { create: vi.fn().mockResolvedValue({ data: { number: 1 } }) },
     };
   }
@@ -117,7 +114,6 @@ const {
     mockError,
     mockDebug,
     mockSummary,
-    mockGetAuthenticated,
     MockOctokit,
     mockFind,
     mockDownloadTool,
@@ -175,7 +171,6 @@ import { run } from '../index.js';
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 let tmpDir: string;
-let eventPayloadPath: string;
 
 /** Create a mock child process that closes with the given exit code. */
 function makeMockChild(exitCode: number) {
@@ -211,9 +206,6 @@ function setupInputs(overrides: Record<string, string> = {}) {
     'extra-args': '',
     'add-prompt-files': '',
     'skip-summary': 'true',
-    'skip-auth': 'true',
-    'org-membership-token': '',
-    'auth-org': '',
     debug: 'false',
     ...overrides,
   };
@@ -238,14 +230,7 @@ async function setupBinaryMocks() {
 
 beforeEach(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), 'main-int-test-'));
-  eventPayloadPath = join(tmpDir, 'event.json');
 
-  // Default event: non-comment PR event (auth tier 1 skips automatically)
-  await writeFile(
-    eventPayloadPath,
-    JSON.stringify({ action: 'opened', pull_request: { number: 1 } }),
-  );
-  process.env.GITHUB_EVENT_PATH = eventPayloadPath;
   process.env.GITHUB_TOKEN = 'gha-fake-token';
   process.env.GITHUB_RUN_ID = '12345';
   process.env.GITHUB_RUN_ATTEMPT = '1';
@@ -272,7 +257,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   process.exitCode = 0;
-  delete process.env.GITHUB_EVENT_PATH;
   delete process.env.GITHUB_TOKEN;
   await rm(tmpDir, { recursive: true, force: true });
 });
@@ -289,11 +273,9 @@ describe('happy path — agent succeeds', () => {
     const outputCalls = Object.fromEntries(
       mockSetOutput.mock.calls.map(([name, value]) => [name, value]),
     );
-    expect(outputCalls.authorized).toBe('skipped-by-caller');
     expect(outputCalls['prompt-suspicious']).toBe('false');
     expect(outputCalls['input-risk-level']).toBe('low');
     expect(outputCalls['docker-agent-version']).toBe(DOCKER_AGENT_VERSION);
-    expect(outputCalls['cagent-version']).toBe(DOCKER_AGENT_VERSION); // backward compat alias
     expect(outputCalls['mcp-gateway-installed']).toBe('false');
     expect(outputCalls['exit-code']).toBe('0');
     expect(outputCalls['secrets-detected']).toBe('false');
@@ -374,45 +356,6 @@ describe('input validation', () => {
     await run();
 
     expect(mockSetFailed).toHaveBeenCalled();
-  });
-});
-
-// ── Authorization ─────────────────────────────────────────────────────────────
-
-describe('authorization', () => {
-  it('blocks when comment author not in allowed list', async () => {
-    // Write a comment event with NONE association from a non-member
-    await writeFile(
-      eventPayloadPath,
-      JSON.stringify({
-        comment: { author_association: 'NONE', user: { login: 'outsider' } },
-      }),
-    );
-
-    // Bot token resolves to a different user (no trusted-bot bypass)
-    mockGetAuthenticated.mockResolvedValue({ data: { login: 'ci-bot' } });
-
-    // No org token → falls to Tier 4 with NONE → denied
-    setupInputs({ 'skip-auth': 'false' });
-
-    await run();
-
-    expect(mockSetFailed).toHaveBeenCalledWith('Authorization failed');
-  });
-
-  it('authorizes with skip-auth=true regardless of event', async () => {
-    await writeFile(
-      eventPayloadPath,
-      JSON.stringify({ comment: { author_association: 'NONE', user: { login: 'outsider' } } }),
-    );
-
-    setupInputs({ 'skip-auth': 'true' });
-
-    await run();
-
-    expect(mockSetFailed).not.toHaveBeenCalled();
-    const outputCalls = Object.fromEntries(mockSetOutput.mock.calls.map(([n, v]) => [n, v]));
-    expect(outputCalls.authorized).toBe('skipped-by-caller');
   });
 });
 

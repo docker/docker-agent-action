@@ -4,96 +4,33 @@
 name: Test Docker Agent Action
 
 on:
-  push:
-    branches: [main]
   workflow_run:
     workflows: ["Test E2E Trigger"]
     types: [completed]
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number to run mention-reply E2E tests against'
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 jobs:
-  test-output-extraction:
-    name: Output Extraction Tests
-    runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
-
-      - name: Run output extraction tests
-        run: |
-          cd tests
-          chmod +x test-output-extraction.sh
-          ./test-output-extraction.sh
-
-  test-job-summary:
-    name: Job Summary Format Tests
-    runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
-
-      - name: Run job summary tests
-        run: |
-          cd tests
-          chmod +x test-job-summary.sh
-          ./test-job-summary.sh
-
   resolve-context:
     name: Resolve PR Context
     runs-on: ubuntu-latest
     if: github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: read
-      id-token: write
       actions: read
     outputs:
       pr-number: ${{ steps.read.outputs.pr-number }}
       pr-head-sha: ${{ steps.read.outputs.pr-head-sha }}
     steps:
-      - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@774b6e0e60d6c648b0f2dc43bd5221377a0a7420 # v2.0.2
-
-      - name: Verify token for cross-run artifact download
-        shell: bash
-        run: |
-          if [ -z "$GITHUB_APP_TOKEN" ]; then
-            echo "::error::GITHUB_APP_TOKEN is not set. setup-credentials may have failed."
-            echo "::error::Cross-run artifact download requires a token with actions:read scope."
-            exit 1
-          fi
-
       - name: Download trigger context
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: e2e-test-context
           path: /tmp/context
           run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ env.GITHUB_APP_TOKEN }}
+          github-token: ${{ github.token }}
 
       - name: Read context
         id: read
@@ -117,7 +54,6 @@ jobs:
       needs.resolve-context.result == 'success'
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -138,16 +74,13 @@ jobs:
       - name: Build action
         run: pnpm install --frozen-lockfile && pnpm build
 
-      - name: Setup credentials
-        uses: ./setup-credentials
-
       - name: Run test
         id: pirate
         uses: ./
         with:
           agent: agentcatalog/pirate
           prompt: "What do we ship today?"
-          openai-api-key: ${{ env.OPENAI_API_KEY_FROM_SSM || secrets.OPENAI_API_KEY }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Validate output and exit code
         run: |
@@ -204,7 +137,6 @@ jobs:
       needs.resolve-context.result == 'success'
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -225,9 +157,6 @@ jobs:
       - name: Build action
         run: pnpm install --frozen-lockfile && pnpm build
 
-      - name: Setup credentials
-        uses: ./setup-credentials
-
       - name: Test should fail on invalid agent
         id: invalid-agent
         continue-on-error: true
@@ -235,7 +164,7 @@ jobs:
         with:
           agent: agentcatalog/nonexistent
           prompt: "This should fail"
-          openai-api-key: ${{ env.OPENAI_API_KEY_FROM_SSM || secrets.OPENAI_API_KEY }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Verify invalid agent failed
         run: |
@@ -253,316 +182,3 @@ jobs:
           else
             echo "✅ Invalid agent correctly failed (non-zero exit code)"
           fi
-
-  test-mention-reply-toplevel:
-    name: Mention Reply (Top-Level) E2E Test
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      id-token: write
-      issues: write
-    env:
-      TEST_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Build action
-        run: pnpm install --frozen-lockfile && pnpm build
-
-      - name: Setup credentials
-        uses: ./setup-credentials
-
-      - name: Create anchor issue comment on current PR
-        id: create-anchor
-        env:
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-        run: |
-          COMMENT_ID=$(gh api repos/docker/docker-agent-action/issues/$TEST_PR_NUMBER/comments \
-            --method POST \
-            --raw-field body="@docker-agent this is an automated e2e test — please reply with a brief acknowledgement." \
-            --jq .id)
-          echo "Created test anchor comment ID: $COMMENT_ID"
-          echo "test_comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
-
-      - name: Write synthetic issue_comment event
-        run: |
-          COMMENT_ID="${{ steps.create-anchor.outputs.test_comment_id }}"
-          jq -n \
-            --arg actor "${{ github.actor }}" \
-            --argjson comment_id "$COMMENT_ID" \
-            --argjson pr_number "$TEST_PR_NUMBER" \
-            '{
-              "action": "created",
-              "issue": {
-                "number": $pr_number,
-                "pull_request": { "url": ("https://api.github.com/repos/docker/docker-agent-action/pulls/" + ($pr_number | tostring)) }
-              },
-              "comment": {
-                "id": $comment_id,
-                "body": "@docker-agent this is an automated e2e test — please reply with a brief acknowledgement.",
-                "user": { "login": $actor, "type": "User" }
-              },
-              "repository": {
-                "owner": { "login": "docker" },
-                "name": "docker-agent-action"
-              },
-              "sender": { "login": $actor, "type": "User" }
-            }' > /tmp/test-event-toplevel.json
-
-      - name: Run mention-reply handler
-        id: mention-handler
-        env:
-          INPUT_GITHUB-TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          INPUT_ORG-MEMBERSHIP-TOKEN: ${{ env.ORG_MEMBERSHIP_TOKEN || github.token }}
-        run: |
-          export GITHUB_EVENT_PATH=/tmp/test-event-toplevel.json
-          export GITHUB_EVENT_NAME=issue_comment
-          node "$GITHUB_WORKSPACE/dist/mention-reply.js"
-
-      - name: Assert should-reply output
-        run: |
-          SHOULD_REPLY="${{ steps.mention-handler.outputs.should-reply }}"
-          echo "should-reply=$SHOULD_REPLY"
-          echo "owner=${{ steps.mention-handler.outputs.owner }}"
-          echo "repo=${{ steps.mention-handler.outputs.repo }}"
-          echo "pr-number=${{ steps.mention-handler.outputs.pr-number }}"
-          echo "is-inline=${{ steps.mention-handler.outputs.is-inline }}"
-          if [ "$SHOULD_REPLY" == 'false' ]; then
-            echo "⚠️  Warning: should-reply=false — ${{ github.actor }} may not be a docker org member (fork runners and external contributors are expected to see this). Skipping reply steps."
-            exit 0
-          fi
-
-      - name: Run mention reply
-        if: steps.mention-handler.outputs.should-reply == 'true'
-        id: run-reply
-        uses: ./review-pr/mention-reply
-        with:
-          mention-context: ${{ steps.mention-handler.outputs.prompt }}
-          owner: ${{ steps.mention-handler.outputs.owner }}
-          repo: ${{ steps.mention-handler.outputs.repo }}
-          pr-number: ${{ steps.mention-handler.outputs.pr-number }}
-          is-inline: ${{ steps.mention-handler.outputs.is-inline }}
-          in-reply-to-id: ${{ steps.mention-handler.outputs.in-reply-to-id }}
-          anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM || secrets.ANTHROPIC_API_KEY }}
-          openai-api-key: ${{ env.OPENAI_API_KEY_FROM_SSM || secrets.OPENAI_API_KEY }}
-          github-token: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          skip-auth: "true"
-
-      - name: Verify reply was posted
-        if: steps.mention-handler.outputs.should-reply == 'true'
-        env:
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-        run: |
-          FOUND=$(gh api repos/docker/docker-agent-action/issues/$TEST_PR_NUMBER/comments \
-            --jq '[.[] | select(.body | contains("<!-- docker-agent-review-reply -->")) | select(.created_at > (now - 300 | todate))] | length')
-          if [ "$FOUND" -eq 0 ]; then
-            echo "❌ No reply comment found within the last 5 minutes"
-            exit 1
-          fi
-          echo "✅ Reply posted successfully ($FOUND comment(s) found)"
-
-      - name: Cleanup test comments
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          ANCHOR_ID: ${{ steps.create-anchor.outputs.test_comment_id }}
-        run: |
-          # Delete any test reply comments posted in the last 5 minutes
-          gh api repos/docker/docker-agent-action/issues/$TEST_PR_NUMBER/comments \
-            --jq '.[] | select(.body | contains("<!-- docker-agent-review-reply -->")) | select(.created_at > (now - 300 | todate)) | .id' | \
-          while read -r comment_id; do
-            gh api "repos/docker/docker-agent-action/issues/comments/$comment_id" -X DELETE || true
-            echo "Deleted comment $comment_id"
-          done
-          # Delete the anchor comment itself
-          if [ -n "$ANCHOR_ID" ]; then
-            gh api "repos/docker/docker-agent-action/issues/comments/$ANCHOR_ID" -X DELETE || true
-            echo "Deleted anchor comment $ANCHOR_ID"
-          fi
-
-  test-mention-reply-inline:
-    name: Mention Reply (Inline) E2E Test
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: write
-    env:
-      TEST_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
-        with:
-          run_install: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Build action
-        run: pnpm install --frozen-lockfile && pnpm build
-
-      - name: Setup credentials
-        uses: ./setup-credentials
-
-      - name: Create anchor review comment on current PR
-        id: create-anchor
-        env:
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-        run: |
-          # Get the PR head SHA
-          HEAD_SHA=$(gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER --jq '.head.sha')
-          echo "PR head SHA: $HEAD_SHA"
-
-          # Get first file in the diff to use as a safe anchor
-          DIFF_FILE=$(gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER/files --jq '.[0].filename')
-          echo "Using diff file: $DIFF_FILE"
-
-          # Post a test inline comment to get a real comment ID
-          COMMENT_ID=$(gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER/comments \
-            -X POST \
-            --input - <<< $(jq -n \
-              --arg sha "$HEAD_SHA" \
-              --arg path "$DIFF_FILE" \
-              '{"body": "e2e test anchor comment — safe to delete", "commit_id": $sha, "path": $path, "side": "RIGHT", "position": 1}') \
-            --jq '.id')
-          echo "Created test anchor comment ID: $COMMENT_ID"
-          echo "test_comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
-
-      - name: Write synthetic pull_request_review_comment event
-        run: |
-          COMMENT_ID="${{ steps.create-anchor.outputs.test_comment_id }}"
-          jq -n \
-            --arg actor "${{ github.actor }}" \
-            --argjson comment_id "$COMMENT_ID" \
-            --argjson pr_number "$TEST_PR_NUMBER" \
-            '{
-              "action": "created",
-              "pull_request": { "number": $pr_number },
-              "comment": {
-                "id": $comment_id,
-                "body": "@docker-agent this is an automated e2e test of the inline mention path.",
-                "path": "README.md",
-                "line": 1,
-                "original_line": 1,
-                "diff_hunk": "@@ -1,1 +1,1 @@\n-old\n+new",
-                "user": { "login": $actor, "type": "User" }
-              },
-              "repository": {
-                "owner": { "login": "docker" },
-                "name": "docker-agent-action"
-              },
-              "sender": { "login": $actor, "type": "User" }
-            }' > /tmp/test-event-inline.json
-
-      - name: Run mention-reply handler
-        id: mention-handler
-        env:
-          INPUT_GITHUB-TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          INPUT_ORG-MEMBERSHIP-TOKEN: ${{ env.ORG_MEMBERSHIP_TOKEN || github.token }}
-        run: |
-          export GITHUB_EVENT_PATH=/tmp/test-event-inline.json
-          export GITHUB_EVENT_NAME=pull_request_review_comment
-          node "$GITHUB_WORKSPACE/dist/mention-reply.js"
-
-      - name: Assert should-reply output
-        run: |
-          SHOULD_REPLY="${{ steps.mention-handler.outputs.should-reply }}"
-          echo "should-reply=$SHOULD_REPLY"
-          echo "is-inline=${{ steps.mention-handler.outputs.is-inline }}"
-          echo "in-reply-to-id=${{ steps.mention-handler.outputs.in-reply-to-id }}"
-          if [ "$SHOULD_REPLY" == 'false' ]; then
-            echo "⚠️  Warning: should-reply=false — ${{ github.actor }} may not be a docker org member. Skipping reply steps."
-            exit 0
-          fi
-
-      - name: Assert inline outputs
-        if: steps.mention-handler.outputs.should-reply == 'true'
-        run: |
-          IS_INLINE="${{ steps.mention-handler.outputs.is-inline }}"
-          IN_REPLY_TO_ID="${{ steps.mention-handler.outputs.in-reply-to-id }}"
-          EXPECTED_ID="${{ steps.create-anchor.outputs.test_comment_id }}"
-          if [ "$IS_INLINE" != 'true' ]; then
-            echo "❌ Expected is-inline=true, got: $IS_INLINE"
-            exit 1
-          fi
-          echo "✅ is-inline=true"
-          if [ "$IN_REPLY_TO_ID" != "$EXPECTED_ID" ]; then
-            echo "❌ Expected in-reply-to-id=$EXPECTED_ID, got: $IN_REPLY_TO_ID"
-            exit 1
-          fi
-          echo "✅ in-reply-to-id=$IN_REPLY_TO_ID (matches anchor comment)"
-
-      - name: Run mention reply
-        if: steps.mention-handler.outputs.should-reply == 'true'
-        id: run-reply
-        uses: ./review-pr/mention-reply
-        with:
-          mention-context: ${{ steps.mention-handler.outputs.prompt }}
-          owner: ${{ steps.mention-handler.outputs.owner }}
-          repo: ${{ steps.mention-handler.outputs.repo }}
-          pr-number: ${{ steps.mention-handler.outputs.pr-number }}
-          is-inline: ${{ steps.mention-handler.outputs.is-inline }}
-          in-reply-to-id: ${{ steps.mention-handler.outputs.in-reply-to-id }}
-          anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM || secrets.ANTHROPIC_API_KEY }}
-          openai-api-key: ${{ env.OPENAI_API_KEY_FROM_SSM || secrets.OPENAI_API_KEY }}
-          github-token: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          skip-auth: "true"
-
-      - name: Verify inline reply was posted in thread
-        if: steps.mention-handler.outputs.should-reply == 'true'
-        env:
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          ANCHOR_ID: ${{ steps.create-anchor.outputs.test_comment_id }}
-        run: |
-          FOUND=$(gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER/comments \
-            | jq --argjson id "$ANCHOR_ID" \
-            '[.[] | select(.in_reply_to_id == $id and (.body | contains("<!-- docker-agent-review-reply -->"))) ] | length')
-          if [ "$FOUND" -eq 0 ]; then
-            echo "❌ No inline reply found in thread $ANCHOR_ID"
-            exit 1
-          fi
-          echo "✅ Inline reply posted successfully"
-
-      - name: Cleanup anchor comment and thread replies
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
-          ANCHOR_ID: ${{ steps.create-anchor.outputs.test_comment_id }}
-        run: |
-          if [ -z "$ANCHOR_ID" ]; then
-            echo "No anchor comment ID — nothing to clean up"
-            exit 0
-          fi
-          # Delete any replies in the thread first
-          gh api repos/docker/docker-agent-action/pulls/$TEST_PR_NUMBER/comments \
-            | jq --argjson id "$ANCHOR_ID" \
-            '[.[] | select(.in_reply_to_id == $id)] | .[].id' | \
-          while read -r reply_id; do
-            gh api "repos/docker/docker-agent-action/pulls/comments/$reply_id" -X DELETE || true
-            echo "Deleted reply comment $reply_id"
-          done
-          # Delete the anchor comment itself
-          gh api "repos/docker/docker-agent-action/pulls/comments/$ANCHOR_ID" -X DELETE || true
-          echo "Deleted anchor comment $ANCHOR_ID"

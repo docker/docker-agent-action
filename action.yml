@@ -87,18 +87,6 @@ inputs:
     description: "Skip writing agent output to the job summary (useful when callers write their own summary)"
     required: false
     default: "false"
-  org-membership-token:
-    description: "PAT with read:org scope for org membership authorization checks (preferred over author_association)"
-    required: false
-    default: ""
-  auth-org:
-    description: "GitHub organization to check membership against (used with org-membership-token)"
-    required: false
-    default: ""
-  skip-auth:
-    description: "Skip the built-in authorization check (use when the calling workflow already performed its own auth)"
-    required: false
-    default: "false"
 
 outputs:
   exit-code:
@@ -107,8 +95,6 @@ outputs:
     description: "Path to the output log file"
   docker-agent-version:
     description: "Version of Docker Agent that was used"
-  cagent-version:
-    description: "Version of Docker Agent that was used (deprecated: use docker-agent-version)"
   mcp-gateway-installed:
     description: "Whether mcp-gateway was installed (true/false)"
   execution-time:

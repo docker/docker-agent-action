@@ -4,202 +4,110 @@ Guide for AI agents and LLMs working in this repository. Read this before explor
 
 ## What this repo is
 
-**`docker/docker-agent-action`** — a GitHub Action (and a family of sub-actions) that runs [Docker Agent](https://github.com/docker/docker-agent) AI agents inside GitHub Actions workflows. It is published to the GitHub Marketplace and consumed by other repos as `uses: docker/docker-agent-action@vX.Y.Z`.
+**`docker/docker-agent-action`** — a public GitHub Action that runs [Docker Agent](https://github.com/docker/docker-agent) AI agents inside GitHub Actions workflows. It is a **generic prompt runner**: callers supply an agent (a Docker Hub identifier or a `.yaml` file), a prompt, and their own provider API key. It is published to the GitHub Marketplace and consumed as `uses: docker/docker-agent-action@vX.Y.Z`.
 
-The repo ships **three things**:
+The action is a Node action (`runs: using: node24`, `main: dist/main.js`). The entrypoint (`src/main/index.ts`) downloads and caches the docker-agent binary, optionally installs mcp-gateway, sanitizes the prompt, runs the agent with a retry loop, filters the verbose log into clean output, scans that output for leaked secrets, uploads the verbose log as an artifact, and writes a job summary.
 
-1. **Root composite action** (`action.yml`) — downloads the `docker-agent` binary, optionally installs `mcp-gateway`, validates inputs, runs the agent securely (auth checks, prompt injection detection, secret-leak scanning), and exposes outputs.
-2. **`review-pr/`** — a higher-level composite action and reusable workflow (`.github/workflows/review-pr.yml`) that orchestrates a multi-agent PR review pipeline (drafter → verifier → poster) with a learning loop driven by reviewer feedback.
-3. **TypeScript helpers in `src/`** — bundled to `dist/*.js` and invoked by internal sub-actions (e.g., `setup-credentials`, security primitives, signed commits via the GitHub API).
+The docker-agent binary version is pinned in the `DOCKER_AGENT_VERSION` file and injected at build time as the `__DOCKER_AGENT_VERSION__` compile-time constant via tsup's `define` option — the bundle never reads the file at runtime.
 
-Anything else here (workflows under `.github/workflows/`, scripts, tests) exists to develop, test, release, or self-test these three artifacts.
+The action performs **no authorization checks**. Who may trigger a workflow (and thereby spend API budget) is entirely the calling workflow's responsibility.
 
 ## Repo layout
 
 ```
 .
-├── action.yml                       # ← Root action ("Docker Agent Runner"). Composite. Source of truth for inputs/outputs.
-├── DOCKER_AGENT_VERSION             # Pinned docker-agent version (currently v1.54.0). Read at runtime by action.yml.
-├── package.json                     # pnpm workspace root. Scripts: build, test, lint, format, actionlint.
-├── tsup.config.ts                   # Bundles src/<name>/index.ts → dist/<name>.js (ESM, Node 24, fully bundled).
+├── action.yml                       # ← Root action ("Docker Agent Runner"). node24, main: dist/main.js.
+│                                    #   Source of truth for inputs/outputs.
+├── DOCKER_AGENT_VERSION             # Pinned docker-agent version. Read at build time by tsup/vitest (define).
+├── package.json                     # pnpm root. Scripts: build, test, test:integration, typecheck, lint, format.
+├── tsup.config.ts                   # Explicit entry map {main, signed-commit} → dist/*.js (ESM, node24, fully bundled).
 ├── tsconfig.json                    # TS config. rootDir=src, target ES2024, strict.
 ├── vitest.config.ts                 # Two projects: "unit" and "integration".
-├── biome.json                       # Formatter + linter (Biome). 100 char width, 2 spaces, single quotes, semicolons.
+├── biome.json                       # Formatter + linter (Biome). 100 char width, 2 spaces, single quotes.
 │
 ├── src/
-│   ├── add-reaction/                # Adds emoji reactions to issue/PR comments.
-│   │   ├── index.ts                 # Entry → bundled to dist/add-reaction.js
+│   ├── main/                        # Action entrypoint → bundled to dist/main.js.
+│   │   ├── index.ts                 # Orchestration: validate → sanitize → setup → run → scan → report.
+│   │   ├── binary.ts                # docker-agent / mcp-gateway download + two-level caching.
+│   │   ├── exec.ts                  # Spawns docker-agent: retry loop, timeout (exit 124), keys via env only.
+│   │   ├── outputs.ts               # Verbose-log noise filter + ```docker-agent-output``` block extraction.
+│   │   ├── artifact.ts              # Verbose-log artifact upload.
+│   │   ├── summary.ts               # Job summary writer.
+│   │   └── __tests__/               # Unit + integration tests.
+│   ├── security/                    # Security library (no CLI — imported by src/main).
+│   │   ├── patterns.ts              # Single source of truth for SECRET_PATTERNS, CRITICAL/SUSPICIOUS/MEDIUM patterns.
+│   │   ├── sanitize-input.ts        # Prompt-injection detection: block critical, strip suspicious, warn medium.
+│   │   ├── sanitize-output.ts       # Secret-leak scan of agent output.
+│   │   ├── validators.ts            # Structural validators (GitHub token CRC32 checksum).
 │   │   └── __tests__/
-│   ├── check-org-membership/        # Authorizes a review: auto-run on PR-author membership, review_requested on the (trusted, timeline-derived) requester. Resolves PR author via pulls.get.
-│   │   ├── index.ts                 # Entry → bundled to dist/check-org-membership.js (standalone CLI + library).
-│   │   └── __tests__/
-│   ├── credentials/                 # Fetches AWS secrets via OIDC, exports PAT and AI keys.
-│   │   ├── index.ts                 # Entry → bundled to dist/credentials.js
-│   │   ├── ai-keys.ts
-│   │   ├── aws-credentials.ts
-│   │   ├── github-app.ts            # Reads docker-agent-action/github-app from Secrets Manager; exports GITHUB_APP_TOKEN (a PAT) + ORG_MEMBERSHIP_TOKEN.
-│   │   └── __tests__/
-│   ├── dedupe-findings/             # Drops review comments duplicating findings from previous review cycles.
-│   │   ├── index.ts                 # CLI entry → bundled to dist/dedupe-findings.js (staged at /tmp/dedupe-findings.js for the agent).
-│   │   ├── dedupe-findings.ts       # Core dedupeComments() pure function (path + line proximity + heading similarity).
-│   │   └── __tests__/
-│   ├── filter-diff/                 # Strips excluded-path sections from a unified diff.
-│   │   ├── index.ts                 # CLI entry → bundled to dist/filter-diff.js
-│   │   ├── filter-diff.ts           # Core filterDiff() pure function + applyFilter() I/O wrapper.
-│   │   └── __tests__/
-│   ├── incremental-review/          # Narrows pr.diff to commits since the last completed review.
-│   │   ├── index.ts                 # CLI entry → bundled to dist/incremental-review.js
-│   │   ├── incremental-review.ts    # Core planIncrementalReview()/findLastReviewedSha() pure functions.
-│   │   └── __tests__/
-│   ├── score-confidence/            # Per-finding confidence scoring for the PR review pipeline.
-│   │   ├── index.ts                 # CLI entry → bundled to dist/score-confidence.js
-│   │   ├── score-confidence.ts      # Core scoreFinding()/scoreFindings() pure functions + posting policy.
-│   │   │                            #   Source of truth for the model mirrored in pr-review.yaml.
-│   │   └── __tests__/
-│   ├── score-risk/                  # Per-file risk scoring for the PR review pipeline.
-│   │   ├── index.ts                 # CLI entry → bundled to dist/score-risk.js
-│   │   ├── score-risk.ts            # Core scoreFiles() pure function.
-│   │   └── __tests__/
-│   ├── get-pr-meta/                 # Fetches PR metadata (title, body, author, base branch) used by review-pr.
-│   │   ├── index.ts                 # Entry → bundled to dist/get-pr-meta.js
-│   │   └── __tests__/
-│   ├── mention-reply/               # Handles @docker-agent mention events: parses context, verifies org membership, builds prompt.
-│   │   ├── index.ts                 # Entry → bundled to dist/mention-reply.js
-│   │   └── __tests__/
-│   ├── post-comment/                # Posts comments to PRs/issues.
-│   │   ├── index.ts                 # Entry → bundled to dist/post-comment.js
-│   │   └── __tests__/
-│   ├── security/                    # Security primitives consumed by action.yml.
-│   │   ├── index.ts                 # CLI dispatcher → bundled to dist/security.js.
-│   │   │                            #   Subcommands: check-auth <association> <allowed-roles-json>
-│   │   │                            #                sanitize-input <inputPath> <outputPath>
-│   │   │                            #                sanitize-output <filePath>
-│   │   ├── check-auth.ts            # author_association-based authorization.
-│   │   ├── sanitize-input.ts        # Detects prompt injection patterns. Sets risk-level output.
-│   │   ├── sanitize-output.ts       # Scans agent output for leaked API keys / tokens.
-│   │   ├── patterns.ts              # Single source of truth for SECRET_PATTERNS, SECRET_PREFIXES, CRITICAL_PATTERNS.
-│   │   └── __tests__/security.test.ts  # Vitest unit tests (replaces former test-security.sh / test-exploits.sh).
-│   └── signed-commit/               # CLI tool that creates verified commits via GitHub's GraphQL API.
-│       ├── index.ts                 # Entry → bundled to dist/signed-commit.js
+│   └── signed-commit/               # CLI tool → dist/signed-commit.js. Creates verified commits via
+│       │                            #   GitHub's GraphQL API. Used by release CI only.
+│       ├── index.ts
 │       ├── signed-commit.ts
 │       └── __tests__/
 │
-├── review-pr/                       # PR-review action + agents.
-│   ├── action.yml                   # Composite: orchestrates diff fetching, chunking, risk scoring, review, learning.
-│   ├── README.md                    # User-facing docs for the PR review feature.
-│   ├── reply/action.yml             # Sub-action: replies to feedback on review comments.
-│   └── agents/
-│       ├── pr-review.yaml           # Root reviewer agent (docker-agent YAML).
-│       ├── pr-review-feedback.yaml  # Processes captured feedback into memory.
-│       ├── pr-review-mention-reply.yaml  # Handles @docker-agent mention-reply responses.
-│       ├── pr-review-reply.yaml     # Replies in-thread to reviewer comments.
-│       ├── refs/                    # Reference docs passed to agents (posting format, code-review style).
-│       └── evals/                   # docker-agent eval JSON files (success-*, security-*, marlin-*, etc.).
+├── examples/
+│   └── reviewer/                    # PR-reviewer example built on the action (docs, not linted by actionlint).
+│       ├── agent.yaml               # Single-agent reviewer definition (reads diff from /tmp/pr.diff).
+│       ├── review-pr.yml            # Copy-pasteable workflow: fetch diff → run action → post PR comment.
+│       └── README.md
 │
-├── setup-credentials/               # Composite action: fetches AWS creds via OIDC, exports GITHUB_APP_TOKEN +
-│   └── action.yml                   #   ORG_MEMBERSHIP_TOKEN. At root so consumers can use
-│                                    #   docker/docker-agent-action/setup-credentials@VERSION directly.
-│                                    #   Also exports DOCKER_AGENT_ACTION_ROOT (repo root of the downloaded action copy)
-│                                    #   for subsequent run: steps that need to invoke dist/ bundles.
-│
-├── .github/
-│   ├── actions/
-│   │   └── mention-reply/           # Internal-only JS action (node24). main = dist/mention-reply.js.
-│   │       └── action.yml           #   Only used by review-pr.yml; not intended for external consumers.
-│   ├── workflows/                   # CI + self-test + release workflows (see "Workflows" below).
-│   └── CODEOWNERS
-│
-├── scripts/
-│   ├── act-local.sh                 # Helper for running workflows locally with `act`.
-│   └── debug-permissions.ts
-│
-├── .agents/
-│   └── skills/
-│       └── add-pr-reviewer-to-repo/
-│           └── SKILL.md             # Skill: set up or upgrade a repo to use the PR reviewer reusable workflow.
-│
-└── tests/                           # Shell-based integration tests for action.yml bash logic.
-    ├── test-job-summary.sh
-    ├── test-output-extraction.sh
-    ├── out.diff                      # Fixture used by test-output-extraction.sh
-    └── test.diff                    # Fixture used by test-output-extraction.sh
+└── .github/
+    ├── workflows/                   # CI + release workflows (see "Workflows" below).
+    ├── SECURITY.md                  # Docker's vulnerability disclosure policy.
+    └── CODEOWNERS
 ```
 
 ## Critical conventions
 
 ### Versioning & releases
 
-- This action is consumed via `uses: docker/docker-agent-action@vX.Y.Z`. **The committed `dist/` directory is the runtime artifact** that consumers download — it must be checked in for tagged releases.
-- `DOCKER_AGENT_VERSION` is the **single source of truth** for the docker-agent binary version. `action.yml` reads it with `cat`. Update via `.github/workflows/update-docker-agent-version.yml`.
-- Internal `uses:` references to this action (e.g. `review-pr/action.yml` → `docker/docker-agent-action@<sha>`) are pinned to **commit SHAs with version comments**, not tags. Bumping requires updating both the SHA and the comment.
+- Consumers use `uses: docker/docker-agent-action@vX.Y.Z`. **The built `dist/` directory is the runtime artifact.** `dist/` is gitignored on `main`; `release.yml` builds it, creates a signed release commit containing `dist/` on a throwaway staging branch (via `dist/signed-commit.js`), tags that commit, and deletes the branch. `dist/` is therefore committed **only on release tags**.
+- `DOCKER_AGENT_VERSION` is the **single source of truth** for the docker-agent binary version. It is read at build time by `tsup.config.ts` and `vitest.config.ts` (`define: __DOCKER_AGENT_VERSION__`). Update via `.github/workflows/update-docker-agent-version.yml`.
+- Commit messages follow **Conventional Commits** (`feat:`, `fix:`, `chore:`, `release:`).
 
 ### TypeScript / `src` rules
 
-- Only `src/<name>/index.ts` files listed in the explicit `entry` map in `tsup.config.ts` are bundled to `dist/<name>.js`. To add a new action entrypoint, create `src/<name>/index.ts` **and** add it to the `entry` map in `tsup.config.ts`. Pure library modules that are only imported by other actions (e.g. `add-reaction`, `check-org-membership`, `get-pr-meta`, `post-comment`) should **not** be added to the entry map — they get bundled into their consumer automatically.
-- **New logic in composite actions must be implemented as TypeScript in `src/` with Vitest unit tests — not as inline bash, awk, or other scripting languages embedded in YAML files.** Shell steps in action YAML files should only orchestrate calls to `dist/*.js` tools (e.g. `node "$ACTION_PATH/dist/filter-diff.js" pr.diff "$EXCLUDE_PATHS"`). This keeps business logic testable, type-safe, and auditable outside the YAML layer.
+- `tsup.config.ts` has an **explicit entry map**: `{ main, signed-commit }`. Only those `src/<name>/index.ts` files become `dist/<name>.js`. Library code (e.g. `src/security/`) is not an entry — it is bundled into its importer.
 - `tsup` runs with `noExternal: [/.*/]` — **all npm dependencies are bundled in**. Do not assume `node_modules` exists at runtime.
-- Target is `node24`, ESM only, Node platform (so AWS SDK uses the Node export, not browser).
-- Sourcemaps are intentionally disabled (consumers clone `dist/`; sourcemaps would bloat every checkout).
+- Target is `node24`, ESM only, `platform: 'node'` (so dependencies resolve their Node export, not a browser variant).
 - Use `.js` extension in relative imports (`import { x } from './foo.js'`) — required by `Node16` module resolution even though the source is `.ts`.
-- A `createRequire` banner is injected by `tsup.config.ts` so CJS dependencies bundled into ESM (e.g. `tunnel` via `@actions/http-client`) can `require('net')` etc. at runtime. The banner uses `import.meta.url` and is ESM-only — if `format` is ever extended to include `'cjs'`, move the banner to a format-specific entry to avoid a parse error.
+- Sourcemaps are intentionally disabled (consumers clone `dist/` on tags; sourcemaps would bloat every checkout).
+- A `createRequire` banner is injected by `tsup.config.ts` so CJS dependencies bundled into ESM (e.g. `tunnel` via `@actions/http-client`) can `require('net')` etc. at runtime. The banner uses `import.meta.url` and is ESM-only — if `format` is ever extended to include `'cjs'`, move it to a format-specific banner.
 
 ### Linting / formatting
 
-- **Biome** (`biome.json`) handles both formatting and linting. Run `pnpm format` to fix, `pnpm lint` to check.
-- `pnpm lint` runs three things in CI parity: `biome ci .`, `tsc --noEmit`, `actionlint`.
-- **`actionlint`** validates all `*.yml` workflow files. It runs after `pnpm build` because the build emits `dist/` files referenced by some actions. If you change a workflow, run `pnpm actionlint` locally.
-- Biome config: 100-col line width, 2-space indent, single quotes, semicolons always, trailing commas everywhere.
+- **Biome** (`biome.json`) handles both formatting and linting: 100-col line width, 2-space indent, single quotes, semicolons always, trailing commas. Run `pnpm format` to fix.
+- `pnpm lint` runs three things in CI parity: `biome ci .`, `tsc --noEmit`, and `actionlint` (via `pnpm actionlint`, which builds first).
+- **actionlint** validates `.github/workflows/*.yml` only — files under `examples/` are not linted, but keep them valid anyway (users copy them verbatim).
 
 ### Tests
 
-- `pnpm test` — Vitest "unit" project (`src/**/__tests__/**/*.test.ts`).
+- `pnpm test` — Vitest "unit" project (`src/**/__tests__/**/*.test.ts`, excluding `*.integration.test.ts`).
 - `pnpm test:integration` — Vitest "integration" project (`*.integration.test.ts`).
-- `tests/*.sh` are integration tests for the **shell logic** inside `action.yml` (output extraction, job summary, etc.). Run them when changing the bash blocks of `action.yml`.
-- Security unit tests live in `src/security/__tests__/security.test.ts` (Vitest) and run as part of `pnpm test`. Run them when changing anything under `src/security/`.
-- The PR review agent has a separate eval suite under `review-pr/agents/evals/`. Run with `docker agent eval review-pr/agents/pr-review.yaml review-pr/agents/evals/`.
+- Security tests live in `src/security/__tests__/` and run as part of `pnpm test`. Run them when changing anything under `src/security/`.
 
 ### Security-first design (do not regress)
 
-The action runs untrusted input (PR titles, bodies, comments, diffs) through an LLM with credentials. Several mitigations are non-negotiable:
+The action runs untrusted input (prompts often embed PR titles, bodies, diffs) through an LLM with credentials. Several mitigations are non-negotiable:
 
-- **No `eval`** in any bash block. Argument arrays + quoted expansion only. If you find yourself wanting `eval "$EXTRA_ARGS"`, stop and use `read -ra`.
-- **All API keys are explicit inputs.** `action.yml`'s "Validate inputs" step rejects runs with no provider key. Do not add a fallback to env vars.
-- **All secret values are masked** with `::add-mask::` before any other step can log them.
-- **Authorization** for comment-triggered events is enforced in four tiers: `skip-auth` (caller already verified) → **trusted-bot PAT bypass** (resolves the `github-token` input to its GitHub login via `gh api /user`; if it matches the comment author's login, auto-authorize — handles machine-user PAT bots whose account type may be `"User"`, not `"Bot"`) → `org-membership-token` (preferred, queries `/orgs/:org/members/:user`) → `author_association` (legacy fallback, unreliable for `pull_request_review_comment`). Don't remove tiers; add new ones above the fallback.
-- **Output sanitization** (`node "$ACTION_PATH/dist/security.js" sanitize-output`) runs on every agent invocation — if it detects a leaked secret it opens a security incident issue and fails the run. Keep this on the `if: always()` path.
-- **Prompt sanitization** writes to `/tmp/prompt-clean.txt`; the runner prefers this file over the raw `$PROMPT_INPUT`. Don't bypass it.
-- The full threat model commentary lives in this file (the `security/` shell scripts it was previously co-located with no longer exist; the logic has moved to `src/security/`).
+- **All API keys are explicit inputs.** `src/main/index.ts` fails fast when no provider key is given. Do not add an env-var fallback.
+- **All secrets are masked** with `core.setSecret()` before any exec/spawn or logging (`maskSecrets()` in `src/main/exec.ts`; the resolved GitHub token is masked immediately in `src/main/index.ts`).
+- **API keys are passed to docker-agent via env, never argv** (argv is visible in process listings and logs).
+- **Prompt sanitization** (`src/security/sanitize-input.ts`) runs on every user-provided prompt: critical exfiltration patterns block the run, suspicious injection lines are stripped (the agent reads `/tmp/prompt-clean.txt`, not the raw prompt), medium-risk patterns warn.
+- **Output sanitization** (`src/security/sanitize-output.ts`) runs in the `finally` block of `src/main/index.ts` — it executes on every path, including failures. If it detects a leaked secret it opens a security incident issue and fails the run. Keep it in the `finally` path.
+- **No authorization inside the action.** The action does not check who triggered the workflow (no org or role checks) — calling workflows gate access. Do not reintroduce auth logic here; document trigger hygiene instead (see `examples/reviewer/README.md`).
+- **No `eval`-style shelling out.** `extra-args` is word-split into an argv array (`buildArgs()` in `src/main/exec.ts`), never passed through a shell.
 
-### `review-pr` action specifics
+## Workflows (`.github/workflows/`)
 
-- Uses a **best-effort cache lock** (`pr-review-lock-<repo>-<pr>-*` cache key) to avoid concurrent reviews on the same PR. Lock TTL is 600s; the agent execution timeout is 1800s (30 min) — these are intentionally decoupled. Reviews are idempotent so the small race window is acceptable.
-- **Memory persistence** uses `actions/cache` keyed by `pr-review-memory-<repo>-<job>-<run_id>` with prefix-based restore. The DB lives at `${{ github.workspace }}/.cache/pr-review-memory.db`.
-- **Feedback loop**: the `reply-to-feedback` job in `.github/workflows/review-pr.yml` (which runs the `pr-review-reply.yaml` agent) uploads a `pr-review-feedback` artifact on every reply via its "Upload feedback artifact" step. The next review run downloads all such artifacts, runs `pr-review-feedback.yaml` to call `add_memory(...)` for each, then deletes the artifacts.
-- **Bot reply detection** uses HTML markers: `<!-- docker-agent-review -->` on review comments, `<!-- docker-agent-review-reply -->` on agent replies (including mention-reply responses). **Don't change these strings** — workflows in consumer repos grep for them.
-- **Copilot-style triggers**: in addition to the original `pull_request_review` / `issue_comment /review` paths, `review-pr.yml` now also fires on:
-  - `pull_request` action `review_requested` when `github.event.requested_reviewer.login == 'docker-agent'`
-  - `@docker-agent` mentions on PR/issue comments — these run the `.github/actions/mention-reply` handler (sets `should-reply` and builds the context prompt) and then the `review-pr/mention-reply` sub-action (referenced from a pinned SHA, not present as a local path on every commit). The `pr-review-mention-reply.yaml` agent handles the actual reply.
-- Diffs over 1500 lines are **chunked at file boundaries** in `review-pr/action.yml` (see "Split diff into chunks"). Per-file **risk scoring** (security paths, line counts, error-handling patterns) prioritizes verifier attention.
-- **Incremental reviews** (default on, `incremental` input): a re-review only diffs `last-reviewed-SHA..HEAD` instead of the full PR diff. The last reviewed SHA is read from the `commit_id` GitHub records on the bot's completed reviews (assessment or LGTM bodies only — timeout/failure fallbacks don't count), so state survives across runs with no extra writes. `src/incremental-review/` plans the mode and falls back to a full review on force-push/rebase (SHA missing or not an ancestor of HEAD), base-branch merge-ins, net-zero changes, or any error. In incremental mode the original full diff is preserved at `pr_full.diff` for stale-thread resolution and suggestion-anchor validation (GitHub validates anchors against the full PR diff). On re-reviews, `src/dedupe-findings/` (staged at `/tmp/dedupe-findings.js`, run by the agent per `posting-format.md` against the pre-fetched `/tmp/existing_review_comments.json`) drops findings matching already-posted bot comments by file path + line proximity (±3) + finding-heading similarity, so a full re-review after a rebase doesn't duplicate threads.
-- Per-finding **confidence scoring** assigns each verified finding a precise 0–100 score (band: strong/moderate/weak/negligible) from the verifier's `verdict`, `evidence_strength`, and `context_completeness`, plus drafter↔verifier severity concordance and scope. `src/score-confidence/score-confidence.ts` is the **single source of truth** for the model (weights, bands, threshold, posting policy); the "Confidence Scoring" section of `review-pr/agents/pr-review.yaml` mirrors it as a strict lookup table so the orchestrator can apply it inline (the gitignored `dist/` is not available at agent runtime). Change one, change both — the unit tests pin every value. Security and high-severity CONFIRMED/LIKELY findings are always posted regardless of score; below-threshold findings are surfaced in a summary rather than silently dropped. The inline-posting cutoff is configurable via the `confidence-threshold` action input (a band name or a number clamped to 30–100, default `moderate` = 55); the action resolves it by invoking the bundled `dist/score-confidence.js resolve-threshold` CLI (so the resolution logic stays in TypeScript, not bash) and injects it into the agent prompt, and `scoreFinding`/`scoreFindings` accept a matching `postThreshold` option.
-- Stale review threads on lines no longer in the diff are auto-resolved via GraphQL `resolveReviewThread`. Threads with no `<!-- docker-agent-review -->` marker are never touched.
-
-### Workflows (`.github/workflows/`)
-
-| Workflow                          | Purpose                                                              |
-| --------------------------------- | -------------------------------------------------------------------- |
-| `test.yml`                        | Unit + integration tests on push/PR.                                 |
-| `test-e2e.yml`                    | End-to-end action invocation against a real agent.                   |
-| `release.yml`                     | Publishes tagged releases (must include a built `dist/`).            |
-| `review-pr.yml`                   | **Reusable workflow** consumers call as `docker/docker-agent-action/.github/workflows/review-pr.yml@v…`. |
-| `self-review-pr.yml` + `-trigger.yml` | Dogfooding: the repo reviews its own PRs.                        |
-| `reply-to-feedback.yml`           | Handles replies to bot review comments.                              |
-| `pr-describe.yml`                 | Generates PR descriptions from diffs.                                |
-| `security-scan.yml`               | Periodic security scanning.                                          |
-| `update-docker-agent-version.yml` | Bumps `DOCKER_AGENT_VERSION` automatically.                          |
-| `update-consumers.yml`            | Pushes version updates to downstream consumer repos.                 |
-| `migrate-consumers.yml`           | Consumer migration to the new repo: opens PRs across consumer repos rewriting `docker/cagent-action` refs to `docker/docker-agent-action` (incremental, no deadline — old repo stays live; dry-run by default, `repos` allowlist for pilots). |
-| `manual-test-pirate-agent.yml`    | Manual smoke test with a toy agent.                                  |
+| Workflow                          | Purpose                                                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------------- |
+| `test.yml`                        | Lint (Biome + actionlint), typecheck, unit + integration tests on push/PR.                    |
+| `test-e2e-trigger.yml`            | Runs on PRs with no permissions; saves PR context as an artifact.                             |
+| `test-e2e.yml`                    | `workflow_run` handler: real end-to-end action invocations (pirate agent, invalid agent) using repo secrets (`secrets.OPENAI_API_KEY`). |
+| `release.yml`                     | Manual dispatch: bumps the version, builds `dist/`, creates a signed release commit + tag (uses `secrets.RELEASE_TOKEN \|\| github.token`). |
+| `update-docker-agent-version.yml` | Bumps `DOCKER_AGENT_VERSION` and opens a PR (repository_dispatch from docker-agent releases, or manual). |
 
 ## Common tasks (cheat sheet)
 
@@ -219,55 +127,36 @@ pnpm test
 # Integration tests (Vitest)
 pnpm test:integration
 
-# Shell-based integration tests for action.yml bash logic
-bash tests/test-job-summary.sh
-bash tests/test-output-extraction.sh
-
 # Format + lint (write fixes)
 pnpm format
 
 # Strict CI check (Biome + tsc + actionlint). Run before every commit.
 pnpm lint
-
-# Run an eval suite for the PR-review agent
-docker agent eval review-pr/agents/pr-review.yaml review-pr/agents/evals/ \
-  -e GITHUB_TOKEN -e GH_TOKEN
 ```
 
 ## Editing checklist
 
 When you change something, verify:
 
-- [ ] Did you change `action.yml` inputs/outputs? Update `README.md`'s input table and (if relevant) `review-pr/action.yml` consumers.
-- [ ] Did you add/remove a `src/<name>/index.ts`? `dist/` will change after `pnpm build`. Commit it for tagged releases (CI does this on `release.yml`; for PRs, build is verified but `dist/` may be ignored — check `.gitignore`).
-- [ ] Did you change a bash block in any `action.yml`? Run `pnpm actionlint` and the relevant `tests/*.sh`.
-- [ ] Did you change anything under `src/security/`? Re-run `pnpm test` (covers `src/security/__tests__/security.test.ts`) and confirm the threat model above is still covered.
-- [ ] Did you bump a pinned `uses:` SHA? Update the trailing version comment too.
-- [ ] Did you change a `<!-- docker-agent-* -->` marker, an output name, or an env var name? Search the repo (and consumer documentation) for references first — these are public contracts.
+- [ ] Did you change `action.yml` inputs/outputs? Update the `README.md` inputs/outputs tables — they must match `action.yml` exactly.
+- [ ] Did you add/remove an action entrypoint? Update the explicit `entry` map in `tsup.config.ts` and the `main:` reference in `action.yml` if relevant.
+- [ ] Did you change the docker-agent version? Edit `DOCKER_AGENT_VERSION` only — it is the single source of truth (tsup/vitest inject it as `__DOCKER_AGENT_VERSION__`).
+- [ ] Did you change anything under `src/security/`? Re-run `pnpm test` and confirm the mitigations above still hold.
+- [ ] Did you change a workflow or example YAML? Run `pnpm actionlint` (examples aren't scanned, but keep them valid).
+- [ ] Did you rename an output or env var? Search the repo and docs first — these are public contracts for consumers.
 
 ## Things to avoid
 
-- **Don't** add `eval` to any shell snippet. Use bash arrays.
 - **Don't** depend on `node_modules` being present at action runtime. Add new packages to `package.json` and let `tsup` bundle them.
 - **Don't** introduce env-var fallbacks for API keys — explicit inputs only.
-- **Don't** remove `if: always()` from sanitize-output / upload-artifact / summary steps.
-- **Don't** commit changes to `review-pr/agents/.cache/*.db*` files (they're local memory artifacts).
-- **Don't** rename markers (`<!-- docker-agent-review -->`, `<!-- docker-agent-review-reply -->`) without a versioned migration plan.
-- **Don't** loosen authorization checks — comment-triggered events are the primary abuse vector for this action.
-
-## Agent skills
-
-Reusable, task-specific how-to guides for AI agents are kept in `.agents/skills/`. Each skill is a single `SKILL.md` file with a YAML frontmatter block (`name` + `description`) followed by step-by-step instructions.
-
-| Skill | Description |
-| ----- | ----------- |
-| [`add-pr-reviewer-to-repo`](.agents/skills/add-pr-reviewer-to-repo/SKILL.md) | Set up or upgrade a consuming repo to use `docker/docker-agent-action/.github/workflows/review-pr.yml`. Covers 1-workflow vs 2-workflow (fork) patterns, trigger mode selection, VERSION pinning, upgrade checklist, and common troubleshooting. |
-
-When asked to onboard a new repo (or upgrade an existing one) to the PR reviewer, load the `add-pr-reviewer-to-repo` skill before starting.
+- **Don't** move output sanitization, artifact upload, or the job summary out of the `finally` path in `src/main/index.ts`.
+- **Don't** pass secrets via argv — env only.
+- **Don't** add authorization logic to the action — access control belongs to the calling workflow.
 
 ## Where to look for more context
 
-- **User-facing docs**: `README.md` (root action), `review-pr/README.md` (PR review feature).
+- **User-facing docs**: `README.md` (the action), `examples/reviewer/README.md` (PR reviewer example).
+- **Security details**: `SECURITY.md` (protections), `.github/SECURITY.md` (vulnerability disclosure policy).
 - **Contributing rules**: `CONTRIBUTING.md`.
 - **Code of conduct**: `CODE_OF_CONDUCT.md`.
 - **License**: Apache 2.0 (`LICENSE`).

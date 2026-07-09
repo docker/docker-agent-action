@@ -10,14 +10,22 @@ Thanks for your interest in contributing! 🎉
 4. Commit: `git commit -m "Add feature: description"`
 5. Push and open a PR
 
-## Testing
+## Development Setup
 
-Run tests before submitting:
+Requires Node.js 24 and [pnpm](https://pnpm.io) (via Corepack; see `packageManager` in `package.json`):
 
 ```bash
-cd tests
-./test-security.sh
-./test-exploits.sh
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+## Testing
+
+Run tests and lint checks before submitting:
+
+```bash
+pnpm test          # unit tests (includes the security suite)
+pnpm lint          # Biome + tsc + actionlint (CI parity)
 ```
 
 ## Guidelines
@@ -37,17 +45,6 @@ cd tests
 - Include test evidence
 - Update docs if needed
 - Be responsive to feedback
-
-## Automated PR Review
-
-This repo uses the `docker-agent` AI reviewer on pull requests. How a review is triggered depends on who opened the PR:
-
-- **Org members:** request a review from `docker-agent` in the PR sidebar (Reviewers → add `docker-agent`). The review starts automatically once requested.
-- **External / fork contributors:** the same request step applies, but GitHub gates Actions on these PRs, so an org member must also approve the workflow run first:
-  1. **Approve the workflow run.** GitHub holds workflows on PRs from first-time and external contributors until a maintainer clicks **Approve and run workflows**.
-  2. **Request the review.** In the PR sidebar, under **Reviewers**, add `docker-agent`. The review starts and appears as a check run.
-
-No special commands or workflow inputs are needed, and an external contributor cannot trigger a review of their own PR. The deprecated `/review` comment still works, but requesting `docker-agent` as a reviewer is the supported path. See the [PR Review documentation](review-pr/README.md#external-and-fork-contributor-prs) for the full flow.
 
 ## Security Issues
 

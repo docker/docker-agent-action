@@ -316,7 +316,7 @@ describe('createSignedCommit', () => {
       message: 'Force create after stale branch',
       baseRef: 'main',
       force: true,
-      additions: [{ path: 'dist/credentials.js', contents: 'dGVzdA==' }],
+      additions: [{ path: 'dist/main.js', contents: 'dGVzdA==' }],
     });
 
     expect(mockUpdateRef).toHaveBeenCalledWith({
@@ -377,7 +377,7 @@ describe('createSignedCommit', () => {
       message: 'Force create after concurrent delete',
       baseRef: 'main',
       force: true,
-      additions: [{ path: 'dist/credentials.js', contents: 'dGVzdA==' }],
+      additions: [{ path: 'dist/main.js', contents: 'dGVzdA==' }],
     });
 
     expect(mockDeleteRef).toHaveBeenCalled();
@@ -408,7 +408,7 @@ describe('createSignedCommit', () => {
         message: 'Should fail',
         baseRef: 'main',
         force: true,
-        additions: [{ path: 'dist/credentials.js', contents: 'dGVzdA==' }],
+        additions: [{ path: 'dist/main.js', contents: 'dGVzdA==' }],
       }),
     ).rejects.toThrow(
       /Failed to delete stale branch.*deleteRef status 403.*Must have admin rights.*Original force-update error.*Reference already exists/,

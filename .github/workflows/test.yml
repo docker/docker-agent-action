@@ -75,7 +75,6 @@ jobs:
     name: Integration Tests
     permissions:
       contents: read
-      id-token: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -94,10 +93,6 @@ jobs:
 
       - name: Install dependencies and build
         run: pnpm install --frozen-lockfile && pnpm build
-
-      - name: Setup credentials
-        uses: ./setup-credentials
-        continue-on-error: true
 
       - name: Run integration tests
         run: pnpm test:integration
