@@ -148,17 +148,22 @@ runs:
         DEFAULT_TOKEN: ${{ github.token }}
 
     # Concurrent review guard: best-effort lock using GitHub Actions cache.
-    # There is a narrow race window where two runs starting within seconds
-    # can both pass the check before either saves its lock. This is accepted
-    # because reviews are idempotent (duplicate reviews are harmless) and
-    # the window is small enough that it rarely occurs in practice.
+    # Lifecycle: acquire saves a lock entry; release saves a newer "released"
+    # marker entry under the same key prefix (restore returns the newest match,
+    # so the marker shadows the lock). The TTL below is only a fallback for
+    # runs that crashed before releasing. There is a narrow race window where
+    # two runs starting within seconds can both pass the check before either
+    # saves its lock. This is accepted because reviews are idempotent
+    # (duplicate reviews are harmless) and the window is small enough that it
+    # rarely occurs in practice.
     - name: Check for concurrent review
       id: review-lock
       uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: .cache/review-lock
-        # Exact key will never match (saves include run_id), so this always
-        # falls through to restore-keys prefix match — finding the most recent lock
+        # Exact key will never match (saves append run identifiers), so this always
+        # falls through to restore-keys prefix match — finding the most recent
+        # lock or release-marker entry
         key: pr-review-lock-${{ github.repository }}-${{ steps.resolve-context.outputs.pr-number }}-exact
         restore-keys: |
           pr-review-lock-${{ github.repository }}-${{ steps.resolve-context.outputs.pr-number }}-
@@ -170,25 +175,37 @@ runs:
         # cache-hit is only true on exact key match; prefix matches via restore-keys
         # set cache-matched-key but leave cache-hit as false
         if [ -n "${{ steps.review-lock.outputs.cache-matched-key }}" ]; then
-          LOCK_TIME=$(cat .cache/review-lock/timestamp 2>/dev/null || echo "0")
-          NOW=$(date +%s)
-          AGE=$(( NOW - LOCK_TIME ))
-          if [ "$AGE" -lt 600 ]; then  # 600 s lock TTL — intentionally decoupled from the review timeout (now 1800 s)
-            echo "⏭️ Review already in progress (started ${AGE}s ago) — skipping"
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "skip-reason=concurrent" >> $GITHUB_OUTPUT
-            echo "lock-age=${AGE}" >> $GITHUB_OUTPUT
-            exit 0
+          if [ -f .cache/review-lock/released ]; then
+            # Newest matching entry is a release marker — the previous review finished
+            echo "🔓 Previous review released its lock — proceeding"
+          else
+            LOCK_TIME=$(cat .cache/review-lock/timestamp 2>/dev/null || echo "0")
+            NOW=$(date +%s)
+            AGE=$(( NOW - LOCK_TIME ))
+            # TTL is a fallback for lock holders that crashed before releasing.
+            # It must exceed the agent timeout (2700 s) plus setup/posting
+            # overhead so an in-flight review is never treated as stale.
+            if [ "$AGE" -lt 3600 ]; then
+              echo "⏭️ Review already in progress (started ${AGE}s ago) — skipping"
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "skip-reason=concurrent" >> $GITHUB_OUTPUT
+              echo "lock-age=${AGE}" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "🔓 Stale lock (${AGE}s old — holder likely crashed) — proceeding"
           fi
-          echo "🔓 Stale lock (${AGE}s old) — proceeding"
         fi
         echo "skip=false" >> $GITHUB_OUTPUT
 
     - name: Acquire review lock
+      id: acquire-lock
       if: steps.lock-check.outputs.skip != 'true'
       shell: bash
       run: |
         mkdir -p .cache/review-lock
+        # Drop any restored release marker so this run's lock entry is not
+        # itself read as a release by concurrent runs
+        rm -f .cache/review-lock/released
         date +%s > .cache/review-lock/timestamp
 
     - name: Save review lock
@@ -196,9 +213,10 @@ runs:
       uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: .cache/review-lock
-        # Use run_id in save key so each run can save (cache keys are immutable)
-        # The restore step uses the fixed key with no run_id, so it matches via prefix
-        key: pr-review-lock-${{ github.repository }}-${{ steps.resolve-context.outputs.pr-number }}-${{ github.run_id }}
+        # Use run_id/run_attempt in save key so each attempt can save (cache keys
+        # are immutable). The restore step uses the fixed prefix, so it matches
+        # the newest entry regardless of the suffix.
+        key: pr-review-lock-${{ github.repository }}-${{ steps.resolve-context.outputs.pr-number }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Ensure cache directory exists
       if: steps.lock-check.outputs.skip != 'true'
@@ -867,7 +885,7 @@ runs:
       with:
         agent: ${{ env.ACTION_PATH }}/agents/pr-review.yaml
         prompt: ${{ steps.context.outputs.review_prompt }}
-        timeout: "2700"  # 45 min — allows complex reviews to complete; lock TTL (600 s) is intentionally shorter
+        timeout: "2700"  # 45 min — allows complex reviews to complete; must stay below the 3600 s lock TTL so an in-flight review is never treated as stale
         anthropic-api-key: ${{ inputs.anthropic-api-key }}
         openai-api-key: ${{ inputs.openai-api-key }}
         google-api-key: ${{ inputs.google-api-key }}
@@ -885,21 +903,51 @@ runs:
         auth-org: ${{ inputs.auth-org }}
         skip-auth: ${{ inputs.skip-auth }}
 
+    # Lock release is two-fold:
+    #   1. Best-effort DELETE of this PR's lock cache entries to keep the cache
+    #      tidy. This needs actions:write on the token and fails harmlessly on
+    #      tokens without it.
+    #   2. Save a "released" marker entry under the same restore prefix (next
+    #      step). Restore picks the newest match, so the marker shadows any
+    #      surviving lock entry. Cache saves go through the runner's cache
+    #      service token, so this works regardless of the github-token scopes.
+    # Cleanup runs first so a successful DELETE cannot remove the fresh marker.
+    # If both fail (e.g. runner crash), the lock expires via the 3600 s TTL.
     - name: Release review lock
-      if: always() && steps.lock-check.outputs.skip != 'true'
-      continue-on-error: true  # Release failures are safe — stale locks expire via TTL (600s)
+      if: always() && steps.acquire-lock.outcome == 'success'
+      continue-on-error: true
       shell: bash
       env:
         GH_TOKEN: ${{ steps.resolve-token.outputs.token }}
         REPO: ${{ github.repository }}
         PR_NUMBER: ${{ steps.resolve-context.outputs.pr-number }}
       run: |
-        # Delete all cache entries matching this PR's lock prefix
-        gh api --paginate "repos/$REPO/actions/caches?key=pr-review-lock-${REPO}-${PR_NUMBER}-" \
-          --jq '.actions_caches[].id' 2>/dev/null | while read -r CACHE_ID; do
-          gh api "repos/$REPO/actions/caches/$CACHE_ID" -X DELETE 2>/dev/null || true
+        CACHE_IDS=$(gh api --paginate "repos/$REPO/actions/caches?key=pr-review-lock-${REPO}-${PR_NUMBER}-" \
+          --jq '.actions_caches[].id' 2>/dev/null) || CACHE_IDS=""
+        DELETED=0
+        FAILED=0
+        for CACHE_ID in $CACHE_IDS; do
+          if gh api "repos/$REPO/actions/caches/$CACHE_ID" -X DELETE --silent 2>/dev/null; then
+            DELETED=$((DELETED + 1))
+          else
+            FAILED=$((FAILED + 1))
+          fi
         done
-        echo "🔓 Released review lock for PR #$PR_NUMBER"
+        if [ "$FAILED" -gt 0 ]; then
+          echo "ℹ️  Could not delete $FAILED lock cache entries — token likely lacks actions:write; the release marker below still unlocks"
+        fi
+
+        mkdir -p .cache/review-lock
+        touch .cache/review-lock/released
+        echo "🔓 Releasing review lock for PR #$PR_NUMBER (deleted $DELETED cache entries)"
+
+    - name: Save review lock release marker
+      if: always() && steps.acquire-lock.outcome == 'success'
+      continue-on-error: true  # If this fails the lock expires via the TTL fallback (3600 s)
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: .cache/review-lock
+        key: pr-review-lock-${{ github.repository }}-${{ steps.resolve-context.outputs.pr-number }}-${{ github.run_id }}-${{ github.run_attempt }}-released
 
     - name: Save reviewer memory
       if: always() && steps.lock-check.outputs.skip != 'true'

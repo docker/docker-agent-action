@@ -172,7 +172,7 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 
 ### `review-pr` action specifics
 
-- Uses a **best-effort cache lock** (`pr-review-lock-<repo>-<pr>-*` cache key) to avoid concurrent reviews on the same PR. Lock TTL is 600s; the agent execution timeout is 1800s (30 min) — these are intentionally decoupled. Reviews are idempotent so the small race window is acceptable.
+- Uses a **best-effort cache lock** (`pr-review-lock-<repo>-<pr>-*` cache key) to avoid concurrent reviews on the same PR. Completed runs release the lock by saving a `-released` marker cache entry that shadows their lock entry (cache saves work regardless of token scopes; the REST cache DELETE is best-effort cleanup only). The 3600s TTL is a fallback for crashed holders and must stay above the 2700s agent timeout so an in-flight review is never treated as stale. Reviews are idempotent so the small race window is acceptable.
 - **Memory persistence** uses `actions/cache` keyed by `pr-review-memory-<repo>-<job>-<run_id>` with prefix-based restore. The DB lives at `${{ github.workspace }}/.cache/pr-review-memory.db`.
 - **Feedback loop**: the `reply-to-feedback` job in `.github/workflows/review-pr.yml` (which runs the `pr-review-reply.yaml` agent) uploads a `pr-review-feedback` artifact on every reply via its "Upload feedback artifact" step. The next review run downloads all such artifacts, runs `pr-review-feedback.yaml` to call `add_memory(...)` for each, then deletes the artifacts.
 - **Bot reply detection** uses HTML markers: `<!-- docker-agent-review -->` on review comments, `<!-- docker-agent-review-reply -->` on agent replies (including mention-reply responses). **Don't change these strings** — workflows in consumer repos grep for them.
