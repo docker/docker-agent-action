@@ -151,8 +151,13 @@ function spawnAgent(opts: {
       stdio: ['pipe', opts.verboseLogFd, opts.verboseLogFd],
     });
 
-    // Feed stdin
+    // Feed stdin. Without an 'error' listener, an EPIPE from the agent dying
+    // before draining the pipe would crash the whole process; the 'close'
+    // event still reports the real exit code.
     if (child.stdin) {
+      child.stdin.on('error', (err: Error) => {
+        core.debug(`docker-agent stdin write failed: ${err.message}`);
+      });
       child.stdin.write(opts.stdinData);
       child.stdin.end();
     }
