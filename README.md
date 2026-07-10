@@ -2,6 +2,8 @@
 
 A GitHub Action for running [Docker Agent](https://github.com/docker/docker-agent) AI agents in your workflows. This action simplifies the setup and execution of Docker Agent, handling binary downloads and environment configuration automatically.
 
+It is a **generic prompt runner**: you bring your own agent (a Docker Hub agent identifier or a `.yaml` file in your repo), your own prompt, and your own provider API key. What you build on top — reviewers, changelog writers, triage bots — is up to your workflow. See [examples/reviewer](examples/reviewer/) for a complete PR reviewer built on this action.
+
 ## Quick Start
 
 1. **Add the action to your workflow**:
@@ -29,8 +31,10 @@ A GitHub Action for running [Docker Agent](https://github.com/docker/docker-agen
 This action includes **built-in security features for all agent executions**:
 
 - **Secret Leak Prevention**: Scans all agent outputs for API keys and tokens (Anthropic, OpenAI, GitHub)
-- **Prompt Injection Detection**: Warns about suspicious patterns in user prompts
+- **Prompt Injection Detection**: Warns about suspicious patterns in user prompts and blocks critical exfiltration attempts
 - **Automatic Incident Response**: Creates security issues and fails workflows when secrets are detected
+
+The action performs **no authorization checks** of its own — access control is the calling workflow's responsibility (restrict your triggers and gate who can run them).
 
 To report a vulnerability, see our [Security Policy](SECURITY.md).
 
@@ -114,6 +118,7 @@ To report a vulnerability, see our [Security Policy](SECURITY.md).
 | `yolo`                     | Auto-approve all prompts (`true`/`false`)                                            | No       | `true`         |
 | `max-retries`              | Maximum number of retries on failure (0 = no retries)                                | No       | `2`            |
 | `retry-delay`              | Base delay in seconds between retries (doubles each attempt)                         | No       | `5`            |
+| `retry-on-timeout`         | Number of additional retry attempts when the agent times out (exit code 124). Independent of `max-retries` — both budgets can be consumed in the same run. | No       | `0`            |
 | `extra-args`               | Additional arguments to pass to `docker agent run`                                   | No       | -              |
 | `add-prompt-files`         | Comma-separated list of files to append to the prompt (e.g., `AGENTS.md,CLAUDE.md`)  | No       | -              |
 | `skip-summary`             | Skip writing agent output to the job summary (useful when callers write their own)  | No       | `false`        |
@@ -146,7 +151,6 @@ add-prompt-files: "STYLE_GUIDE.md"  # Found via hierarchy search
 | `exit-code`             | Exit code from docker agent run                                  |
 | `output-file`           | Path to the output log file                                      |
 | `docker-agent-version`  | Version of Docker Agent that was used                            |
-| `cagent-version`        | Version of Docker Agent that was used (deprecated: use `docker-agent-version`) |
 | `mcp-gateway-installed` | Whether mcp-gateway was installed (`true`/`false`)               |
 | `execution-time`        | Agent execution time in seconds                                  |
 | `verbose-log-file`      | Path to the full verbose agent log (includes tool calls)         |
@@ -176,10 +180,8 @@ For GitHub integration features (commenting on PRs, creating issues), ensure you
 ```yaml
 permissions:
   contents: read # Read repository files and PR diffs
-  pull-requests: write # Post review comments and approve/request changes
+  pull-requests: write # (Optional) Only if your workflow posts PR comments
   issues: write # Create security incident issues if secrets are detected in output
-  checks: write # (Optional) Show review progress as a check run on the PR
-  id-token: write # Required for OIDC authentication to AWS Secrets Manager
 ```
 
 ## Examples
@@ -217,11 +219,9 @@ jobs:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-### PR Review Workflow
+### PR Reviewer
 
-For comprehensive documentation on setting up AI-powered PR reviews, including features like automatic reviews, requesting a review from `docker-agent`, feedback learning, and customization options, see the **[PR Review documentation](review-pr/README.md)**.
-
-For external or fork contributor PRs, an org member approves the workflow run and then requests a review from `docker-agent` via GitHub's native review request UI (no special commands or workflow inputs required). See [External and fork contributor PRs](review-pr/README.md#external-and-fork-contributor-prs).
+[examples/reviewer](examples/reviewer/) is a complete PR reviewer built on this action: a small agent definition plus a copy-pasteable workflow that fetches the PR diff, reviews the added lines, and posts the result as a PR comment.
 
 ### Manual Trigger with Inputs
 

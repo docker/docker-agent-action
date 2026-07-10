@@ -4,31 +4,29 @@
 /**
  * src/main/index.ts — root action entrypoint.
  *
- * This is the `main:` script for the `using: node24` action that replaces the
- * 872-line composite action.yml.  It orchestrates all the same steps in order:
+ * This is the `main:` script for the `using: node24` action.  It orchestrates
+ * the following steps in order:
  *
  *   1.  Obtain docker-agent version from build-time constant
  *   2.  Validate inputs
- *   3.  Authorization check (4-tier waterfall)
- *   4.  Resolve GitHub token
- *   5.  Sanitize input prompt
- *   6.  Setup binaries (docker-agent + optional mcp-gateway)
- *   7.  Run docker-agent (with retry loop)
- *   8.  Post-process verbose log → clean output file
- *   9.  Sanitize output (secret leak scan)
- *   10. Upload verbose log artifact
- *   11. Write job summary (if not skipped)
- *   12. Handle security incident (open issue + fail)
- *   13. Exit with agent's exit code
+ *   3.  Resolve GitHub token
+ *   4.  Sanitize input prompt
+ *   5.  Setup binaries (docker-agent + optional mcp-gateway)
+ *   6.  Run docker-agent (with retry loop)
+ *   7.  Post-process verbose log → clean output file
+ *   8.  Sanitize output (secret leak scan)
+ *   9.  Upload verbose log artifact
+ *   10. Write job summary (if not skipped)
+ *   11. Handle security incident (open issue + fail)
+ *   12. Exit with agent's exit code
  *
- * All 24 inputs and 10 outputs are preserved verbatim (public contract).
+ * All inputs and outputs are declared in action.yml (public contract).
  */
 
 // __DOCKER_AGENT_VERSION__ is injected at build time by tsup's `define` option
 // (see tsup.config.ts).  It is replaced with a string literal in the bundle, so
 // the action never needs to locate the DOCKER_AGENT_VERSION file on disk at
-// runtime — which would fail when ACTION_PATH points at a sub-directory (e.g.
-// review-pr/) rather than the action root.
+// runtime.
 declare const __DOCKER_AGENT_VERSION__: string;
 
 import * as fs from 'node:fs';
@@ -39,7 +37,6 @@ import { Octokit } from '@octokit/rest';
 import { sanitizeInput } from '../security/sanitize-input.js';
 import { sanitizeOutput } from '../security/sanitize-output.js';
 import { makeArtifactName, uploadVerboseLog } from './artifact.js';
-import { checkAuthorization } from './auth.js';
 import { setupBinaries } from './binary.js';
 import { runAgent } from './exec.js';
 import { extractDockerAgentOutputBlock, filterAgentOutput } from './outputs.js';
@@ -157,8 +154,7 @@ async function run(): Promise<void> {
   try {
     // ── Step 1: Obtain docker-agent version ──────────────────────────────────
     // __DOCKER_AGENT_VERSION__ is a build-time constant injected by tsup (see
-    // tsup.config.ts).  This avoids a filesystem read at runtime that would
-    // fail when ACTION_PATH resolves to a sub-directory (e.g. review-pr/).
+    // tsup.config.ts).  This avoids a filesystem read at runtime.
     dockerAgentVersion = __DOCKER_AGENT_VERSION__;
     core.debug(`Docker Agent version: ${dockerAgentVersion}`);
 
@@ -213,7 +209,6 @@ async function run(): Promise<void> {
 
     const debug = core.getBooleanInput('debug');
     // skip-summary is read in the finally block via core.getBooleanInput
-    const skipAuth = core.getBooleanInput('skip-auth');
     const timeout = parseInt(core.getInput('timeout') || '0', 10);
     const maxRetries = parseInt(core.getInput('max-retries') || '2', 10);
     const retryDelay = parseInt(core.getInput('retry-delay') || '5', 10);
@@ -223,8 +218,6 @@ async function run(): Promise<void> {
     const extraArgs = core.getInput('extra-args');
     const addPromptFiles = core.getInput('add-prompt-files');
     const promptInput = core.getInput('prompt');
-    const orgMembershipToken = core.getInput('org-membership-token');
-    const authOrg = core.getInput('auth-org');
 
     if (debug) {
       core.debug(`agent: ${agent}`);
@@ -232,29 +225,7 @@ async function run(): Promise<void> {
       core.debug(`mcp-gateway: ${mcpGateway}, version: ${mcpGatewayVersion}`);
     }
 
-    // ── Step 3: Authorization check ───────────────────────────────────────
-    // Mask tokens before using them
-    if (orgMembershipToken) {
-      core.setSecret(orgMembershipToken);
-    }
-
-    const eventPayloadPath = process.env.GITHUB_EVENT_PATH ?? '';
-    const authResult = await checkAuthorization({
-      skipAuth,
-      githubToken: resolvedToken,
-      orgMembershipToken,
-      authOrg,
-      eventPayloadPath,
-    });
-
-    core.setOutput('authorized', authResult.outcome);
-
-    if (!authResult.authorized) {
-      core.setFailed('Authorization failed');
-      return;
-    }
-
-    // ── Step 4: Token already resolved above ─────────────────────────────
+    // ── Step 3: Token already resolved above ─────────────────────────────
     // resolvedToken is set above; just log which path we took
     if (explicitToken) {
       core.info('✅ Using provided github-token');
@@ -262,7 +233,7 @@ async function run(): Promise<void> {
       core.info('ℹ️ Using default GITHUB_TOKEN');
     }
 
-    // ── Step 5: Sanitize input ────────────────────────────────────────────
+    // ── Step 4: Sanitize input ────────────────────────────────────────────
     const promptCleanFile = '/tmp/prompt-clean.txt';
 
     if (promptInput) {
@@ -288,7 +259,7 @@ async function run(): Promise<void> {
       core.setOutput('input-risk-level', 'low');
     }
 
-    // ── Step 6: Setup binaries ────────────────────────────────────────────
+    // ── Step 5: Setup binaries ────────────────────────────────────────────
     const binaryResult = await setupBinaries({
       version: dockerAgentVersion,
       mcpGateway,
@@ -300,10 +271,9 @@ async function run(): Promise<void> {
     dockerAgentVersion = binaryResult.dockerAgentVersion;
 
     core.setOutput('docker-agent-version', dockerAgentVersion);
-    core.setOutput('cagent-version', dockerAgentVersion); // backward compat alias
     core.setOutput('mcp-gateway-installed', String(mcpInstalled));
 
-    // ── Step 7: Run docker-agent ──────────────────────────────────────────
+    // ── Step 6: Run docker-agent ──────────────────────────────────────────
     // Create temp files for output
     const tmpSuffix = `docker-agent-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     outputFile = path.join(os.tmpdir(), `${tmpSuffix}-output`);
@@ -363,7 +333,7 @@ async function run(): Promise<void> {
     core.setOutput('exit-code', String(exitCode));
     core.setOutput('execution-time', String(executionTime));
 
-    // ── Step 8: Post-process verbose log → clean output ───────────────────
+    // ── Step 7: Post-process verbose log → clean output ───────────────────
     if (fs.existsSync(verboseLogFile)) {
       const rawVerbose = fs.readFileSync(verboseLogFile, 'utf-8');
       // Trim to only the final retry attempt's content. The original bash
@@ -374,8 +344,8 @@ async function run(): Promise<void> {
       const lastAttemptMarker = /^={10,} RETRY ATTEMPT \d+/m;
       const parts = rawVerbose.split(lastAttemptMarker);
       const lastAttemptContent = parts[parts.length - 1];
-      // Step 8a: awk-equivalent noise filter. Writes FULL filtered text so
-      // sanitizeOutput (Step 9) can scan it before block extraction narrows it.
+      // Step 7a: awk-equivalent noise filter. Writes FULL filtered text so
+      // sanitizeOutput (Step 8) can scan it before block extraction narrows it.
       const filteredOutput = filterAgentOutput(lastAttemptContent);
       fs.writeFileSync(outputFile, filteredOutput, 'utf-8');
     }
@@ -383,7 +353,7 @@ async function run(): Promise<void> {
     core.setFailed(`Unexpected error: ${(err as Error).message}`);
     // Fall through to finally block for cleanup outputs
   } finally {
-    // ── Step 9: Sanitize output (always runs) ─────────────────────────────
+    // ── Step 8: Sanitize output (always runs) ─────────────────────────────
     if (outputFile && fs.existsSync(outputFile)) {
       try {
         core.info('🔍 Scanning AI response for leaked secrets...');
@@ -395,7 +365,7 @@ async function run(): Promise<void> {
         core.setOutput('secrets-detected', 'false');
       }
 
-      // Step 9b: block extraction — runs AFTER sanitizeOutput.
+      // Step 8b: block extraction — runs AFTER sanitizeOutput.
       // Replace outputFile with only the docker-agent-output block if present.
       // Skipped when a secret was detected so the incident flow sees the full text.
       if (!outputLeaked) {
@@ -418,7 +388,7 @@ async function run(): Promise<void> {
     const securityBlocked = promptBlocked || outputLeaked;
     core.setOutput('security-blocked', String(securityBlocked));
 
-    // ── Step 10: Upload verbose log artifact ──────────────────────────────
+    // ── Step 9: Upload verbose log artifact ───────────────────────────────
     if (verboseLogFile && verboseLogArtifactName) {
       await uploadVerboseLog({
         name: verboseLogArtifactName,
@@ -427,7 +397,7 @@ async function run(): Promise<void> {
       });
     }
 
-    // ── Step 11: Write job summary ─────────────────────────────────────────
+    // ── Step 10: Write job summary ─────────────────────────────────────────
     const skipSummary = core.getBooleanInput('skip-summary');
     if (!skipSummary) {
       try {
@@ -445,14 +415,14 @@ async function run(): Promise<void> {
       }
     }
 
-    // ── Step 12: Handle security incident ────────────────────────────────
+    // ── Step 11: Handle security incident ────────────────────────────────
     if (outputLeaked) {
       await handleSecurityIncident(resolvedToken);
       process.exitCode = 1;
       // Do NOT return — fall through to let the process exit naturally.
       // process.exitCode is already set to 1 for the security incident.
     } else if (exitCode !== 0) {
-      // ── Step 13: Exit with agent's exit code ────────────────────────────
+      // ── Step 12: Exit with agent's exit code ────────────────────────────
       // Use process.exitCode so the runner marks the step as failed
       // without an additional core.setFailed error annotation.
       process.exitCode = exitCode;

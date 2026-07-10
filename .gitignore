@@ -28,7 +28,6 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-/review-pr/agents/evals/results
 
 # act (local GitHub Actions runner) — these are gitignored by convention;
 # .actrc IS committed (no secrets). Temp env files go to /tmp/ (outside repo).

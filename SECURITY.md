@@ -6,27 +6,25 @@ This document describes the security hardening built into the docker-agent-actio
 
 This action includes **built-in security features for all agent executions**:
 
-1. **Authorization Check** — Users are verified for comment-triggered events using a 4-tier waterfall:
-   - `skip-auth=true` passes immediately (caller already verified)
-   - Trusted-bot PAT bypass auto-authorizes when the comment author's login matches the bot token's owner
-   - Org membership (`org-membership-token` + `auth-org`) is the preferred check
-   - `author_association` (`OWNER`, `MEMBER`, `COLLABORATOR`) is the legacy fallback
-   - External contributors (`CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, `NONE`) are blocked
-   - Comment-triggered actions are the main abuse vector — this protects against cost/spam attacks
-
-2. **Output Scanning** — All agent responses are scanned for leaked secrets before being posted or logged:
-   - Anthropic API keys (`sk-ant-api*`, `sk-ant-sid*`, `sk-ant-admin*`)
-   - OpenAI API keys (shape: `sk-…T3BlbkFJ…`)
-   - GitHub tokens: `ghp_*`, `gho_*`, `ghu_*`, `ghs_*`, `github_pat_*`
-   - GitHub token matches are further validated against a CRC32 checksum baked into every modern GitHub token, eliminating fixtures and placeholders
-   - If secrets are detected: the response is blocked, the workflow fails, and a security incident issue is created
-
-3. **Prompt Sanitization** — User prompts and PR diffs are checked in three tiers:
+1. **Prompt Injection Detection** — The user-provided prompt is checked in three tiers before it reaches the agent:
    - **Critical patterns** (block execution): Direct secret exfiltration commands (`echo $API_KEY`, `console.log(process.env)`, `printenv`, `cat .env`)
    - **Suspicious patterns** (strip + warn): Behavioral/natural-language injection attempts ("ignore previous instructions", "system mode", "reveal the token", base64/hex obfuscation, etc.) — matching lines are removed from the prompt before it reaches the agent
    - **Medium-risk patterns** (warn only): API key variable names in configuration (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, etc.)
 
-4. **Review-Request Abuse Safeguards** — the comment/event-triggered PR review pipeline is hardened against abuse on every trigger path: org-membership validation and rate-anomaly throttling. See [Review-Request Abuse Safeguards](#review-request-abuse-safeguards).
+   The result is reported via the `prompt-suspicious` and `input-risk-level` (`low`/`medium`/`high`) outputs.
+
+2. **Output Scanning** — All agent responses are scanned for leaked secrets before your workflow can post or log them:
+   - Anthropic API keys (`sk-ant-api*`, `sk-ant-sid*`, `sk-ant-admin*`)
+   - OpenAI API keys (shape: `sk-…T3BlbkFJ…`)
+   - GitHub tokens: `ghp_*`, `gho_*`, `ghu_*`, `ghs_*`, `github_pat_*`
+   - GitHub token matches are further validated against a CRC32 checksum baked into every modern GitHub token, eliminating fixtures and placeholders
+   - If secrets are detected: the workflow fails and a security incident issue is created
+
+3. **Token Masking** — Every provided API key and the resolved GitHub token are registered with the runner's `::add-mask::` mechanism (`core.setSecret`) before any process is spawned or output is logged. Keys are passed to the agent via environment variables, never argv.
+
+4. **Automatic Incident Response** — On a detected leak the action opens a GitHub issue labeled `security` with rotation instructions and fails the run (see `security-blocked` / `secrets-detected` outputs).
+
+> **Authorization is out of scope.** The action performs no caller authorization of its own — anyone who can trigger your workflow can run the agent with your API key. Access control is the calling workflow's responsibility: restrict triggers, prefer `pull_request` over `pull_request_target`, and gate on the actor with `if:` conditions where needed.
 
 ## Security Architecture
 
@@ -34,10 +32,10 @@ The action implements a defense-in-depth approach:
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│ 1. Authorization Check (src/main/auth.ts)                      │
-│    ✓ 4-tier waterfall: skip → trusted-bot → org → association  │
-│    ✓ Block external contributors by default                    │
-│    ✓ Only OWNER, MEMBER, COLLABORATOR allowed (tier 4)         │
+│ 1. Input Validation & Masking (src/main/index.ts, exec.ts)     │
+│    ✓ Explicit API-key inputs only — fail fast when none given  │
+│    ✓ All keys/tokens masked via core.setSecret before use      │
+│    ✓ Keys passed to the agent via env, never argv              │
 └────────────────────────────────────────────────────────────────┘
                           ↓
 ┌────────────────────────────────────────────────────────────────┐
@@ -49,129 +47,39 @@ The action implements a defense-in-depth approach:
 └────────────────────────────────────────────────────────────────┘
                           ↓
 ┌────────────────────────────────────────────────────────────────┐
-│ 3. Agent Execution                                             │
-│    ✓ User-provided agent runs in isolated Docker Agent runtime │
-│    ✓ No direct access to secrets or environment vars           │
-│    ✓ Controlled execution environment                          │
+│ 3. Agent Execution (src/main/exec.ts)                          │
+│    ✓ Agent reads the sanitized prompt file, not the raw input  │
+│    ✓ Isolated Docker Agent runtime with controlled env         │
 └────────────────────────────────────────────────────────────────┘
                           ↓
 ┌────────────────────────────────────────────────────────────────┐
 │ 4. Output Scanning (src/security/sanitize-output.ts)           │
+│    ✓ Runs in the finally path — on every execution outcome     │
 │    ✓ Scan for leaked API keys (Anthropic, OpenAI, etc.)        │
 │    ✓ Scan for leaked tokens (GitHub PAT, OAuth, fine-grained)  │
 │    ✓ CRC32 structural validator rejects fixtures/placeholders  │
-│    ✓ Block execution if any real secret is detected            │
 └────────────────────────────────────────────────────────────────┘
                           ↓
 ┌────────────────────────────────────────────────────────────────┐
 │ 5. Incident Response (src/main/index.ts)                       │
 │    ✓ Create GitHub security issue with details                 │
 │    ✓ Fail workflow with clear error                            │
-│    ✓ Prevent secret exposure in PR comments                    │
+│    ✓ Prevent secret exposure in downstream steps               │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-## Review-Request Abuse Safeguards
-
-The PR review pipeline (`.github/workflows/review-pr.yml` and the `review-pr/`
-composite actions) is comment- and event-triggered, which makes it the main
-abuse vector for cost/spam. Two safeguards harden the review-request flow on
-every trigger path (`review_requested`, the deprecated `/review` comment,
-`@docker-agent` mentions, automatic `opened`/`synchronize`, and the
-`workflow_run` fork path).
-
-### 1. Review requests come from org members
-
-Membership is verified before any review work runs, and which actor is checked
-depends on the trigger:
-
-| Trigger | Actor verified | Mechanism |
-|---------|----------------|-----------|
-| `/review` comment, `@docker-agent` mention, reply-to-feedback | The commenter | `check-org-membership` against the `docker` org (OIDC `org-membership-token`) |
-| Automatic review (`opened`/`synchronize`/`ready_for_review`) | The PR author | `check-org-membership` resolves the PR author live via the GitHub API |
-| `review_requested` via the PR sidebar | The requester | The requesting org member is verified, so an external contributor's PR can be reviewed on request. The requester is taken only from a trusted source (`github.event.sender.login` on the direct same-repo path, re-derived from the PR timeline on the fork/`workflow_run` path), never from the trigger artifact. Also relies on **GitHub-native enforcement** (only users with triage/write access can request a reviewer) and gates on `requested_reviewer.login == 'docker-agent'` |
-
-The membership check **fails closed**: if no actor login can be resolved, or the
-actor is not an org member, the review is skipped. `src/check-org-membership`
-evaluates the authorization paths in order (the PR author for automatic review,
-then the trusted requester for `review_requested`), resolving the PR author live
-via the API so the directly-wired `pull_request` path verifies the author
-instead of an empty comment author.
-
-### 2. Rate anomalies are detected and throttled
-
-Authorization gates *who* may trigger a review, not *how often*. Three layers
-bound request frequency:
-
-- **Per-PR `concurrency:` groups** on `review-pr.yml` and the trigger workflow
-  collapse same-trigger bursts (e.g. rapid force-pushes, repeated review
-  requests) instead of running them in parallel. Groups are scoped per trigger
-  intent so a quick conversational reply is never queued behind a long review.
-- **`src/rate-limit`** counts docker-agent review/reply outputs on the PR within
-  a sliding window (default 600 s) and, when the count crosses a threshold
-  (default 8), flags a rate anomaly. It counts one unit per LLM run: full reviews
-  via the Reviews API (`pulls.listReviews`, by bot author, covering findings,
-  zero-finding APPROVEs, and timeout/error/LGTM fallbacks, none of which carry an
-  inline marker) plus marker-bearing reply comments. The review job skips the
-  expensive review on a flagged anomaly; the conversational reply jobs are not
-  gated (they are org-gated and per-PR serialized), though their replies still
-  count toward the window. The check **fails open** so an API error never blocks a
-  legitimate review.
-- The existing in-action **cache lock** (`pr-review-lock-<repo>-<pr>-*`, 600 s
-  TTL) prevents concurrent reviews from racing on the same PR.
-
 ## Security Modules
 
-All security logic lives under `src/security/` and is compiled into `dist/security.js` by
-[tsup](https://tsup.egoist.dev). All npm dependencies are bundled in — no `node_modules` is
-required at action runtime.
+All security logic lives under `src/security/` as a library imported by the action entrypoint
+(`src/main/index.ts`) and bundled into `dist/main.js` by [tsup](https://tsup.egoist.dev).
+All npm dependencies are bundled in — no `node_modules` is required at action runtime.
 
 | Module | Purpose |
 |---|---|
 | `src/security/patterns.ts` | Single source of truth for all detection patterns |
-| `src/security/check-auth.ts` | `author_association`-based role check (tier 4 fallback) |
 | `src/security/sanitize-input.ts` | 3-tier prompt sanitization logic |
 | `src/security/sanitize-output.ts` | Output scanning for real secret leaks |
 | `src/security/validators.ts` | Structural validators (GitHub CRC32 checksum) |
-| `src/security/index.ts` | CLI dispatcher (`dist/security.js`) |
-| `src/main/auth.ts` | Full 4-tier authorization waterfall |
-
-### CLI Dispatcher (`dist/security.js`)
-
-The bundled CLI exposes three subcommands invoked from the action runtime:
-
-```bash
-# Tier-4 author_association check
-node dist/security.js check-auth <association> <allowed-roles-json>
-# Example:
-node dist/security.js check-auth OWNER '["OWNER","MEMBER","COLLABORATOR"]'
-# Outputs: authorized=true/false (GitHub Actions output); exits 1 if denied
-
-# Prompt sanitization
-node dist/security.js sanitize-input <inputPath> <outputPath>
-# Outputs: blocked, stripped, risk-level (low/medium/high); exits 1 if blocked
-
-# Output scanning
-node dist/security.js sanitize-output <filePath>
-# Outputs: leaked=true/false; exits 1 if a real secret is detected
-```
-
-### Authorization Tiers (`src/main/auth.ts`)
-
-Authorization for comment-triggered events uses a 4-tier waterfall. Tiers are evaluated in
-order and short-circuit on the first decision:
-
-| Tier | Condition | Outcome |
-|------|-----------|---------|
-| 0 | `skip-auth: true` | Pass-through — caller already verified |
-| 1 | Not a comment event (no `comment.user.login` in payload) | Pass-through — PR/scheduled/dispatch triggers are safe |
-| 2 | `github-token` resolves to the same login as the comment author | Authorized — trusted-bot bypass (handles machine-user PAT bots whose `type` is `"User"`, not `"Bot"`) |
-| 3 | `org-membership-token` + `auth-org` set; user is an org member | Authorized via `GET /orgs/{org}/members/{user}` |
-| 4 | `author_association` ∈ `{OWNER, MEMBER, COLLABORATOR}` | Authorized — legacy fallback; unreliable for `pull_request_review_comment` events |
-
-> **Recommended configuration:** Supply `org-membership-token` (a PAT with `read:org`) and
-> `auth-org` to use tier 3. This is more reliable than `author_association` and works for
-> all GitHub event types.
 
 ### Secret Patterns (`src/security/patterns.ts`)
 
@@ -201,13 +109,13 @@ happen to match the regex shape.
 (sk-ant-|sk-proj-|sk-|ghp_|gho_|ghu_|ghs_|github_pat_|ANTHROPIC_API_KEY|GITHUB_TOKEN|OPENAI_API_KEY)
 ```
 
-Used by the action for lightweight, prefix-based pre-screening of prompts.
+Available for lightweight, prefix-based pre-screening of prompts.
 
 #### `CRITICAL_PATTERNS` — Direct exfiltration commands (block execution)
 
 These are programmatic commands that directly extract secrets from the agent's environment.
-They are **never legitimate** in a user prompt. Any match causes `sanitize-input` to exit 1
-and block the run:
+They are **never legitimate** in a user prompt. Any match causes `sanitize-input` to block
+the run:
 
 ```
 # Shell
@@ -260,22 +168,24 @@ legitimate configuration code; warns but does not strip or block.
 `sanitizeInput(inputPath, outputPath)` applies a three-tier strategy:
 
 1. **Strip diff comment lines** — removes `+//`, `+/*`, and `+#` lines (common
-   injection vector for hiding instructions in code comments).
-2. **CRITICAL patterns** — block execution entirely (exits 1, output file never written).
-3. **SUSPICIOUS patterns** — strip matching lines, warn, continue (exits 0).
-4. **MEDIUM-RISK patterns** — warn only, no strip (exits 0).
+   injection vector for hiding instructions in code comments when a diff is
+   embedded in the prompt).
+2. **CRITICAL patterns** — block execution entirely (the sanitized file is never written).
+3. **SUSPICIOUS patterns** — strip matching lines, warn, continue.
+4. **MEDIUM-RISK patterns** — warn only, no strip.
 
-**Outputs (GitHub Actions):**
+The agent always reads the sanitized file (`/tmp/prompt-clean.txt`), never the raw prompt.
+Results surface as action outputs:
 
-| Output | Values | Meaning |
+| Action output | Values | Meaning |
 |--------|--------|---------|
-| `blocked` | `true` / `false` | `true` only for CRITICAL patterns |
-| `stripped` | `true` / `false` | `true` when suspicious content was removed |
-| `risk-level` | `low` / `medium` / `high` | Highest tier triggered |
+| `security-blocked` | `true` / `false` | `true` when a CRITICAL pattern blocked the run (or a leak was detected in output) |
+| `prompt-suspicious` | `true` / `false` | `true` when suspicious content was stripped |
+| `input-risk-level` | `low` / `medium` / `high` | Highest tier triggered |
 
 ### Output Scanning (`src/security/sanitize-output.ts`)
 
-`sanitizeOutput(filePath)` scans an AI response against `SECRET_PATTERNS` with three
+`sanitizeOutput(filePath)` scans the agent's response against `SECRET_PATTERNS` with three
 false-positive heuristics:
 
 1. **Regex metacharacter check** — if the matched text contains `[`, `]`, `{`, `}`, `(`,
@@ -290,25 +200,19 @@ false-positive heuristics:
 The function also warns (without blocking) when `MEDIUM_RISK_PATTERNS` variable names
 appear in the output.
 
-**Outputs (GitHub Actions):**
-
-| Output | Values | Meaning |
-|--------|--------|---------|
-| `leaked` | `true` / `false` | `true` if any real secret was detected |
+The scan runs in the `finally` path of `src/main/index.ts`, so it executes on every
+outcome — success, agent failure, or unexpected error. A detected leak sets the
+`secrets-detected` output to `true`, triggers the incident response, and fails the run.
 
 ## Security Testing
 
-Security logic is covered by a [Vitest](https://vitest.dev/) unit test suite at
-`src/security/__tests__/security.test.ts`. Run it with:
+Security logic is covered by [Vitest](https://vitest.dev/) unit test suites at
+`src/security/__tests__/security.test.ts` and `src/security/__tests__/validators.test.ts`.
+Run them with:
 
 ```bash
 pnpm test
 ```
-
-The test suite covers all 21 cases previously in `tests/test-security.sh` and all 6 cases from
-`tests/test-exploits.sh`, plus regression tests for security bugs fixed in the TypeScript port
-(e.g. the quoted-line false-positive bypass). Test descriptions match the original bash test
-names verbatim for easy cross-referencing.
 
 **Coverage includes:**
 
@@ -319,11 +223,11 @@ names verbatim for easy cross-referencing.
 - Leaked GitHub token quoted in code (should NOT flag — false-positive heuristic)
 - Leaked GitHub token: bare token flagged even when quoted copy is also present
 - Regex pattern in output (should NOT flag — metacharacter heuristic)
-- Authorization: OWNER/MEMBER/COLLABORATOR pass; CONTRIBUTOR is blocked
 - Low/medium/high risk classification
-- Critical exfiltration commands block (exit 1), output file never written
+- Critical exfiltration commands block the run, sanitized file never written
 - Suspicious content physically stripped, clean lines preserved
 - False-positive bypass attempts (decorated payloads with `[]`, `()`, `{}`)
+- CRC32 checksum validation of GitHub token shapes
 
 ## Security in Practice
 
@@ -356,18 +260,16 @@ All executions automatically include:
 - Incident issue creation if secrets are detected
 - Workflow failure on security violations
 
-### Org Membership Authorization (Recommended)
+### Controlling Who Can Trigger Your Workflow
 
-```yaml
-- name: Run Agent (with org-membership auth)
-  uses: docker/docker-agent-action@VERSION
-  with:
-    agent: my-agent
-    prompt: "Review this PR"
-    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-    org-membership-token: ${{ secrets.ORG_MEMBERSHIP_TOKEN }}
-    auth-org: my-github-org
-```
+The action does not authorize callers. Lock down the workflow instead:
+
+- Use narrow triggers (`pull_request` with explicit `types`, `workflow_dispatch`) and avoid
+  `pull_request_target` unless you fully understand its risks.
+- Rely on GitHub's built-in gates: secrets are not exposed to `pull_request` runs from forks,
+  and first-time contributors require manual workflow approval.
+- Add `if:` conditions on the actor (e.g. `github.actor`, team membership checked in a prior
+  step) when the trigger surface is broader than trusted contributors.
 
 ## Security Outputs
 
@@ -415,8 +317,7 @@ Before merging changes to the security module:
 - [ ] Type-check and lint pass (`pnpm lint`)
 - [ ] New patterns added only to `src/security/patterns.ts`
 - [ ] No hardcoded secrets in code
-- [ ] Authorization tiers cannot be bypassed or short-circuited
-- [ ] Output scanning runs on all execution paths (never removed from `if: always()` steps)
+- [ ] Output scanning still runs on all execution paths (the `finally` block of `src/main/index.ts`)
 - [ ] Critical-pattern detection does not apply `isFalsePositive()` (would create bypass vector)
 
 ## Reporting Security Issues
@@ -424,7 +325,7 @@ Before merging changes to the security module:
 If you discover a security vulnerability, please:
 
 1. **Do NOT** open a public issue
-2. Email security concerns to the maintainers
+2. Report it privately per Docker's [security policy](.github/SECURITY.md) ([security@docker.com](mailto:security@docker.com))
 3. Provide detailed information about the vulnerability
 4. Allow time for a fix before public disclosure
 

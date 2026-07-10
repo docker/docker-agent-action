@@ -4,41 +4,22 @@ import { defineConfig } from 'tsup';
 
 // Read the docker-agent version at build time so it can be embedded as a
 // compile-time constant.  This means the bundle never needs to locate the
-// DOCKER_AGENT_VERSION file on disk at action runtime — which would fail when
-// ACTION_PATH points at a sub-directory (e.g. review-pr/) rather than the
-// action root.
+// DOCKER_AGENT_VERSION file on disk at action runtime.
 const dockerAgentVersion = readFileSync(
   resolve(import.meta.dirname, 'DOCKER_AGENT_VERSION'),
   'utf-8',
 ).trim();
 
-// Explicit entry list: only modules that back an actual action.yml entrypoint.
-// Pure library sub-modules (add-reaction, get-pr-meta, post-comment) are imported
-// by mention-reply but have no standalone action, so they don't get their own
-// top-level dist bundle. check-org-membership is both a library and a standalone
-// node24 action, so it IS in the entry map.
+// Explicit entry list: only modules that back an actual entrypoint.
+// main is the root action.yml entrypoint; signed-commit is used by release CI.
 const src = (name: string) => {
   const p = resolve(import.meta.dirname, 'src', name, 'index.ts');
   if (!existsSync(p)) throw new Error(`tsup entry not found: ${p}`);
   return p;
 };
 const entry = {
-  'auto-filter-diff': src('auto-filter-diff'),
-  'check-org-membership': src('check-org-membership'),
-  credentials: src('credentials'),
-  'dedupe-findings': src('dedupe-findings'),
-  'filter-diff': src('filter-diff'),
-  'incremental-review': src('incremental-review'),
   main: src('main'),
-  'mention-reply': src('mention-reply'),
-  'migrate-consumer-refs': src('migrate-consumer-refs'),
-  'post-mention-reply': src('post-mention-reply'),
-  'rate-limit': src('rate-limit'),
-  'score-confidence': src('score-confidence'),
-  'score-risk': src('score-risk'),
-  security: src('security'),
   'signed-commit': src('signed-commit'),
-  'validate-suggestions': src('validate-suggestions'),
 };
 
 export default defineConfig({
@@ -50,12 +31,12 @@ export default defineConfig({
   },
   format: ['esm'],
   // Target Node.js explicitly so esbuild resolves the "node" export condition
-  // in AWS SDK packages instead of the browser variant (which pulls in
-  // DOMParser / document and breaks at runtime in a GitHub Action).
+  // in dependencies instead of any browser variant (which can pull in
+  // DOMParser / document and break at runtime in a GitHub Action).
   platform: 'node',
   target: 'node24',
   outDir: 'dist',
-  // Keep .js extension so the action can `node dist/credentials.js` directly.
+  // Keep .js extension so the action can `node dist/main.js` directly.
   // Without this tsup would emit .mjs for ESM format.
   outExtension: () => ({ js: '.js' }),
   // Sourcemaps disabled: this action is consumed via `uses: docker/docker-agent-action@v1`,
@@ -66,9 +47,9 @@ export default defineConfig({
   // Disable code splitting so each entry is fully self-contained.
   splitting: false,
   // tsup's externalizeDepsPlugin marks all node_modules as external by default.
-  // The action runs `node dist/credentials.js` with no node_modules present at
-  // runtime, so every npm dependency (AWS SDK, @actions/core, @octokit/…) must
-  // be bundled in. Node.js built-ins stay external automatically (platform:'node').
+  // The action runs `node dist/main.js` with no node_modules present at
+  // runtime, so every npm dependency (@actions/core, @octokit/…) must be
+  // bundled in. Node.js built-ins stay external automatically (platform:'node').
   noExternal: [/.*/],
   // CJS packages bundled into ESM (e.g. tunnel@0.0.6 via @actions/http-client)
   // call require('net') / require('tls') at runtime. esbuild's __require shim

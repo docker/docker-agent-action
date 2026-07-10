@@ -8,8 +8,7 @@
       "!dist",
       "!**/dist",
       "!coverage",
-      "!pnpm-lock.yaml",
-      "!review-pr/agents/evals/results"
+      "!pnpm-lock.yaml"
     ]
   },
   "formatter": {

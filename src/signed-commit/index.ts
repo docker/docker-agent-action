@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   /**
    * Guard against absolute paths being used as git file paths.
    * The GitHub createCommitOnBranch GraphQL API requires paths relative to the
-   * repository root (e.g. `dist/credentials.js`, not `/home/runner/.../dist/credentials.js`).
+   * repository root (e.g. `dist/main.js`, not `/home/runner/.../dist/main.js`).
    * Absolute paths cause a cryptic GitHub API error:
    *   "A path was requested for deletion which does not exist as of commit oid …"
    * Catch this early so callers get a useful message instead.
