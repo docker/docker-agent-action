@@ -28,7 +28,7 @@ Open a pull request and the review appears as a comment a few minutes later.
 
 1. **Stage the diff** — the workflow checks out the repo and runs `gh pr diff "$PR_NUMBER" > /tmp/pr.diff`, so the agent gets a stable file to read instead of calling the GitHub API itself.
 2. **Review** — `docker/docker-agent-action` runs `agent.yaml`; the instruction tells the agent to read `/tmp/pr.diff`, only judge added (`+`) lines, and emit nothing but the review markdown.
-3. **Post** — the workflow takes the action's `output-file` output (the cleaned agent response) and posts it with `gh pr comment --body-file`.
+3. **Post** — the workflow takes the action's `output-file` output (the cleaned agent response) and posts it with `gh pr comment --body-file`. Thanks to `--edit-last --create-if-none`, the first run creates the comment and later runs update the token identity's latest PR comment instead of stacking new ones.
 
 ## Customizing
 

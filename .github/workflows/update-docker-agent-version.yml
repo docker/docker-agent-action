@@ -105,9 +105,14 @@ jobs:
         env:
           # optional PAT so created PRs trigger CI; falls back to github.token
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
           CURRENT: ${{ steps.check.outputs.current }}
         run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::warning::RELEASE_TOKEN secret is not set; falling back to github.token, so pull_request CI will not run on the created or updated PR."
+          fi
+
           BRANCH="auto/update-docker-agent-version"
           RELEASE_URL="https://github.com/docker/docker-agent/releases/tag/$VERSION"
 
