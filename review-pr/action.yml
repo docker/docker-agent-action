@@ -183,8 +183,9 @@ runs:
             NOW=$(date +%s)
             AGE=$(( NOW - LOCK_TIME ))
             # TTL is a fallback for lock holders that crashed before releasing.
-            # It must exceed the agent timeout (2700 s) plus setup/posting
-            # overhead so an in-flight review is never treated as stale.
+            # It must exceed the review agent's 2700 s total budget (total-timeout
+            # across all attempts) plus setup/posting overhead so an in-flight
+            # review is never treated as stale.
             if [ "$AGE" -lt 3600 ]; then
               echo "⏭️ Review already in progress (started ${AGE}s ago) — skipping"
               echo "skip=true" >> $GITHUB_OUTPUT
@@ -712,7 +713,8 @@ runs:
           3. If they're agreeing and adding context, store the additional insight
 
           Use add_memory to record what you learned from each feedback item.
-        timeout: "180"  # 3 min — haiku call; prevents hang from eating the 35-min job budget
+        timeout: "180"  # 3 min per attempt — haiku call
+        total-timeout: "300"  # 5 min hard cap across attempts so feedback processing can't eat the review budget
         anthropic-api-key: ${{ inputs.anthropic-api-key }}
         openai-api-key: ${{ inputs.openai-api-key }}
         google-api-key: ${{ inputs.google-api-key }}
@@ -885,7 +887,15 @@ runs:
       with:
         agent: ${{ env.ACTION_PATH }}/agents/pr-review.yaml
         prompt: ${{ steps.context.outputs.review_prompt }}
-        timeout: "2700"  # 45 min — allows complex reviews to complete; must stay below the 3600 s lock TTL so an in-flight review is never treated as stale
+        # Budget: total-timeout (2700 s) is the hard wall-clock cap for this step,
+        # attempts and retry delays included, so it always fits the caller's job
+        # timeout with room for the cleanup steps below (lock release, summary,
+        # reactions) and stays below the 3600 s lock TTL, so an in-flight review
+        # is never treated as stale. No retry-on-timeout: a second 45-min pass can
+        # never fit the same budget, so a timed-out review is surfaced to the PR
+        # for a manual re-request instead of silently burning a doomed retry.
+        timeout: "2700"  # 45 min per attempt — allows complex reviews to complete
+        total-timeout: "2700"
         anthropic-api-key: ${{ inputs.anthropic-api-key }}
         openai-api-key: ${{ inputs.openai-api-key }}
         google-api-key: ${{ inputs.google-api-key }}
@@ -896,8 +906,8 @@ runs:
         github-token: ${{ steps.resolve-token.outputs.token }}
         extra-args: ${{ inputs.model && format('--model={0}', inputs.model) || '' }}
         add-prompt-files: ${{ inputs.add-prompt-files }}
-        max-retries: "1"  # One retry handles transient API failures (e.g. Anthropic 400s) without risking duplicate reviews from full pipeline restarts
-        retry-on-timeout: "1"  # Retry once on timeout — agent may succeed on a second pass after a transient infra hiccup
+        max-retries: "1"  # One retry handles transient API failures (e.g. Anthropic 400s); total-timeout caps the sum of both attempts
+        no-retry-pattern: "pullrequestreview-[0-9]+"  # Never restart the pipeline once a review was posted — a retry would post a duplicate
         skip-summary: "true"
         org-membership-token: ${{ inputs.org-membership-token }}
         auth-org: ${{ inputs.auth-org }}

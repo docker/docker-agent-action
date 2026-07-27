@@ -11,8 +11,13 @@
  *   - Keys are registered with core.setSecret() BEFORE any exec call
  *   - Prompt is passed via stdin (from sanitized file or raw string)
  *   - stdout + stderr go to verbose log file (keeps runner console clean)
- *   - Exit code 124 = timeout (no retry)
+ *   - Exit code 124 = timeout (retried only within the retry-on-timeout budget)
  *   - Retry loop with exponential backoff
+ *   - Optional total-timeout budget spanning all attempts: the last attempt is
+ *     capped to the remaining budget and a retry needs >= 60 s left to start,
+ *     so the loop always ends before a job-level timeout-minutes kill
+ *   - Optional no-retry-pattern: retries are skipped once the verbose log
+ *     proves a side effect already happened (e.g. a PR review was posted)
  *   - On retry: truncate clean output file, append separator to verbose log
  *   - SIGTERM on timeout, exit code reported as 124
  */
@@ -23,6 +28,9 @@ import * as os from 'node:os';
 import * as core from '@actions/core';
 
 export const TIMEOUT_EXIT_CODE = 124;
+
+/** Minimum remaining total-timeout budget (seconds) for a retry to be worth starting. */
+export const MIN_RETRY_BUDGET_SECONDS = 60;
 
 export interface RunAgentOptions {
   /** Absolute path to the docker-agent binary. */
@@ -49,6 +57,10 @@ export interface RunAgentOptions {
   retryDelay: number;
   /** Number of additional retry attempts allowed when the agent times out (exit 124). */
   retryOnTimeout: number;
+  /** Total wall-clock budget in seconds across all attempts, retries and delays (0 = unlimited). */
+  totalTimeout: number;
+  /** Regex source tested against the verbose log after a failed attempt; on match, retries are skipped. */
+  noRetryPattern: string;
   /** Whether debug mode is enabled. */
   debug: boolean;
 
@@ -129,6 +141,18 @@ export function buildArgs(opts: {
  */
 function sleep(seconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+}
+
+/**
+ * Test the verbose log against the no-retry pattern. Fails open on read errors:
+ * an unreadable log cannot prove a side effect happened, so retrying stays allowed.
+ */
+function verboseLogMatches(logFile: string, pattern: RegExp): boolean {
+  try {
+    return pattern.test(fs.readFileSync(logFile, 'utf-8'));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -277,6 +301,19 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
   }
 
   const startTime = Date.now();
+
+  let noRetryRegex: RegExp | null = null;
+  if (opts.noRetryPattern) {
+    try {
+      noRetryRegex = new RegExp(opts.noRetryPattern);
+    } catch {
+      core.warning(`Invalid no-retry-pattern /${opts.noRetryPattern}/ - ignoring it`);
+    }
+  }
+
+  const deadline =
+    opts.totalTimeout > 0 ? startTime + opts.totalTimeout * 1000 : Number.POSITIVE_INFINITY;
+
   let exitCode = 1;
   let totalAttempt = 0;
   // Track the two retry budgets independently so mixed-failure sequences
@@ -307,6 +344,15 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       fs.appendFileSync(opts.verboseLogFile, separator, 'utf-8');
     }
 
+    // Cap the attempt to whatever remains of the total budget so the loop can
+    // never outlive it (a runner-enforced kill keeps job-level cleanup alive).
+    // Clamped to >= 1 s: a zero/negative value would disable spawnAgent's timer.
+    let attemptTimeout = opts.timeout;
+    if (deadline !== Number.POSITIVE_INFINITY) {
+      const remaining = Math.max((deadline - Date.now()) / 1000, 1);
+      attemptTimeout = opts.timeout > 0 ? Math.min(opts.timeout, remaining) : remaining;
+    }
+
     // Open verbose log fd for appending
     const verboseLogFd = fs.openSync(opts.verboseLogFile, 'a');
 
@@ -317,7 +363,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
         env,
         stdinData,
         verboseLogFd,
-        timeoutSeconds: opts.timeout,
+        timeoutSeconds: attemptTimeout,
       });
     } finally {
       fs.closeSync(verboseLogFd);
@@ -328,20 +374,39 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     }
 
     if (exitCode === TIMEOUT_EXIT_CODE) {
-      core.error(`Agent execution timed out after ${opts.timeout} seconds`);
+      core.error(`Agent execution timed out after ${Math.round(attemptTimeout)} seconds`);
       if (timeoutRetryCount >= opts.retryOnTimeout) {
         break; // Timeout retry budget exhausted
       }
+    } else if (failureRetryCount >= opts.maxRetries) {
+      core.warning(`Agent failed after ${opts.maxRetries} retries (exit code: ${exitCode})`);
+      break;
+    }
+
+    // A retry is available. Cross-cutting guards run before a retry budget is
+    // consumed so a skipped retry never counts against either budget.
+    if (noRetryRegex && verboseLogMatches(opts.verboseLogFile, noRetryRegex)) {
+      core.warning(
+        'Skipping retry: verbose log matches no-retry-pattern (a side effect of the failed attempt may already be committed)',
+      );
+      break;
+    }
+    if (deadline !== Number.POSITIVE_INFINITY) {
+      const remainingAfterDelay = (deadline - Date.now()) / 1000 - currentDelay;
+      if (remainingAfterDelay < MIN_RETRY_BUDGET_SECONDS) {
+        core.warning(
+          `Skipping retry: less than ${MIN_RETRY_BUDGET_SECONDS}s of the ${opts.totalTimeout}s total-timeout budget remains`,
+        );
+        break;
+      }
+    }
+
+    if (exitCode === TIMEOUT_EXIT_CODE) {
       timeoutRetryCount++;
       core.warning(
         `Timeout — will retry (${timeoutRetryCount}/${opts.retryOnTimeout} timeout retries used)`,
       );
-      // fall through to retry
     } else {
-      if (failureRetryCount >= opts.maxRetries) {
-        core.warning(`Agent failed after ${opts.maxRetries} retries (exit code: ${exitCode})`);
-        break;
-      }
       failureRetryCount++;
       core.warning(`Agent failed (exit code: ${exitCode}), will retry...`);
     }
