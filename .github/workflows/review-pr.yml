@@ -235,7 +235,13 @@ jobs:
          (needs.resolve-context.outputs.requested-reviewer == 'docker-agent' || needs.resolve-context.outputs.requested-reviewer == ''))
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    # Budget: review agent hard-capped at 2700 s total + feedback processing at
+    # 300 s (both runner-enforced via total-timeout in review-pr/action.yml),
+    # leaving ~10 min for preamble and cleanup. The agent can never outlive its
+    # own budget, so this ceiling is a safety net that should never fire — which
+    # keeps the composite's always() steps (lock release, summary, reactions)
+    # running on every path.
+    timeout-minutes: 60
     permissions:
       contents: read
       pull-requests: write

@@ -114,6 +114,8 @@ To report a vulnerability, see our [Security Policy](SECURITY.md).
 | `yolo`                     | Auto-approve all prompts (`true`/`false`)                                            | No       | `true`         |
 | `max-retries`              | Maximum number of retries on failure (0 = no retries)                                | No       | `2`            |
 | `retry-delay`              | Base delay in seconds between retries (doubles each attempt)                         | No       | `5`            |
+| `total-timeout`            | Total wall-clock budget in seconds across all attempts and retry delays (0 = unlimited) | No       | `0`            |
+| `no-retry-pattern`         | Regex tested against the agent log after a failed attempt; on match, retries are skipped | No       | -              |
 | `extra-args`               | Additional arguments to pass to `docker agent run`                                   | No       | -              |
 | `add-prompt-files`         | Comma-separated list of files to append to the prompt (e.g., `AGENTS.md,CLAUDE.md`)  | No       | -              |
 | `skip-summary`             | Skip writing agent output to the job summary (useful when callers write their own)  | No       | `false`        |
