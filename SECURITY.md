@@ -117,8 +117,9 @@ bound request frequency:
   gated (they are org-gated and per-PR serialized), though their replies still
   count toward the window. The check **fails open** so an API error never blocks a
   legitimate review.
-- The existing in-action **cache lock** (`pr-review-lock-<repo>-<pr>-*`, 600 s
-  TTL) prevents concurrent reviews from racing on the same PR.
+- The existing in-action **cache lock** (`pr-review-lock-<repo>-<pr>-*`, released
+  on completion via a cache marker, 3600 s TTL fallback for crashed runs)
+  prevents concurrent reviews from racing on the same PR.
 
 ## Security Modules
 
