@@ -39,10 +39,10 @@ let verboseLogFile: string;
 /** Create a mock child process that closes with the given exit code. */
 function makeMockChild(exitCode: number, delayMs = 0) {
   const emitter = new EventEmitter() as EventEmitter & {
-    stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+    stdin: EventEmitter & { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
     kill: ReturnType<typeof vi.fn>;
   };
-  emitter.stdin = { write: vi.fn(), end: vi.fn() };
+  emitter.stdin = Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn() });
 
   // When killed (SIGTERM/SIGKILL), emit close shortly after — simulates real process dying.
   emitter.kill = vi.fn().mockImplementation(() => {
@@ -53,6 +53,23 @@ function makeMockChild(exitCode: number, delayMs = 0) {
   setTimeout(() => emitter.emit('close', exitCode), delayMs);
 
   return emitter;
+}
+
+/** Mock child whose stdin write triggers an async EPIPE — agent died before reading the prompt. */
+function makeEpipeChild(exitCode: number) {
+  return makeStdinErrorChild(exitCode, 'EPIPE', 'write EPIPE');
+}
+
+/** Mock child whose stdin write triggers an async error with the given code. */
+function makeStdinErrorChild(exitCode: number, code: string, message: string) {
+  const child = makeMockChild(exitCode, 20);
+  child.stdin.write.mockImplementation(() => {
+    const err: NodeJS.ErrnoException = new Error(message);
+    err.code = code;
+    setImmediate(() => child.stdin.emit('error', err));
+    return false;
+  });
+  return child;
 }
 
 /** Minimal valid RunAgentOptions. */
@@ -350,10 +367,10 @@ describe('runAgent', () => {
 
   it('resolves with exit code 1 when spawn emits error', async () => {
     const emitter = new EventEmitter() as EventEmitter & {
-      stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+      stdin: EventEmitter & { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
       kill: ReturnType<typeof vi.fn>;
     };
-    emitter.stdin = { write: vi.fn(), end: vi.fn() };
+    emitter.stdin = Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn() });
     emitter.kill = vi.fn();
 
     mockSpawn.mockReturnValue(emitter);
@@ -361,6 +378,48 @@ describe('runAgent', () => {
 
     const result = await runAgent(baseOpts({ maxRetries: 0 }));
     expect(result.exitCode).toBe(1);
+  });
+
+  it('survives stdin EPIPE when agent dies before reading the prompt', async () => {
+    mockSpawn.mockReturnValue(makeEpipeChild(1));
+
+    const result = await runAgent(baseOpts({ maxRetries: 0 }));
+
+    expect(result.exitCode).toBe(1);
+  });
+
+  it('keeps retrying after a stdin EPIPE failure', async () => {
+    mockSpawn
+      .mockImplementationOnce(() => makeEpipeChild(1))
+      .mockImplementation(() => makeMockChild(0));
+
+    const result = await runAgent(baseOpts({ maxRetries: 1, retryDelay: 0 }));
+
+    expect(result.exitCode).toBe(0);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs stdin EPIPE at debug level, not as a warning', async () => {
+    const { debug, warning } = await import('@actions/core');
+    mockSpawn.mockReturnValue(makeEpipeChild(1));
+
+    await runAgent(baseOpts({ maxRetries: 0 }));
+
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('stdin write failed'));
+    expect(warning).not.toHaveBeenCalledWith(expect.stringContaining('stdin'));
+  });
+
+  it('surfaces non-EPIPE stdin errors as warnings without crashing', async () => {
+    const { debug, warning } = await import('@actions/core');
+    mockSpawn.mockReturnValue(makeStdinErrorChild(1, 'EBADF', 'write EBADF'));
+
+    const result = await runAgent(baseOpts({ maxRetries: 0 }));
+
+    expect(result.exitCode).toBe(1);
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('stdin unexpected error: write EBADF'),
+    );
+    expect(debug).not.toHaveBeenCalledWith(expect.stringContaining('stdin write failed'));
   });
 
   it('injects all API keys into env (never args)', async () => {
