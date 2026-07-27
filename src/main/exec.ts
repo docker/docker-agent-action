@@ -177,10 +177,17 @@ function spawnAgent(opts: {
 
     // Feed stdin. Without an 'error' listener, an EPIPE from the agent dying
     // before draining the pipe would crash the whole process; the 'close'
-    // event still reports the real exit code.
+    // event still reports the real exit code. EPIPE is expected (agent may
+    // exit before reading the prompt) and logged at debug level; any other
+    // stdin error is surfaced as a warning to keep novel OS-level failures
+    // observable.
     if (child.stdin) {
-      child.stdin.on('error', (err: Error) => {
-        core.debug(`docker-agent stdin write failed: ${err.message}`);
+      child.stdin.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EPIPE') {
+          core.debug(`docker-agent stdin write failed: ${err.message}`);
+        } else {
+          core.warning(`docker-agent stdin unexpected error: ${err.message}`);
+        }
       });
       child.stdin.write(opts.stdinData);
       child.stdin.end();

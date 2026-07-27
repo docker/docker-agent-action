@@ -57,10 +57,15 @@ function makeMockChild(exitCode: number, delayMs = 0) {
 
 /** Mock child whose stdin write triggers an async EPIPE — agent died before reading the prompt. */
 function makeEpipeChild(exitCode: number) {
+  return makeStdinErrorChild(exitCode, 'EPIPE', 'write EPIPE');
+}
+
+/** Mock child whose stdin write triggers an async error with the given code. */
+function makeStdinErrorChild(exitCode: number, code: string, message: string) {
   const child = makeMockChild(exitCode, 20);
   child.stdin.write.mockImplementation(() => {
-    const err: NodeJS.ErrnoException = new Error('write EPIPE');
-    err.code = 'EPIPE';
+    const err: NodeJS.ErrnoException = new Error(message);
+    err.code = code;
     setImmediate(() => child.stdin.emit('error', err));
     return false;
   });
@@ -392,6 +397,29 @@ describe('runAgent', () => {
 
     expect(result.exitCode).toBe(0);
     expect(mockSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs stdin EPIPE at debug level, not as a warning', async () => {
+    const { debug, warning } = await import('@actions/core');
+    mockSpawn.mockReturnValue(makeEpipeChild(1));
+
+    await runAgent(baseOpts({ maxRetries: 0 }));
+
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('stdin write failed'));
+    expect(warning).not.toHaveBeenCalledWith(expect.stringContaining('stdin'));
+  });
+
+  it('surfaces non-EPIPE stdin errors as warnings without crashing', async () => {
+    const { debug, warning } = await import('@actions/core');
+    mockSpawn.mockReturnValue(makeStdinErrorChild(1, 'EBADF', 'write EBADF'));
+
+    const result = await runAgent(baseOpts({ maxRetries: 0 }));
+
+    expect(result.exitCode).toBe(1);
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('stdin unexpected error: write EBADF'),
+    );
+    expect(debug).not.toHaveBeenCalledWith(expect.stringContaining('stdin write failed'));
   });
 
   it('injects all API keys into env (never args)', async () => {
