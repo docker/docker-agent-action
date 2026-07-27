@@ -33,7 +33,7 @@ jobs:
       issues: write
       id-token: write
       checks: write
-      actions: read
+      actions: write # Cache cleanup for review-lock release and feedback artifact deletion
     with:
       pr-number: ${{ inputs.pr_number }}
     secrets:
