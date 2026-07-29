@@ -200,6 +200,7 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 | `update-consumers.yml`            | Pushes version updates to downstream consumer repos.                 |
 | `migrate-consumers.yml`           | Consumer migration to the new repo: opens PRs across consumer repos rewriting `docker/cagent-action` refs to `docker/docker-agent-action` (incremental, no deadline — old repo stays live; dry-run by default, `repos` allowlist for pilots). |
 | `manual-test-pirate-agent.yml`    | Manual smoke test with a toy agent.                                  |
+| `fix-reviewer-cache-permissions.yml` | Consumer remediation: opens PRs across consumer repos upgrading `actions: read` to `actions: write` on the job calling the review-pr reusable workflow (cache writes need `write`; rewrite logic in `src/fix-reviewer-cache-permission/`; dry-run by default, `repos` allowlist for pilots). |
 
 ## Common tasks (cheat sheet)
 

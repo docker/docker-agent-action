@@ -28,6 +28,7 @@ const entry = {
   credentials: src('credentials'),
   'dedupe-findings': src('dedupe-findings'),
   'filter-diff': src('filter-diff'),
+  'fix-reviewer-cache-permission': src('fix-reviewer-cache-permission'),
   'incremental-review': src('incremental-review'),
   main: src('main'),
   'mention-reply': src('mention-reply'),
