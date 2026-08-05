@@ -223,6 +223,24 @@ jobs:
 
 For comprehensive documentation on setting up AI-powered PR reviews, including features like automatic reviews, requesting a review from `docker-agent`, feedback learning, and customization options, see the **[PR Review documentation](review-pr/README.md)**.
 
+The job that calls the reusable workflow must grant exactly these permissions:
+
+```yaml
+jobs:
+  review:
+    uses: docker/docker-agent-action/.github/workflows/review-pr.yml@VERSION
+    permissions:
+      contents: read # Read repository files and PR diffs
+      pull-requests: write # Post review comments
+      issues: write # Create security incident issues if secrets detected
+      checks: write # Show review progress as a check run
+      id-token: write # Required for OIDC authentication to AWS Secrets Manager
+      actions: write # Required since v2.0.3 — review-lock cache cleanup and feedback artifacts
+```
+
+> [!IMPORTANT]
+> **`actions: write` is required since v2.0.3** (earlier releases needed only `actions: read`). A called workflow cannot elevate its caller's permissions, so a caller job granting only `actions: read` fails GitHub's workflow validation at startup — no job even runs. This applies only to callers of the reusable PR-review workflow shown above; workflows using the root `docker/docker-agent-action` action directly need only the [permissions listed earlier](#permissions). See the [PR Review documentation](review-pr/README.md#quick-start) for complete setup, including the two-workflow pattern for fork PRs.
+
 For external or fork contributor PRs, an org member approves the workflow run and then requests a review from `docker-agent` via GitHub's native review request UI (no special commands or workflow inputs required). See [External and fork contributor PRs](review-pr/README.md#external-and-fork-contributor-prs).
 
 ### Manual Trigger with Inputs

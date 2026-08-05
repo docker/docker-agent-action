@@ -24,6 +24,7 @@ const src = (name: string) => {
 };
 const entry = {
   'auto-filter-diff': src('auto-filter-diff'),
+  'caller-permissions': src('caller-permissions'),
   'check-org-membership': src('check-org-membership'),
   credentials: src('credentials'),
   'dedupe-findings': src('dedupe-findings'),

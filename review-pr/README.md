@@ -6,6 +6,9 @@ AI-powered pull request review using a multi-agent system. Analyzes code changes
 
 ## Quick Start
 
+> [!IMPORTANT]
+> The calling job must grant every permission shown in the examples below. Since **v2.0.3** that includes **`actions: write`** (earlier releases needed only `actions: read`). A called workflow cannot elevate its caller's permissions, so a caller still granting `actions: read` fails GitHub's workflow validation at startup — before any job runs. Update the `permissions:` block when upgrading.
+
 ### Same-repo PRs (1 workflow)
 
 If your repo only accepts PRs from branches within the same repo (no forks), you need a single workflow file:
