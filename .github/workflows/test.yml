@@ -71,6 +71,9 @@ jobs:
       - name: Run unit tests
         run: pnpm test
 
+      - name: Run release caller-permissions tests
+        run: ./tests/test-release-caller-permissions.sh
+
   integration-test:
     name: Integration Tests
     permissions:
