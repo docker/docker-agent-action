@@ -312,6 +312,54 @@ jobs:
           gh release edit "$VERSION" --repo docker/docker-agent-action --notes-file /tmp/release-notes-filtered.md
           echo "✅ Release notes filtered and updated."
 
+      - name: Flag caller-facing permission increases as breaking
+        if: ${{ !inputs.pre_release }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PREVIOUS: ${{ steps.version.outputs.previous }}
+          GH_TOKEN: ${{ env.GITHUB_APP_TOKEN }}
+        run: |
+          # A reusable-workflow caller cannot elevate permissions: when a release
+          # raises what review-pr.yml requests from its caller, existing callers
+          # fail GitHub's startup validation until their permissions: block is
+          # updated (issue #72 — v2.0.3 raised actions: read → write and broke
+          # callers granting actions: read). Compare against the previous stable
+          # release and prepend a breaking-change migration warning to the
+          # generated notes when the requirement increased; the helper prints
+          # nothing when it is unchanged or reduced. The workspace copy of
+          # review-pr.yml is authoritative here: the release-commit passes only
+          # rewrote `uses:` pins, never permissions.
+          if [ -z "$PREVIOUS" ]; then
+            echo "ℹ️ First release — no previous requirement to compare against."
+            exit 0
+          fi
+          PREV_FILE=/tmp/review-pr-previous.yml
+          if ! git show "${PREVIOUS}:.github/workflows/review-pr.yml" > "$PREV_FILE" 2>/dev/null; then
+            echo "ℹ️ ${PREVIOUS} has no .github/workflows/review-pr.yml — nothing to compare."
+            exit 0
+          fi
+          # The tag and GitHub release already exist here, so a helper failure
+          # must not strand the rest of the release pipeline: annotate and skip
+          # the safeguard instead. stdout carries only the warning markdown
+          # (stderr streams to the log), and on a non-zero exit any partial
+          # stdout is discarded so an error can never be prepended to the notes
+          # as markdown. The gh calls below stay fatal: once a valid breaking
+          # warning exists, dropping it would ship misleading release notes.
+          HELPER_STATUS=0
+          WARNING=$(node "$GITHUB_WORKSPACE/dist/caller-permissions.js" "$PREV_FILE" ".github/workflows/review-pr.yml") || HELPER_STATUS=$?
+          if [ "$HELPER_STATUS" -ne 0 ]; then
+            echo "::warning title=Caller-permissions safeguard skipped::dist/caller-permissions.js exited ${HELPER_STATUS} comparing review-pr.yml against ${PREVIOUS} (see step log for details). Diff the caller-facing permissions manually and prepend a breaking-change warning to the ${VERSION} release notes if any level increased."
+            exit 0
+          fi
+          if [ -z "$WARNING" ]; then
+            echo "✅ Caller permissions unchanged since ${PREVIOUS} — release notes left as generated."
+            exit 0
+          fi
+          NOTES=$(gh release view "$VERSION" --repo docker/docker-agent-action --json body --jq '.body')
+          { printf '%s\n\n' "$WARNING"; printf '%s' "$NOTES"; } > /tmp/release-notes-with-warning.md
+          gh release edit "$VERSION" --repo docker/docker-agent-action --notes-file /tmp/release-notes-with-warning.md
+          echo "⚠️ Prepended caller-permissions breaking-change warning to ${VERSION} release notes."
+
   publish-agent:
     name: Push review-pr agent to Docker Hub
     needs: release

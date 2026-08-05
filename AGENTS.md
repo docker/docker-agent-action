@@ -30,6 +30,10 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   ├── add-reaction/                # Adds emoji reactions to issue/PR comments.
 │   │   ├── index.ts                 # Entry → bundled to dist/add-reaction.js
 │   │   └── __tests__/
+│   ├── caller-permissions/          # Release safeguard: diffs the caller-facing permission requirement of review-pr.yml between releases (issue #72).
+│   │   ├── index.ts                 # CLI entry → bundled to dist/caller-permissions.js (used by release.yml to prepend a breaking-change warning to release notes).
+│   │   ├── caller-permissions.ts    # Permissions extractor + requirement diff (none < read < write) + warning renderer.
+│   │   └── __tests__/
 │   ├── check-org-membership/        # Authorizes a review: auto-run on PR-author membership, review_requested on the (trusted, timeline-derived) requester. Resolves PR author via pulls.get.
 │   │   ├── index.ts                 # Entry → bundled to dist/check-org-membership.js (standalone CLI + library).
 │   │   └── __tests__/
@@ -118,9 +122,10 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │       └── add-pr-reviewer-to-repo/
 │           └── SKILL.md             # Skill: set up or upgrade a repo to use the PR reviewer reusable workflow.
 │
-└── tests/                           # Shell-based integration tests for action.yml bash logic.
+└── tests/                           # Shell-based integration tests for action.yml / release.yml bash logic.
     ├── test-job-summary.sh
     ├── test-output-extraction.sh
+    ├── test-release-caller-permissions.sh  # Exercises the release.yml caller-permissions safeguard step (helper failure must be non-fatal).
     ├── out.diff                      # Fixture used by test-output-extraction.sh
     └── test.diff                    # Fixture used by test-output-extraction.sh
 ```
@@ -154,7 +159,7 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 
 - `pnpm test` — Vitest "unit" project (`src/**/__tests__/**/*.test.ts`).
 - `pnpm test:integration` — Vitest "integration" project (`*.integration.test.ts`).
-- `tests/*.sh` are integration tests for the **shell logic** inside `action.yml` (output extraction, job summary, etc.). Run them when changing the bash blocks of `action.yml`.
+- `tests/*.sh` are integration tests for **shell logic** embedded in YAML (output extraction and job summary in `action.yml`, the release-notes caller-permissions safeguard in `release.yml`). Run them when changing the corresponding bash blocks.
 - Security unit tests live in `src/security/__tests__/security.test.ts` (Vitest) and run as part of `pnpm test`. Run them when changing anything under `src/security/`.
 - The PR review agent has a separate eval suite under `review-pr/agents/evals/`. Run with `docker agent eval review-pr/agents/pr-review.yaml review-pr/agents/evals/`.
 
@@ -219,9 +224,10 @@ pnpm test
 # Integration tests (Vitest)
 pnpm test:integration
 
-# Shell-based integration tests for action.yml bash logic
+# Shell-based integration tests for shell logic embedded in YAML (action.yml, release.yml)
 bash tests/test-job-summary.sh
 bash tests/test-output-extraction.sh
+bash tests/test-release-caller-permissions.sh
 
 # Format + lint (write fixes)
 pnpm format
@@ -244,6 +250,7 @@ When you change something, verify:
 - [ ] Did you change anything under `src/security/`? Re-run `pnpm test` (covers `src/security/__tests__/security.test.ts`) and confirm the threat model above is still covered.
 - [ ] Did you bump a pinned `uses:` SHA? Update the trailing version comment too.
 - [ ] Did you change a `<!-- docker-agent-* -->` marker, an output name, or an env var name? Search the repo (and consumer documentation) for references first — these are public contracts.
+- [ ] Did you increase any caller-facing permission requested by `.github/workflows/review-pr.yml` (workflow-level or job-level `permissions:`)? That is a **breaking change** for existing callers of the reusable workflow — update the documented `permissions:` blocks in `README.md` and `review-pr/README.md`. The release workflow's caller-permissions safeguard adds the release-notes warning automatically.
 
 ## Things to avoid
 
