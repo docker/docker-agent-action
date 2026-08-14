@@ -147,7 +147,7 @@ agents:
          b. **Batch delegation**: Issue ALL `transfer_task` delegations in a single
             tool-call batch — the orchestrator batches all `transfer_task` calls in
             one tool-call response and then awaits each result in turn. Each delegation
-            is fully independent; findings arrays are merged in step d below.
+            is fully independent; responses are combined in step d below.
 
          **Console output mode** (GITHUB_ACTIONS empty/unset):
          a. Do NOT run `ls /tmp/drafter_chunk_*.diff` — there are no pre-staged files
@@ -159,8 +159,10 @@ agents:
          c. Delegate to the drafter once with the path `./pr-review.diff`.
 
          **Both modes**:
-         d. Merge all findings arrays into a single list before proceeding. Each finding
-            object uses fields `category`, `issue`, `details`, `in_diff` — not `title`/`body`.
+         d. Combine the delegation responses using the aggregation rule in step 5 —
+            merged `findings`, merged `review_complete`, diagnostic merged `summary`.
+            Each finding object uses fields `category`, `issue`, `details`, `in_diff`
+            — not `title`/`body`.
          e. Include any relevant learned patterns from memory in each delegation.
 
          ## CRITICAL: How to delegate to the drafter
@@ -187,19 +189,59 @@ agents:
          message.** Those fields do not exist in the drafter schema. If the task string
          asks for `title`/`body`, the schema validator rejects every emit attempt and the
          drafter enters an infinite file-read retry loop. Always use `issue` and `details`.
-      5. Parse the drafter's JSON response. If the response is empty, not valid JSON,
-         or an error message, treat it as
+      5. Parse each drafter delegation's JSON response separately (console mode has one
+         delegation; CI batched mode has one per chunk). If a response is empty, not
+         valid JSON, or an error message, treat it as
          `{"findings": [], "summary": "Drafter did not complete", "review_complete": false}`.
-         Check `review_complete`:
+         A `transfer_task` tool error counts as exactly this same case: if a drafter
+         delegation fails or returns a tool error instead of output, treat that
+         delegation's response as the fallback object above — do NOT retry the delegation
+         and NEVER approve on the basis of an errored delegation. Likewise, a response
+         that parses as JSON but is partial, refused, or otherwise malformed (missing
+         required fields, wrong types, or placeholder/refusal text instead of real
+         content) must not be salvaged: treat it as the same fallback object so it
+         follows the incomplete-review fallback below (`review_complete: false`).
+         **Aggregation rule (REQUIRED — how per-delegation results become ONE merged result):**
+         - Merged `findings` = the concatenation of every delegation's `findings` array.
+         - Merged `review_complete` = true ONLY IF every delegation returned valid JSON
+           with `review_complete: true`. If ANY delegation errored, was malformed,
+           refused, or partial (i.e. became the fallback object above), or returned
+           `review_complete: false`, the merged `review_complete` is false. This holds
+           even when the merged findings list is empty — zero findings from an
+           incomplete batch is NEVER grounds to approve.
+         - Merged `summary` = a diagnostic aggregate with one line per delegation,
+           labeled by its chunk (e.g. `chunk 3: <that delegation's summary>`), so a
+           crashed, refused, or truncated chunk stays visible in the posted review.
+         Every later step reads these merged values. Check the merged `review_complete`:
          - If `review_complete` is `true` AND zero findings → skip directly to step 8 (Decision Rules), then post a 🟢 APPROVE COMMENT review with an empty comments array. You MUST still post the review via `gh api` — do not exit without posting.
          - If `review_complete` is `false` AND zero findings → post a COMMENT review and do NOT approve.
-           Include the drafter's `summary` field in the comment body so the cause is visible:
-           if summary is "Drafter did not complete" the drafter crashed or returned a malformed
-           response; otherwise the drafter ran out of context before finishing.
+           Use the incomplete-review body from Decision Rules rule 4 — the
+           "### ⚠️ Review incomplete" heading, never an "### Assessment:" line.
+           Include the merged `summary` in the comment body so the cause is visible:
+           a "Drafter did not complete" line means that delegation crashed, refused, or
+           returned a malformed response; otherwise that drafter ran out of context
+           before finishing.
+         - If `review_complete` is `false` AND findings is non-empty → the review is
+           INCOMPLETE, and it stays INCOMPLETE no matter what later steps find.
+           Continue with the "Otherwise" flow below to verify and surface the findings
+           from the chunks that DID complete, but carry the incompleteness through
+           steps 8–9: the posted review MUST use the incomplete-review body from
+           Decision Rules rule 4 (the "### ⚠️ Review incomplete" heading plus the
+           diagnostic merged `summary`) and MUST NOT carry a "🟢 APPROVE" label or any
+           approve wording. Verified findings — however high their confidence — never
+           overwrite incompleteness.
          - Otherwise, collect all findings with severity "high" or "medium" — reference
            each finding's one-line summary via the `issue` field and its explanation via
            the `details` field (not `title`/`body`) — and delegate them to the `verifier`
            in a single batch. Skip verification for "low" findings.
+           **Assign a `finding_id` before delegating**: number the delegated findings with
+           sequential integers 1..N in the exact order they appear in the delegation
+           message (first finding = 1) — deterministic, unique within the batch, assigned
+           by YOU and never by a sub-agent. State each finding's `finding_id` alongside
+           its `file`, `line`, `issue`, and `details`; the verifier must echo it in the
+           matching verdict (its schema requires it), and step 6 pairs verdicts back by
+           this ID. Two findings may legitimately share the same `file` + `line` — the
+           `finding_id` is what keeps their verdicts unambiguous.
          Include the project context (from step 2) in the verifier delegation so it can validate
          findings against project-specific conventions (e.g., language version, available APIs).
          **The verifier has no file access — you must provide all code context inline.**
@@ -209,12 +251,29 @@ agents:
          Do NOT include any diff file path (CI `/tmp/drafter_chunk_*.diff` or console
          `./pr-review.diff`) in the verifier delegation — the verifier has no file access.
          **ANTI-LOOP RULE**: Delegate to the verifier exactly ONCE with all findings. If the
-         verifier returns an empty or malformed response, post a COMMENT review that includes
+         verifier returns an empty or malformed response — or the `transfer_task` call itself
+         fails or returns a tool error, which you MUST treat exactly like an empty/malformed
+         response — post a COMMENT review that includes
          the drafter's unverified findings with a note that verification was inconclusive.
          Do NOT approve — surface the raw findings so the author can evaluate them.
-         Do NOT retry the delegation.
+         Do NOT retry the delegation. A `transfer_task` tool error is never grounds to
+         approve or to retry.
          (The fallback preserves the drafter's analysis for the author.)
-      6. Parse the verifier's JSON response (a `verdicts` array). Drop verdicts that are out
+      6. Parse the verifier's JSON response (a `verdicts` array).
+         **Pairing check (REQUIRED — before scope filtering or any merge):** verdicts must
+         correspond one-to-one to the findings you delegated, matched by the `finding_id`
+         you assigned in step 5. For every verdict, look up the delegated finding with the
+         same `finding_id`, then check the verdict's echoed `file` + `line` EXACTLY match
+         that finding's `file` + `line`. The verification is inconclusive for the WHOLE
+         batch if: any delegated finding has no verdict carrying its `finding_id`
+         (omission), any verdict carries a `finding_id` you did not assign (addition),
+         two or more verdicts carry the same `finding_id` (duplicate), or a verdict's
+         echoed `file`/`line` differ from its `finding_id`'s source finding (mismatch).
+         In any of those cases apply the ANTI-LOOP fallback
+         from step 5 — post a COMMENT review with the drafter's unverified findings and a
+         note that verification was inconclusive. Do NOT approve, do NOT retry, and do NOT
+         partially merge the subset of verdicts that did match.
+         Once every verdict pairs cleanly, drop verdicts that are out
          of scope (`in_changed_code == false` or `in_diff == false`). Keep the rest — including
          DISMISSED — and assign each a **confidence score** using the Confidence Scoring section
          below. The score (not a manual judgment) decides each finding's disposition: posted
@@ -240,6 +299,12 @@ agents:
            posted inline)" with their scores. Never silently drop these.
          - **Dismissed security audit** — DISMISSED `security` findings, listed under "Dismissed
            security findings (review manually)" citing the verifier's stated mitigation.
+         - **Incomplete-review notice** — when the merged `review_complete` (step 5) is false,
+           the review body MUST open with the "### ⚠️ Review incomplete" heading followed by
+           the diagnostic merged `summary` (the per-chunk status lines), per Decision Rules
+           rule 4, and MUST NOT contain an "### Assessment:" line or approve wording. This
+           notice is required at ANY finding count — never omit it because findings exist,
+           and never let high-confidence findings replace it.
          Before posting, verify each inline comment per Confidence Scoring: its body ends with a
          valid confidence table, and no non-forced comment scores below the inline threshold T.
          Then run the deduplication step from the posting template
@@ -304,7 +369,10 @@ agents:
         Some repos lack branch protection; `APPROVE` would bypass human review,
         `REQUEST_CHANGES` would block merging. The bot provides feedback only.
 
-        **Zero-findings example** (use this exact pattern when findings list is empty):
+        **Zero-findings example** (use this exact pattern ONLY when the findings list is
+        empty AND the merged `review_complete` is true — an incomplete review must
+        instead post the "### ⚠️ Review incomplete" body from Decision Rules rule 4,
+        never a 🟢 APPROVE body):
         ```bash
         REVIEW_BODY="### Assessment: 🟢 APPROVE"
         jq -n --arg body "$REVIEW_BODY" --arg event "COMMENT" \
@@ -430,10 +498,28 @@ agents:
          - ANY CRITICAL findings → label as "🔴 CRITICAL" in the summary
          - ANY NOTABLE findings (no CRITICAL) → label as "🟡 NEEDS ATTENTION"
          - Only MINOR or no findings → label as "🟢 APPROVE"
-      4. **Post the review**: The GitHub review event is ALWAYS `COMMENT`,
+      4. **Incompleteness override (fail-closed)**: if the merged `review_complete` from
+         step 5 is false, the review is incomplete at ANY finding count — a crashed,
+         refused, or truncated chunk means part of the diff was never reviewed — so
+         rule 3's label is overridden AFTER it is computed:
+         - Do NOT emit an "### Assessment:" line and do NOT use approve wording
+           anywhere in the review body. ("### Assessment:" is the completed-run marker
+           the incremental reviewer keys on; an incomplete run must never carry it, or
+           the next incremental review would skip the unreviewed chunks.)
+         - Open the review body with "### ⚠️ Review incomplete" followed by the
+           diagnostic merged `summary` (the per-chunk status lines from step 5).
+         - Add a "Findings so far:" line under that heading: "🔴 CRITICAL" or
+           "🟡 NEEDS ATTENTION" when rule 3 produced those; a would-be "🟢 APPROVE"
+           becomes "⚠️ INCOMPLETE" instead.
+         - Inline comments from the completed chunks are still posted (steps 9–10
+           unchanged). Confidence scores decide per-finding dispositions only — they
+           never restore a complete or approving outcome.
+      5. **Post the review**: The GitHub review event is ALWAYS `COMMENT`,
          regardless of the assessment label. Never use `APPROVE` or `REQUEST_CHANGES`.
-         This applies even when the findings list is empty — the review body (with
-         the 🟢 APPROVE assessment label) must still be posted.
+         This applies even when the findings list is empty — the review body must
+         still be posted: with the 🟢 APPROVE assessment label when the merged
+         `review_complete` is true, or with the rule-4 "### ⚠️ Review incomplete"
+         body when it is false.
 
       ## Posting Format (GitHub posting mode)
 
@@ -508,6 +594,18 @@ agents:
       - file:line — issue (verifier mitigation: …)
       ```
       Omit the "Lower-confidence" and "Dismissed security" sections when they have no entries.
+      When the merged `review_complete` is false — at ANY finding count — replace the
+      "### Assessment:" line with the incomplete-review header from Decision Rules rule 4
+      and never print an approve label:
+      ```
+      ## Review: COMMENT
+      ### ⚠️ Review incomplete
+      chunk 1: <that delegation's summary>
+      chunk 2: Drafter did not complete
+      Findings so far: [🔴 CRITICAL|🟡 NEEDS ATTENTION|⚠️ INCOMPLETE]
+      ### Findings
+      … (same sections as the complete format above)
+      ```
 
     sub_agents:
       - drafter
@@ -757,12 +855,29 @@ agents:
             items:
               type: object
               properties:
+                # The `pattern` on the free-text fields below (mirrored in the verifier
+                # schema) rejects the two refusal shapes: no content (empty or
+                # ASCII-whitespace-only) and the exact bare literal "placeholder" (any
+                # case, optional surrounding whitespace) — the escape a refusing model
+                # reaches for when the schema forces it to emit something. It is written
+                # for engine portability: no lookaheads (RE2-based tool-mode validation
+                # and provider-side constrained decoding both lack them), every
+                # alternative anchored `^...$` so search-semantics validators and
+                # full-match constrained decoders accept exactly the same strings, and
+                # explicit ASCII classes `[ \t\n\r\f]` instead of `\s` so Go RE2 and
+                # ECMA agree — NBSP and other non-ASCII whitespace count as content.
+                # Ordinary punctuation and Unicode pass untouched. Every copy of the
+                # pattern must stay byte-identical; the src/pr-review-agent unit tests
+                # pin each occurrence and its full-match behavior.
                 file:
                   type: string
-                  description: File path relative to repo root
+                  minLength: 1
+                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
+                  description: File path relative to repo root (a real path — never empty/whitespace-only, never the literal "placeholder")
                 line:
                   type: integer
-                  description: "1-indexed line in new file"
+                  minimum: 1
+                  description: "1-indexed line in new file (>= 1)"
                 severity:
                   type: string
                   enum: ["high", "medium", "low"]
@@ -780,10 +895,14 @@ agents:
                     ]
                 issue:
                   type: string
-                  description: "One-line summary"
+                  minLength: 1
+                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
+                  description: "One-line summary (never empty/whitespace-only)"
                 details:
                   type: string
-                  description: "Trigger path and impact"
+                  minLength: 1
+                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
+                  description: "Trigger path and impact (never empty/whitespace-only)"
                 in_diff:
                   type: boolean
                   description: "true if on a + line"
@@ -800,7 +919,9 @@ agents:
               additionalProperties: false
           summary:
             type: string
-            description: Brief overall assessment of the diff quality
+            minLength: 1
+            pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
+            description: Brief overall assessment of the diff quality (never empty/whitespace-only)
           review_complete:
             type: boolean
             description: "true if the entire diff chunk was reviewed; false if the review was truncated due to context limits or errors"
@@ -860,9 +981,16 @@ agents:
       PR — set `in_changed_code: false` and `verdict: "DISMISSED"`, even if a `+` line
       touches the area. We only flag problems this PR's changes introduce.
 
-      **You MUST produce one verdict per finding** — an empty `verdicts` array is never
-      correct when findings were provided. If the provided snippet is insufficient to fully
-      verify, emit LIKELY with a note explaining what additional context would be needed.
+      **You MUST produce exactly one verdict per finding** — an empty `verdicts` array is
+      never correct when findings were provided, and you must never merge, split, invent,
+      or pad verdicts: the orchestrator pairs each verdict back to its finding by the
+      `finding_id` it assigned (cross-checking the echoed `file` + `line` against that
+      finding) and discards the whole batch as inconclusive on any duplicated, omitted,
+      or unknown `finding_id`, or any `file`/`line` mismatch. If the provided snippet is
+      insufficient to fully verify, emit LIKELY with a note explaining what additional
+      context would be needed. Never fill any field with placeholder text (e.g. the
+      literal string "placeholder") — the schema rejects it; echo the finding's real
+      `finding_id`, `file`, and `line` and explain honestly in `details`.
 
       ## Populating Your Response
 
@@ -883,8 +1011,16 @@ agents:
           the author considered the issue, OR the finding involves framework/library behavior.
         - DISMISSED: Proven not a bug — you can cite the specific code in the snippet that
           prevents it, OR the problem is pre-existing (would still exist after reverting the PR)
-      - `file`: Preserve the file path from the drafter's finding
-      - `line`: Preserve or correct the line number from the drafter's finding
+      - `finding_id`: Echo the integer ID the orchestrator assigned to this finding
+        EXACTLY — it is the primary pairing key, and the only thing that disambiguates
+        two findings on the same `file` + `line`. Never renumber, invent, or omit IDs.
+      - `file`: Preserve the file path from the drafter's finding EXACTLY — the
+        orchestrator cross-checks it against the `finding_id` pairing and discards the
+        whole batch on any mismatch. Never substitute placeholder text.
+      - `line`: Preserve the line number from the drafter's finding EXACTLY — it is
+        cross-checked the same way. If you believe the number is wrong, keep it unchanged
+        and state the correction in `details`; the orchestrator re-verifies line numbers
+        itself before posting.
       - `severity`: You may adjust severity from what the drafter assigned based on full context
         (e.g., upgrade to "high" if you discover the impact is worse than the drafter thought,
         or downgrade to "low" if safeguards exist). Commit to a level — do not hedge.
@@ -933,18 +1069,36 @@ agents:
                 verdict:
                   type: string
                   enum: ["CONFIRMED", "LIKELY", "DISMISSED"]
+                finding_id:
+                  type: integer
+                  minimum: 1
+                  description: "Integer ID echoed exactly from the delegated finding — primary pairing key (>= 1)"
+                # Free-text fields reuse the drafter schema's anti-placeholder pattern
+                # (content required, bare "placeholder" rejected, every alternative
+                # anchored — see the drafter schema comment). Every copy must stay
+                # byte-identical; src/pr-review-agent tests pin them.
                 file:
                   type: string
+                  minLength: 1
+                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
+                  description: "File path echoed exactly from the finding — cross-checked against the finding_id pairing (never the literal 'placeholder')"
                 line:
                   type: integer
+                  minimum: 1
+                  description: "Line number echoed exactly from the finding — cross-checked against the finding_id pairing (>= 1)"
                 severity:
                   type: string
                   enum: ["high", "medium", "low"]
                 issue:
                   type: string
+                  minLength: 1
+                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
+                  description: "One-line summary (never empty/whitespace-only)"
                 details:
                   type: string
-                  description: "Explanation of verdict"
+                  minLength: 1
+                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
+                  description: "Explanation of verdict (never empty/whitespace-only, never the literal 'placeholder')"
                 in_changed_code:
                   type: boolean
                 evidence_strength:
@@ -958,6 +1112,7 @@ agents:
               required:
                 [
                   "verdict",
+                  "finding_id",
                   "file",
                   "line",
                   "severity",
