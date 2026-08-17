@@ -521,15 +521,13 @@ jobs:
             echo "Updating existing PR #$EXISTING_PR"
             gh pr edit "$EXISTING_PR" \
               --title "chore: update docker-agent-action to $VERSION" \
-              --body "$PR_BODY" \
-              --add-reviewer "derekmisler"
+              --body "$PR_BODY"
           else
             echo "Creating new PR"
             gh pr create \
               --head "$BRANCH" \
               --title "chore: update docker-agent-action to $VERSION" \
-              --body "$PR_BODY" \
-              --reviewer "derekmisler"
+              --body "$PR_BODY"
           fi
 
   notify:
