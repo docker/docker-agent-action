@@ -195,7 +195,8 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 | Workflow                          | Purpose                                                              |
 | --------------------------------- | -------------------------------------------------------------------- |
 | `test.yml`                        | Unit + integration tests on push/PR.                                 |
-| `test-e2e.yml`                    | End-to-end action invocation against a real agent.                   |
+| `test-e2e.yml`                    | Secretless E2E coverage on PRs; credential-bearing scenarios only on trusted main pushes or manual dispatch. |
+| `test-e2e-reviewer.yml`           | Dispatch-only E2E workflow for the PR reviewer.                       |
 | `release.yml`                     | Publishes tagged releases (must include a built `dist/`).            |
 | `review-pr.yml`                   | **Reusable workflow** consumers call as `docker/docker-agent-action/.github/workflows/review-pr.yml@v…`. |
 | `self-review-pr.yml` + `-trigger.yml` | Dogfooding: the repo reviews its own PRs.                        |
