@@ -112,12 +112,12 @@ jobs:
       trigger-event: ${{ steps.read.outputs.event-name }}
       pr-number: ${{ steps.read.outputs.pr-number }}
       pr-head-sha: ${{ steps.read.outputs.pr-head-sha }}
+      comment-has-mention: ${{ steps.read.outputs.comment-has-mention }}
+      comment-is-review-cmd: ${{ steps.read.outputs.comment-is-review-cmd }}
       requested-reviewer: ${{ steps.read.outputs.requested-reviewer }}
       comment-json: ${{ steps.read.outputs.comment-json }}
       comment-author: ${{ steps.read.outputs.comment-author }}
       comment-in-reply-to-id: ${{ steps.read.outputs.comment-in-reply-to-id }}
-      comment-has-mention: ${{ steps.read.outputs.comment-has-mention }}
-      comment-is-review-cmd: ${{ steps.read.outputs.comment-is-review-cmd }}
       comment-author-type: ${{ steps.read.outputs.comment-author-type }}
     steps:
       # The trigger run concludes success even when its save-context job was
