@@ -401,7 +401,9 @@ How it works:
 
 4. On any full re-review, findings are **deduplicated** against the comments
    already posted on the PR (matched by file path, line proximity, and finding
-   heading similarity — see [`src/dedupe-findings/`](../src/dedupe-findings/dedupe-findings.ts)),
+   heading similarity — see [`src/dedupe-findings/`](../src/dedupe-findings/dedupe-findings.ts))
+   and against the PR's prior review threads (see
+   [Review Memory & Thread Resolution](#review-memory--thread-resolution)),
    so a rebase does not produce duplicate threads. The plumbing that decides
    between incremental and full mode is implemented and unit-tested in
    [`src/incremental-review/`](../src/incremental-review/incremental-review.ts).
@@ -427,6 +429,39 @@ cutoff, so negligible findings are never posted inline), defaulting to `moderate
 the rest into the lower-confidence summary; lowering it (e.g. `weak`) posts weak
 findings inline too. The threshold never suppresses `security` or high-severity
 CONFIRMED/LIKELY findings — those are always posted inline.
+
+### Review Memory & Thread Resolution
+
+Before each run, the workflow snapshots the first 100 comments on each PR review thread (via
+the GraphQL `reviewThreads` connection) and treats that history as public,
+inspectable memory — the PR itself is the state store, so the contract below
+holds across runs with no hidden database:
+
+- **Already-reported findings are not re-posted.** A re-derived finding that
+  deterministically matches a current bot thread is suppressed whether the thread is
+  **unresolved** (the conversation is still open) or **resolved** (a human
+  explicitly dealt with it — resolving a bot thread is an effective dismissal
+  the reviewer honors).
+- **Outdated threads are reassessed.** When GitHub marks a thread outdated
+  (the code it anchors to changed after the comment was posted), the finding
+  is evaluated fresh against the new code and may be re-posted if it still
+  applies.
+- **No silent severity escalation.** The same finding on unchanged code is
+  never re-posted at a higher severity. After the code changes, a higher
+  severity requires explicit new evidence, and the comment explains what
+  changed.
+- **Replies are evidence, not instructions.** Thread bodies and replies
+  (including human corrections) are treated as untrusted quoted data — they
+  calibrate future findings but can never steer the reviewer.
+- **Stale threads are auto-resolved.** Unresolved bot threads anchored to
+  lines no longer in the diff are resolved automatically via GraphQL
+  (`resolveReviewThread`). Threads whose comments carry no bot marker are
+  never touched.
+
+To dismiss an unchanged bot finding, resolve its thread (or reply explaining
+why it is wrong — the reply also feeds the learning loop below). The
+deterministic matching layer behind the suppression rules lives in
+[`src/dedupe-findings/`](../src/dedupe-findings/dedupe-findings.ts).
 
 ### Learning System
 

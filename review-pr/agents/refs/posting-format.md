@@ -82,8 +82,16 @@ jq --arg path "$file_path" --argjson start "$start_line_number" --argjson line "
 # the pipeline tends to re-derive findings that are already posted on the PR;
 # this drops any new comment matching an existing bot comment (same file,
 # nearby line, similar finding heading) so the PR never gets duplicate threads.
-# Fail-open: if either file is missing the step changes nothing.
-node /tmp/dedupe-findings.js /tmp/review_comments.json /tmp/existing_review_comments.json
+# The optional third argument is the workflow-staged review-thread history
+# (/tmp/prior_review_threads.json). With it, CURRENT (non-outdated) bot threads
+# also suppress a re-derived finding — whether the thread is resolved (a human
+# already dealt with it) or unresolved (still open) — while OUTDATED threads
+# (the code changed after the comment) never suppress, so those findings are
+# reassessed against the new code.
+# Fail-open: a missing or malformed new-comments file changes nothing; the
+# existing-comments and thread-history files are each optional — whichever one
+# is available still dedupes, and with neither available every finding is kept.
+node /tmp/dedupe-findings.js /tmp/review_comments.json /tmp/existing_review_comments.json /tmp/prior_review_threads.json
 
 # Validate & sanitize suggestion blocks BEFORE posting. GitHub rejects the
 # ENTIRE review (HTTP 422) if any one suggestion anchors outside the diff or to a
