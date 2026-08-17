@@ -110,12 +110,14 @@ jq '[.[] | select(.body | length > 0)]' /tmp/review_comments.json > /tmp/review_
   && mv /tmp/review_comments.tmp /tmp/review_comments.json
 echo "Posting review with $(jq length /tmp/review_comments.json) inline comment(s)"
 
-# Use jq to assemble the final payload with proper escaping
+# The composite action replaces __PR_HEAD_SHA__ with the validated immutable review snapshot
+# before the agent runs. This command must contain the selected literal SHA.
 jq -n \
   --arg body "$REVIEW_BODY" \
   --arg event "COMMENT" \
+  --arg commit_id "__PR_HEAD_SHA__" \
   --slurpfile comments /tmp/review_comments.json \
-  '{body: $body, event: $event, comments: $comments[0]}' \
+  '{body: $body, event: $event, commit_id: $commit_id, comments: $comments[0]}' \
 | gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input -
 ```
 

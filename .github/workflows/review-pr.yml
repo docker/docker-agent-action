@@ -98,8 +98,9 @@ permissions:
 # progress is false so an in-flight review/reply is never killed mid-post.
 # Per-PR request *frequency* is enforced by the rate-limit check below, and the
 # in-action cache lock (review-pr/action.yml) prevents concurrent reviews; the
-# workflow_run/fork path (PR number only in the artifact) falls back to a per-run
-# group, where those two mechanisms still bound abuse.
+# workflow_run/fork context is server-resolved after the group is evaluated, so
+# it falls back to a per-run group; the cache lock still prevents concurrent
+# reviews for the resolved PR and bounds abuse.
 concurrency:
   group: pr-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr-number || github.run_id }}-${{ github.event.comment.id || github.event_name }}
   cancel-in-progress: false
@@ -112,10 +113,16 @@ jobs:
       trigger-event: ${{ steps.read.outputs.event-name }}
       pr-number: ${{ steps.read.outputs.pr-number }}
       pr-head-sha: ${{ steps.read.outputs.pr-head-sha }}
+      pr-base-sha: ${{ steps.read.outputs.pr-base-sha }}
+      trigger-route: ${{ steps.read.outputs.trigger-route }}
       comment-has-mention: ${{ steps.read.outputs.comment-has-mention }}
       comment-is-review-cmd: ${{ steps.read.outputs.comment-is-review-cmd }}
-      requested-reviewer: ${{ steps.read.outputs.requested-reviewer }}
-      comment-json: ${{ steps.read.outputs.comment-json }}
+      canonical-context-available: ${{ steps.read.outputs.canonical-context-available }}
+      # Downstream reply jobs run on isolated runners. The resolver uploads the
+      # server-derived context and consumers select it only by this immutable
+      # same-run ID, never by artifact name. download-artifact verifies the
+      # archive digest from GitHub's artifact metadata for this ID.
+      canonical-context-artifact-id: ${{ steps.canonical-context.outputs.artifact-id }}
       comment-author: ${{ steps.read.outputs.comment-author }}
       comment-in-reply-to-id: ${{ steps.read.outputs.comment-in-reply-to-id }}
       comment-author-type: ${{ steps.read.outputs.comment-author-type }}
@@ -165,58 +172,99 @@ jobs:
             exit 1
           fi
 
+      - name: Create trigger context directory
+        id: trigger-context-directory
+        if: steps.context-exists.outputs.exists == 'true'
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          runner_temp=$(realpath -e "${RUNNER_TEMP:?}")
+          context_dir=$(mktemp -d "$runner_temp/docker-agent-trigger-context-attempt-${RUN_ATTEMPT:?}.XXXXXX")
+          chmod 700 "$context_dir"
+          [ "$(stat -c '%a' "$context_dir")" = 700 ]
+          echo "path=$context_dir" >> "$GITHUB_OUTPUT"
+
       - name: Download trigger context
         if: steps.context-exists.outputs.exists == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-review-context
-          path: /tmp/context
+          path: ${{ steps.trigger-context-directory.outputs.path }}
           run-id: ${{ inputs.trigger-run-id }}
           github-token: ${{ env.GITHUB_APP_TOKEN }}
 
-      - name: Read context
+      - name: Guard trigger context directory
+        if: steps.context-exists.outputs.exists == 'true'
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          CONTEXT_DIRECTORY: ${{ steps.trigger-context-directory.outputs.path }}
+        run: |
+          set -euo pipefail
+          runner_temp=$(realpath -e "${RUNNER_TEMP:?}")
+          [ -n "${CONTEXT_DIRECTORY:-}" ] && [ -d "$CONTEXT_DIRECTORY" ] && [ ! -L "$CONTEXT_DIRECTORY" ]
+          context_dir=$(realpath -e "$CONTEXT_DIRECTORY")
+          case "$context_dir" in "$runner_temp"/*) ;; *) exit 1 ;; esac
+          chmod 700 "$context_dir"
+          [ "$(stat -c '%a' "$context_dir")" = 700 ]
+
+      - name: Resolve trusted trigger context
         if: steps.context-exists.outputs.exists == 'true'
         id: read
         shell: bash
+        env:
+          TRIGGER_RUN_ID: ${{ inputs.trigger-run-id }}
+          TRIGGER_ARTIFACT_DIRECTORY: ${{ steps.trigger-context-directory.outputs.path }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
-          # Validate required artifact files exist
-          if [ ! -f /tmp/context/event_name.txt ] || [ ! -f /tmp/context/pr_number.txt ]; then
-            echo "::error::Required artifact files missing (event_name.txt or pr_number.txt)"
-            exit 1
+          HELPER="$DOCKER_AGENT_ACTION_ROOT/dist/resolve-trigger-context.js"
+          if [ ! -f "$HELPER" ]; then
+            echo "canonical-context-available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping workflow_run trigger: the pinned action bundle lacks the trusted trigger-context resolver. Direct event routes remain available."
+            exit 0
           fi
+          node "$HELPER"
+          echo "canonical-context-available=true" >> "$GITHUB_OUTPUT"
 
-          echo "event-name=$(cat /tmp/context/event_name.txt)" >> $GITHUB_OUTPUT
-          echo "pr-number=$(cat /tmp/context/pr_number.txt)" >> $GITHUB_OUTPUT
-          if [ -f /tmp/context/pr_head_sha.txt ]; then
-            echo "pr-head-sha=$(cat /tmp/context/pr_head_sha.txt)" >> $GITHUB_OUTPUT
-          fi
-          if [ -f /tmp/context/requested_reviewer.txt ]; then
-            echo "requested-reviewer=$(cat /tmp/context/requested_reviewer.txt)" >> $GITHUB_OUTPUT
-          fi
-          if [ -f /tmp/context/comment.json ]; then
-            # Use heredoc output syntax — jq -c compacts JSON but comment bodies
-            # can still contain literal newlines that break single-line echo.
-            {
-              echo 'comment-json<<COMMENT_JSON_EOF'
-              jq -c '.' /tmp/context/comment.json
-              echo 'COMMENT_JSON_EOF'
-            } >> $GITHUB_OUTPUT
-            echo "comment-author=$(jq -r '.user.login' /tmp/context/comment.json)" >> $GITHUB_OUTPUT
-            echo "comment-in-reply-to-id=$(jq -r '.in_reply_to_id // empty' /tmp/context/comment.json)" >> $GITHUB_OUTPUT
-            echo "comment-has-mention=$(jq -r 'if (.body | contains("@docker-agent")) then "true" else "false" end' /tmp/context/comment.json)" >> $GITHUB_OUTPUT
-            echo "comment-is-review-cmd=$(jq -r 'if (.body | startswith("/review")) then "true" else "false" end' /tmp/context/comment.json)" >> $GITHUB_OUTPUT
-            echo "comment-author-type=$(jq -r '.user.type // empty' /tmp/context/comment.json)" >> $GITHUB_OUTPUT
-          fi
+      - name: Guard canonical trigger context before upload
+        if: steps.read.outputs.canonical-context-available == 'true'
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          CANONICAL_CONTEXT: ${{ steps.read.outputs.canonical-context-path }}
+        run: |
+          set -euo pipefail
+          runner_temp=$(realpath -e "${RUNNER_TEMP:?}")
+          [ -n "${CANONICAL_CONTEXT:-}" ] && [ "$(basename "$CANONICAL_CONTEXT")" = canonical-trigger-context.json ]
+          [ -f "$CANONICAL_CONTEXT" ] && [ ! -L "$CANONICAL_CONTEXT" ]
+          parent=$(dirname "$CANONICAL_CONTEXT")
+          [ ! -L "$parent" ]
+          resolved_parent=$(realpath -e "$parent")
+          resolved_file=$(realpath -e "$CANONICAL_CONTEXT")
+          case "$resolved_parent" in "$runner_temp"/*) ;; *) exit 1 ;; esac
+          [ "$resolved_file" = "$resolved_parent/canonical-trigger-context.json" ]
+          [ "$(stat -c '%a' "$resolved_parent")" = 700 ]
+          [ "$(stat -c '%a' "$resolved_file")" = 600 ]
+
+      # Jobs run on isolated runners. Downstream reply jobs receive only this
+      # server-derived file selected by its immutable same-run artifact ID.
+      - name: Upload canonical trigger context
+        id: canonical-context
+        if: steps.read.outputs.canonical-context-available == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trusted-trigger-context-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.read.outputs.canonical-context-path }}
+          if-no-files-found: error
+          retention-days: 1
 
   review:
     needs: [resolve-context]
-    # The trigger (workflow_run) path additionally gates on the requested reviewer
-    # captured in the artifact: only a docker-agent request may start a review,
-    # mirroring the requested_reviewer.login gate on the direct pull_request path.
-    # Empty is allowed through — it means a legacy trigger artifact (predating
-    # requested_reviewer.txt) or an auto-review event (opened/ready_for_review).
-    # This is a cost gate, not authorization: the artifact is never trusted for
-    # auth, which stays server-side in check-org-membership.
+    # Triggered workflow_run reviews require canonical server-fetched context.
+    # Authorization remains server-side in check-org-membership.
     if: |
       always() && (
         (github.event_name == 'issue_comment' &&
@@ -231,8 +279,7 @@ jobs:
         (github.event_name == 'pull_request' && github.event.action != 'review_requested' && github.event.sender.type != 'Bot' && github.event.sender.login != 'docker-agent' && github.event.sender.login != 'docker-agent[bot]') ||
         (github.event_name == 'pull_request' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == 'docker-agent') ||
         inputs.pr-number != '' ||
-        (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.trigger-event == 'pull_request' &&
-         (needs.resolve-context.outputs.requested-reviewer == 'docker-agent' || needs.resolve-context.outputs.requested-reviewer == ''))
+        (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.canonical-context-available == 'true' && needs.resolve-context.outputs.trigger-event == 'pull_request' && needs.resolve-context.outputs.trigger-route == 'review')
       )
     runs-on: ubuntu-latest
     # Budget: review agent hard-capped at 2700 s total + feedback processing at
@@ -259,6 +306,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TRIGGER_PR_NUMBER: ${{ needs.resolve-context.outputs.pr-number }}
+          TRIGGER_PR_HEAD_SHA: ${{ needs.resolve-context.outputs.pr-head-sha }}
+          TRIGGER_PR_BASE_SHA: ${{ needs.resolve-context.outputs.pr-base-sha }}
           INPUT_PR_NUMBER: ${{ inputs.pr-number }}
           EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -285,6 +334,24 @@ jobs:
           fi
           echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "Resolved PR #$PR_NUMBER"
+          if [ -n "$TRIGGER_PR_NUMBER" ]; then
+            PR_HEAD_SHA="$TRIGGER_PR_HEAD_SHA"
+            PR_BASE_SHA="$TRIGGER_PR_BASE_SHA"
+          else
+            PR_SNAPSHOT=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/$PR_NUMBER")
+            PR_HEAD_SHA=$(jq -r '.head.sha // empty' <<<"$PR_SNAPSHOT")
+            PR_BASE_SHA=$(jq -r '.base.sha // empty' <<<"$PR_SNAPSHOT")
+          fi
+          if ! [[ "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Selected PR head SHA is invalid"
+            exit 1
+          fi
+          if ! [[ "$PR_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Selected PR base SHA is invalid"
+            exit 1
+          fi
+          echo "head-sha=$PR_HEAD_SHA" >> $GITHUB_OUTPUT
+          echo "base-sha=$PR_BASE_SHA" >> $GITHUB_OUTPUT
 
       - name: Check for /review command
         if: github.event_name == 'issue_comment'
@@ -327,6 +394,7 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           INPUT_PR_NUMBER: ${{ inputs.pr-number }}
           RESOLVE_CONTEXT_RESULT: ${{ needs.resolve-context.result }}
+          CANONICAL_CONTEXT_AVAILABLE: ${{ needs.resolve-context.outputs.canonical-context-available }}
           IS_REVIEW_COMMAND: ${{ steps.command.outputs.is_review }}
         run: |
           # Classify whether this is a user-requested or automatic review.
@@ -341,7 +409,7 @@ jobs:
           elif [ -n "$INPUT_PR_NUMBER" ]; then
             echo "user_requested=true" >> $GITHUB_OUTPUT
             echo "🎯 Trigger type: user-requested (explicit pr-number input)"
-          elif [ "$RESOLVE_CONTEXT_RESULT" = "success" ]; then
+          elif [ "$RESOLVE_CONTEXT_RESULT" = "success" ] && [ "$CANONICAL_CONTEXT_AVAILABLE" = "true" ]; then
             echo "user_requested=true" >> $GITHUB_OUTPUT
             echo "🎯 Trigger type: user-requested (trigger path via resolve-context)"
           else
@@ -428,6 +496,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_HEAD_SHA: ${{ steps.pr.outputs.head-sha }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -442,7 +511,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: 'PR Review',
-              head_sha: pr.head.sha,
+              head_sha: process.env.PR_HEAD_SHA,
               status: 'in_progress',
               started_at: new Date().toISOString(),
               details_url: runUrl
@@ -458,7 +527,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          ref: refs/pull/${{ steps.pr.outputs.number }}/head
+          ref: ${{ steps.pr.outputs.head-sha }}
 
       - name: Run PR Review
         if: |
@@ -470,7 +539,8 @@ jobs:
         continue-on-error: true
         uses: docker/docker-agent-action/review-pr@b08367e7e9a471822464be2bb9fdaa1c0fb6061b # v2.0.4
         with:
-          pr-number: ${{ steps.pr.outputs.number }}
+          pr-head-sha: ${{ steps.pr.outputs.head-sha }}
+          pr-base-sha: ${{ steps.pr.outputs.base-sha }}
           comment-id: ${{ inputs.comment-id || github.event.comment.id }}
           additional-prompt: ${{ inputs.additional-prompt }}
           add-prompt-files: ${{ inputs.add-prompt-files }}
