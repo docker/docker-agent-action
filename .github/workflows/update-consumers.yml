@@ -197,15 +197,13 @@ jobs:
               echo "Updating existing PR #$EXISTING_PR in $REPO"
               gh pr edit "$EXISTING_PR" --repo "$REPO" \
                 --title "chore: update docker-agent-action to $VERSION" \
-                --body "$PR_BODY" \
-                --add-reviewer "derekmisler" 2>&1 || echo "::warning::Failed to update PR #$EXISTING_PR in $REPO (may be non-fatal)"
+                --body "$PR_BODY" 2>&1 || echo "::warning::Failed to update PR #$EXISTING_PR in $REPO (may be non-fatal)"
             else
               echo "Creating new PR in $REPO"
               gh pr create --repo "$REPO" \
                 --head "$BRANCH" \
                 --title "chore: update docker-agent-action to $VERSION" \
-                --body "$PR_BODY" \
-                --reviewer "derekmisler" || echo "::warning::Failed to create PR in $REPO"
+                --body "$PR_BODY" || echo "::warning::Failed to create PR in $REPO"
             fi
 
             # Clear trap and cleanup
