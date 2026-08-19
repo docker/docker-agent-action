@@ -76,7 +76,7 @@ runs:
     - name: Run reply agent
       id: run-reply
       continue-on-error: true
-      uses: docker/docker-agent-action@baf90543d81f5de59751dfd10e6cf45e21a5a982 # v2.0.3
+      uses: docker/docker-agent-action@b08367e7e9a471822464be2bb9fdaa1c0fb6061b # v2.0.4
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:

@@ -97,7 +97,7 @@ jobs:
       pr-head-sha: ${{ steps.read.outputs.pr-head-sha }}
     steps:
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@baf90543d81f5de59751dfd10e6cf45e21a5a982 # v2.0.3
+        uses: docker/docker-agent-action/setup-credentials@b08367e7e9a471822464be2bb9fdaa1c0fb6061b # v2.0.4
 
       - name: Verify token for cross-run artifact download
         shell: bash
