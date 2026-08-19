@@ -7,29 +7,36 @@
  * A sub-agent that refuses (or whose `transfer_task` delegation errors) must never
  * be able to steer the review toward approval. Two layers enforce this:
  *
- *   1. Schema hardening — the drafter and verifier structured-output schemas reject
- *      empty/whitespace-only values in every human-meaningful string field, require
- *      line numbers >= 1, and reject the bare literal "placeholder" (any case,
- *      optional surrounding ASCII whitespace) that a refusing model emits to satisfy
- *      `required` fields. The pattern is engine-portable by construction: no
- *      lookaheads, every alternative anchored `^...$` so JSON Schema search
- *      semantics and provider constrained decoders that full-match accept the same
- *      strings, and explicit ASCII classes `[ \t\n\r\f]` instead of `\s`/`\S` so Go
- *      RE2 and ECMA agree (NBSP and other non-ASCII whitespace count as content).
- *      Every copy of the pattern must stay byte-identical.
- *   2. Orchestration contracts — the root instructions must treat a `transfer_task`
- *      tool error exactly like empty/malformed output (never approve, never retry),
- *      aggregate batched CI drafter responses fail-closed (merged review_complete is
- *      true only when EVERY delegation returned valid JSON with review_complete
- *      true; an incomplete merge never approves at ANY finding count — zero or
- *      nonzero — and must post an explicit incomplete heading carrying the
- *      diagnostic merged summary instead of an assessment/approve label), assign
- *      each verifier-delegated finding a deterministic `finding_id` and pair
- *      verdicts one-to-one by that ID with an exact file+line cross-check
- *      (omission/addition/duplicate/mismatch => inconclusive COMMENT fallback, no
- *      partial merge — JSON Schema cannot express this cardinality, so it lives in
- *      the instructions), and route malformed/refused drafter JSON through the
- *      existing incomplete-review fallback.
+ *   1. Schema hardening (provider-minimal) — the drafter and verifier
+ *      structured-output schemas constrain every human-meaningful string field
+ *      with `minLength: 1` (rejecting the empty string and nothing more) and
+ *      require line numbers >= 1. No `pattern` keyword may appear anywhere in
+ *      the schemas: provider-side constrained decoding rejects any schema
+ *      carrying one ("Schema is too complex" from the Docker models gateway)
+ *      before a sub-agent ever runs — even a plain non-blank regex fails.
+ *      Whitespace-only and bare-"placeholder" values are therefore
+ *      schema-VALID refusal output; rejecting them is semantic, not syntactic.
+ *   2. Orchestration contracts — the semantic layer the minimal schema cannot
+ *      provide. The root instructions run a refusal content check on every
+ *      parsed sub-agent response: any free-text field (drafter: each finding's
+ *      `file`/`issue`/`details` plus the top-level `summary`; verifier: each
+ *      verdict's `file`/`issue`/`details`) that trims — ASCII whitespace
+ *      `[ \t\n\r\f]` only — to empty or to the bare literal "placeholder"
+ *      (case-insensitive) voids the ENTIRE drafter response (the fallback
+ *      object, `review_complete: false`, no salvage) or the WHOLE verifier
+ *      batch (inconclusive COMMENT fallback before pairing — no approve, no
+ *      retry, no partial merge). The root must also treat a `transfer_task`
+ *      tool error exactly like empty/malformed output (never approve, never
+ *      retry), aggregate batched CI drafter responses fail-closed (merged
+ *      review_complete is true only when EVERY delegation returned valid JSON
+ *      with review_complete true; an incomplete merge never approves at ANY
+ *      finding count and must post an explicit incomplete heading carrying the
+ *      diagnostic merged summary instead of an assessment/approve label), and
+ *      assign each verifier-delegated finding a deterministic `finding_id`,
+ *      pairing verdicts one-to-one by that ID with an exact file+line
+ *      cross-check (omission/addition/duplicate/mismatch => inconclusive
+ *      COMMENT fallback, no partial merge — JSON Schema cannot express this
+ *      cardinality, so it lives in the instructions).
  *
  * Like src/caller-permissions, this reads the YAML as text with a focused,
  * dependency-free extractor instead of pulling in a YAML parser.
@@ -40,21 +47,6 @@ import { describe, expect, it } from 'vitest';
 
 const YAML_PATH = resolve(import.meta.dirname, '../../../review-pr/agents/pr-review.yaml');
 const source = readFileSync(YAML_PATH, 'utf-8');
-
-/**
- * The canonical anti-placeholder pattern. Every alternative is anchored `^...$`
- * and consumes the whole value, so validators that search (JSON Schema) and
- * constrained decoders that full-match accept exactly the same strings.
- * Whitespace is the explicit ASCII class `[ \t\n\r\f]` (JSON whitespace plus
- * form feed — exactly Go RE2's `\s`), so NBSP and other non-ASCII whitespace
- * count as content in every engine. Alternatives, in order: a single content
- * run of 1–10 chars; of 12+ chars; two or more runs separated by whitespace;
- * an 11-char run deviating from "placeholder" (ASCII case-insensitive) at some
- * position. Their union accepts exactly the strings that contain a
- * non-whitespace character and are not the bare literal "placeholder" after
- * trimming ASCII whitespace.
- */
-const ANTI_PLACEHOLDER = String.raw`^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$`;
 
 function sliceBetween(text: string, startMarker: string, endMarker: string): string {
   const start = text.indexOf(startMarker);
@@ -95,43 +87,27 @@ function propertySubschema(schemaText: string, propName: string, indent: number)
   return block.join('\n');
 }
 
-function patternOf(block: string): string {
-  const match = block.match(/pattern: '([^']*)'/);
-  if (!match) throw new Error(`no single-quoted pattern in block:\n${block}`);
-  return match[1];
+/**
+ * Executable mirror of the semantic refusal rule the YAML documents (root
+ * steps 5 and 6, drafter Output section, verifier instruction): trim ONLY
+ * ASCII whitespace `[ \t\n\r\f]`, then refuse when the result is empty or is
+ * exactly the literal "placeholder" compared case-insensitively. Non-ASCII
+ * whitespace (e.g. NBSP) is content by contract, so an NBSP-padded
+ * "placeholder" is not bare.
+ */
+function isRefusalContent(value: string): boolean {
+  const trimmed = value.replace(/^[ \t\n\r\f]+|[ \t\n\r\f]+$/g, '');
+  return trimmed === '' || trimmed.toLowerCase() === 'placeholder';
 }
 
-/** Split a regex on its top-level `|`, honoring groups, classes, and escapes. */
-function topLevelBranches(pattern: string): string[] {
-  const branches: string[] = [];
-  let depth = 0;
-  let inClass = false;
-  let current = '';
-  for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern[i];
-    if (ch === '\\') {
-      current += ch + (pattern[i + 1] ?? '');
-      i++;
-      continue;
-    }
-    if (inClass) {
-      if (ch === ']') inClass = false;
-    } else if (ch === '[') {
-      inClass = true;
-    } else if (ch === '(') {
-      depth++;
-    } else if (ch === ')') {
-      depth--;
-    } else if (ch === '|' && depth === 0) {
-      branches.push(current);
-      current = '';
-      continue;
-    }
-    current += ch;
-  }
-  branches.push(current);
-  return branches;
-}
+/**
+ * The contract statement every free-text property description must carry:
+ * the schema rejects only the empty string; whitespace-only and
+ * bare-"placeholder" values are refusal output rejected semantically by the
+ * orchestrator's instructions, never by the schema.
+ */
+const DESCRIPTION_CONTRACT =
+  "the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction";
 
 describe('structured-output schema hardening', () => {
   // Free-text fields and their key indent within each schema block.
@@ -147,23 +123,30 @@ describe('structured-output schema hardening', () => {
     ['details', 16],
   ];
 
-  it.each(drafterTextFields)('drafter %s rejects empty/placeholder values', (name, indent) => {
+  it.each(
+    drafterTextFields,
+  )('drafter %s is minLength-only with an accurate description', (name, indent) => {
     const block = propertySubschema(drafterSchema, name, indent);
     expect(block).toContain('minLength: 1');
-    expect(patternOf(block)).toBe(ANTI_PLACEHOLDER);
+    expect(block).not.toContain('pattern');
+    expect(block).toContain(DESCRIPTION_CONTRACT);
   });
 
-  it.each(verifierTextFields)('verifier %s rejects empty/placeholder values', (name, indent) => {
+  it.each(
+    verifierTextFields,
+  )('verifier %s is minLength-only with an accurate description', (name, indent) => {
     const block = propertySubschema(verifierSchema, name, indent);
     expect(block).toContain('minLength: 1');
-    expect(patternOf(block)).toBe(ANTI_PLACEHOLDER);
+    expect(block).not.toContain('pattern');
+    expect(block).toContain(DESCRIPTION_CONTRACT);
   });
 
-  it('keeps every pattern occurrence in the file byte-identical', () => {
-    const copies = source.split(`pattern: '${ANTI_PLACEHOLDER}'`).length - 1;
-    const total = (source.match(/pattern: '/g) ?? []).length;
-    expect(copies).toBe(7);
-    expect(total).toBe(7);
+  it('keeps both schemas — and the whole file — free of the pattern keyword', () => {
+    // Provider-side constrained decoding rejects any schema carrying a
+    // `pattern` keyword ("Schema is too complex"), so none may reappear.
+    expect(drafterSchema).not.toContain('pattern:');
+    expect(verifierSchema).not.toContain('pattern:');
+    expect(source).not.toContain('pattern:');
   });
 
   it('requires line >= 1 in both schemas', () => {
@@ -185,37 +168,16 @@ describe('structured-output schema hardening', () => {
   });
 });
 
-describe('anti-placeholder pattern portability', () => {
-  it('anchors every top-level alternative on both ends (full-match safe)', () => {
-    const branches = topLevelBranches(ANTI_PLACEHOLDER);
-    expect(branches.length).toBeGreaterThanOrEqual(4);
-    for (const branch of branches) {
-      expect(branch.startsWith('^')).toBe(true);
-      expect(branch.endsWith('$')).toBe(true);
-    }
-  });
-
-  it('avoids engine-specific syntax: \\s/\\S classes, lookarounds, inline flags', () => {
-    expect(ANTI_PLACEHOLDER).not.toMatch(/\\[sS]/);
-    // Only non-capturing groups: after rewriting `(?:` no `(?` construct
-    // (lookaround or inline flag) may remain.
-    expect(ANTI_PLACEHOLDER.replaceAll('(?:', '(')).not.toContain('(?');
-  });
-});
-
-describe('anti-placeholder pattern behavior', () => {
-  const searchRe = new RegExp(ANTI_PLACEHOLDER);
-  // Constrained decoders match the pattern against the ENTIRE value; anchored
-  // alternatives make that equivalent to JSON Schema's search semantics.
-  const fullMatchRe = new RegExp(`^(?:${ANTI_PLACEHOLDER})$`);
-
-  const rejected = [
+describe('semantic refusal rule (executable mirror)', () => {
+  const refused = [
     '',
     ' ',
     '\t',
-    ' \t\n ',
     '\f',
     '\r\n',
+    '   ',
+    ' \t\n ',
+    ' \f \r ',
     'placeholder',
     'Placeholder',
     'PLACEHOLDER',
@@ -232,23 +194,17 @@ describe('anti-placeholder pattern behavior', () => {
     'placeholder.go',
     'placeholders',
     'placeholde',
+    'placeholdex',
     'a placeholder value reaches production',
     'place holder',
     'p',
     'N/A',
-    // Ordinary short-word sentences (regression: the old pattern's unanchored
-    // `\S\s+\S` branch accepted these only under search semantics).
     'a b',
-    'to do',
     'fix the bug',
-    // 11 chars — same length as "placeholder" — deviating at the first and
-    // last positions.
-    'credentials',
-    'placeholdex',
     'Err — “quoted”, 100% Unicode: héllo 🚀',
     '檔案路徑/main.go',
-    // NBSP is not ASCII JSON whitespace: it counts as content, uniformly in
-    // Go RE2 and ECMA (unlike `\s`, which ECMA extends to Unicode whitespace).
+    // NBSP is not ASCII whitespace: the rule trims `[ \t\n\r\f]` ONLY, so
+    // NBSP counts as content and NBSP-padded "placeholder" is not bare.
     '\u00a0',
     'foo\u00a0bar',
     'placeholder\u00a0',
@@ -257,83 +213,12 @@ describe('anti-placeholder pattern behavior', () => {
     'ERROR: Diff file not found at the specified path. The orchestrator must write the diff to disk before delegating.',
   ];
 
-  it.each(rejected)('rejects %j under search and full-match semantics', (value) => {
-    expect(searchRe.test(value)).toBe(false);
-    expect(fullMatchRe.test(value)).toBe(false);
+  it.each(refused)('treats %j as refusal output (trimmed empty or bare placeholder)', (value) => {
+    expect(isRefusalContent(value)).toBe(true);
   });
 
-  it.each(accepted)('accepts %j under search and full-match semantics', (value) => {
-    expect(searchRe.test(value)).toBe(true);
-    expect(fullMatchRe.test(value)).toBe(true);
-  });
-
-  /** Deterministic PRNG (mulberry32) so the fuzz corpus is stable across runs. */
-  function mulberry32(seed: number): () => number {
-    let a = seed;
-    return () => {
-      a |= 0;
-      a = (a + 0x6d2b79f5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-
-  const ASCII_WS = new Set([' ', '\t', '\n', '\r', '\f']);
-  const BARE_PLACEHOLDER = /^[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr]$/;
-
-  /** Contract oracle: has content, and is not bare "placeholder" after ASCII trim. */
-  function isAcceptable(value: string): boolean {
-    const chars = [...value];
-    if (!chars.some((c) => !ASCII_WS.has(c))) return false;
-    let start = 0;
-    let end = chars.length;
-    while (start < end && ASCII_WS.has(chars[start])) start++;
-    while (end > start && ASCII_WS.has(chars[end - 1])) end--;
-    return !BARE_PLACEHOLDER.test(chars.slice(start, end).join(''));
-  }
-
-  it('agrees with the contract oracle on seeded adversarial fuzz input', () => {
-    const alphabet = [
-      ' ',
-      '\t',
-      '\n',
-      '\r',
-      '\f',
-      'p',
-      'P',
-      'l',
-      'L',
-      'a',
-      'A',
-      'c',
-      'C',
-      'e',
-      'E',
-      'h',
-      'H',
-      'o',
-      'O',
-      'd',
-      'D',
-      'r',
-      'R',
-      'x',
-      '.',
-      '\u00a0',
-      '🚀',
-    ];
-    const rand = mulberry32(0xc0ffee);
-    for (let i = 0; i < 3000; i++) {
-      const length = Math.floor(rand() * 16);
-      let value = '';
-      for (let j = 0; j < length; j++) {
-        value += alphabet[Math.floor(rand() * alphabet.length)];
-      }
-      const expected = isAcceptable(value);
-      expect(searchRe.test(value), `search ${JSON.stringify(value)}`).toBe(expected);
-      expect(fullMatchRe.test(value), `full-match ${JSON.stringify(value)}`).toBe(expected);
-    }
+  it.each(accepted)('treats %j as real content', (value) => {
+    expect(isRefusalContent(value)).toBe(false);
   });
 });
 
@@ -350,8 +235,32 @@ describe('root orchestration contracts', () => {
   it('routes malformed/refused drafter partial JSON through the incomplete-review fallback', () => {
     expect(root).toContain('partial, refused, or otherwise malformed');
     expect(root).toContain(
+      'placeholder/refusal text instead of real content) must not be salvaged',
+    );
+    expect(root).toContain(
       'treat it as the same fallback object so it follows the incomplete-review fallback below (`review_complete: false`)',
     );
+  });
+
+  it('voids an entire drafter response on refusal content (step 5)', () => {
+    expect(root).toContain(
+      'Refusal content check (REQUIRED — applies to every parsed drafter response)',
+    );
+    // The schema layer stops at the empty string; this semantic check is what
+    // covers whitespace-only and bare-placeholder values.
+    expect(root).toContain(
+      'the schema only rejects empty strings (`minLength: 1`) — it cannot see whitespace-only or placeholder text',
+    );
+    expect(root).toContain(
+      "Inspect every human-meaningful string in the response: each finding's `file`, `issue`, and `details`, plus the top-level `summary`.",
+    );
+    expect(root).toContain(
+      'If ANY of these, after trimming leading and trailing ASCII whitespace `[ \\t\\n\\r\\f]`, is empty OR equals the literal `placeholder` case-insensitively, that delegation refused or emitted malformed output',
+    );
+    expect(root).toContain(
+      'treat its ENTIRE response as the fallback object above (`review_complete: false`)',
+    );
+    expect(root).toContain('Do NOT salvage its other fields or findings.');
   });
 
   it('parses every batched drafter delegation separately before aggregating', () => {
@@ -498,6 +407,32 @@ describe('root orchestration contracts', () => {
     expect(root).toContain('apply the ANTI-LOOP fallback from step 5');
     expect(root).toContain('do NOT partially merge the subset of verdicts that did match');
   });
+
+  it('fails the whole verifier batch closed on refusal content (step 6)', () => {
+    const refusalCheck = root.indexOf(
+      'Refusal content check (REQUIRED — first, before the pairing check, scope filtering, or any merge)',
+    );
+    expect(refusalCheck).toBeGreaterThan(-1);
+    // The refusal check runs before pairing, so refusal text never reaches
+    // the pairing/scope/merge machinery.
+    expect(refusalCheck).toBeLessThan(root.indexOf('Pairing check (REQUIRED'));
+    expect(root).toContain("inspect every verdict's free-text fields (`file`, `issue`, `details`)");
+    expect(root).toContain(
+      'If ANY of these, after trimming leading and trailing ASCII whitespace `[ \\t\\n\\r\\f]`, is empty OR equals the literal `placeholder` case-insensitively, the verifier refused',
+    );
+    expect(root).toContain(
+      'so this semantic check is what rejects whitespace-only and placeholder output',
+    );
+    expect(root).toContain(
+      'Treat the WHOLE batch as malformed/inconclusive and apply the ANTI-LOOP fallback from step 5',
+    );
+    expect(root).toContain(
+      "post a COMMENT review with the drafter's unverified findings and a note that verification was inconclusive",
+    );
+    expect(root).toContain(
+      'Do NOT approve, do NOT retry the delegation, and do NOT partially merge the verdicts that look clean.',
+    );
+  });
 });
 
 describe('verifier instruction contracts', () => {
@@ -520,7 +455,12 @@ describe('verifier instruction contracts', () => {
     expect(verifier).toContain("Preserve the line number from the drafter's finding EXACTLY");
   });
 
-  it('forbids placeholder text explicitly', () => {
-    expect(verifier).toContain('Never fill any field with placeholder text');
+  it('forbids blank/placeholder text semantically (the schema only rejects empty)', () => {
+    expect(verifier).toContain('Never fill any field with blank or placeholder text');
+    expect(verifier).toContain(
+      'the schema only rejects empty strings (`minLength: 1`), and the orchestrator treats any free-text field that trims (ASCII whitespace) to empty or to the bare literal "placeholder" as refusal output',
+    );
+    expect(verifier).toContain('marking the response malformed and the whole batch inconclusive');
+    expect(verifier).not.toContain('the schema rejects it');
   });
 });

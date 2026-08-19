@@ -206,6 +206,16 @@ agents:
          required fields, wrong types, or placeholder/refusal text instead of real
          content) must not be salvaged: treat it as the same fallback object so it
          follows the incomplete-review fallback below (`review_complete: false`).
+         **Refusal content check (REQUIRED — applies to every parsed drafter
+         response):** the schema only rejects empty strings (`minLength: 1`) — it
+         cannot see whitespace-only or placeholder text. Inspect every
+         human-meaningful string in the response: each finding's `file`, `issue`,
+         and `details`, plus the top-level `summary`. If ANY of these, after
+         trimming leading and trailing ASCII whitespace `[ \t\n\r\f]`, is empty OR
+         equals the literal `placeholder` case-insensitively, that delegation
+         refused or emitted malformed output: treat its ENTIRE response as the
+         fallback object above (`review_complete: false`). Do NOT salvage its other
+         fields or findings.
          **Aggregation rule (REQUIRED — how per-delegation results become ONE merged result):**
          - Merged `findings` = the concatenation of every delegation's `findings` array.
          - Merged `review_complete` = true ONLY IF every delegation returned valid JSON
@@ -269,6 +279,18 @@ agents:
          approve or to retry.
          (The fallback preserves the drafter's analysis for the author.)
       6. Parse the verifier's JSON response (a `verdicts` array).
+         **Refusal content check (REQUIRED — first, before the pairing check, scope
+         filtering, or any merge):** inspect every verdict's free-text fields (`file`,
+         `issue`, `details`). If ANY of these, after trimming leading and trailing
+         ASCII whitespace `[ \t\n\r\f]`, is empty OR equals the literal `placeholder`
+         case-insensitively, the verifier refused: the schema only rejects empty
+         strings (`minLength: 1`), so this semantic check is what rejects
+         whitespace-only and placeholder output. Treat the WHOLE batch as
+         malformed/inconclusive and apply the
+         ANTI-LOOP fallback from step 5 — post a COMMENT review with the drafter's
+         unverified findings and a note that verification was inconclusive. Do NOT
+         approve, do NOT retry the delegation, and do NOT partially merge the verdicts
+         that look clean.
          **Pairing check (REQUIRED — before scope filtering or any merge):** verdicts must
          correspond one-to-one to the findings you delegated, matched by the `finding_id`
          you assigned in step 5. For every verdict, look up the delegated finding with the
@@ -926,6 +948,12 @@ agents:
       Also include a `summary` field with a brief overall assessment.
       Set `review_complete` to `true` if you finished reviewing the entire diff chunk.
       Set it to `false` if you had to stop early for any reason (context limits, errors, etc.).
+      Every free-text field (`file`, `issue`, `details`, `summary`) must carry real
+      content. The schema only rejects empty strings (`minLength: 1`); the
+      orchestrator additionally treats any of these fields that, after trimming ASCII
+      whitespace `[ \t\n\r\f]`, is empty or equals the literal "placeholder" (any
+      case) as refusal output and discards your ENTIRE response as malformed
+      (`review_complete: false`).
 
       ## Line Number Calculation Algorithm
 
@@ -960,25 +988,22 @@ agents:
             items:
               type: object
               properties:
-                # The `pattern` on the free-text fields below (mirrored in the verifier
-                # schema) rejects the two refusal shapes: no content (empty or
-                # ASCII-whitespace-only) and the exact bare literal "placeholder" (any
-                # case, optional surrounding whitespace) — the escape a refusing model
-                # reaches for when the schema forces it to emit something. It is written
-                # for engine portability: no lookaheads (RE2-based tool-mode validation
-                # and provider-side constrained decoding both lack them), every
-                # alternative anchored `^...$` so search-semantics validators and
-                # full-match constrained decoders accept exactly the same strings, and
-                # explicit ASCII classes `[ \t\n\r\f]` instead of `\s` so Go RE2 and
-                # ECMA agree — NBSP and other non-ASCII whitespace count as content.
-                # Ordinary punctuation and Unicode pass untouched. Every copy of the
-                # pattern must stay byte-identical; the src/pr-review-agent unit tests
-                # pin each occurrence and its full-match behavior.
+                # The free-text fields below (mirrored in the verifier schema) carry
+                # only the provider-minimal constraint `minLength: 1`, which rejects
+                # empty strings and nothing more. No `pattern` keyword may appear
+                # anywhere in these schemas: provider-side constrained decoding
+                # rejects any schema carrying one ("Schema is too complex"), verified
+                # against the Docker models gateway — even a plain non-blank regex
+                # fails. Whitespace-only and bare-"placeholder" values are therefore
+                # schema-VALID refusal output: the instructions forbid them, and the
+                # orchestrator's semantic checks (drafter parse step 5, verifier
+                # step 6) treat any response carrying them as malformed/refused
+                # (fail-closed). The src/pr-review-agent unit tests pin the
+                # pattern-free schemas and this contract.
                 file:
                   type: string
                   minLength: 1
-                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
-                  description: File path relative to repo root (a real path — never empty/whitespace-only, never the literal "placeholder")
+                  description: "File path relative to repo root — the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction"
                 line:
                   type: integer
                   minimum: 1
@@ -1001,13 +1026,11 @@ agents:
                 issue:
                   type: string
                   minLength: 1
-                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
-                  description: "One-line summary (never empty/whitespace-only)"
+                  description: "One-line summary — the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction"
                 details:
                   type: string
                   minLength: 1
-                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
-                  description: "Trigger path and impact (never empty/whitespace-only)"
+                  description: "Trigger path and impact — the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction"
                 in_diff:
                   type: boolean
                   description: "true if on a + line"
@@ -1025,8 +1048,7 @@ agents:
           summary:
             type: string
             minLength: 1
-            pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
-            description: Brief overall assessment of the diff quality (never empty/whitespace-only)
+            description: "Brief overall assessment of the diff quality — the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction"
           review_complete:
             type: boolean
             description: "true if the entire diff chunk was reviewed; false if the review was truncated due to context limits or errors"
@@ -1115,9 +1137,13 @@ agents:
       finding) and discards the whole batch as inconclusive on any duplicated, omitted,
       or unknown `finding_id`, or any `file`/`line` mismatch. If the provided snippet is
       insufficient to fully verify, emit LIKELY with a note explaining what additional
-      context would be needed. Never fill any field with placeholder text (e.g. the
-      literal string "placeholder") — the schema rejects it; echo the finding's real
-      `finding_id`, `file`, and `line` and explain honestly in `details`.
+      context would be needed. Never fill any field with blank or placeholder text
+      (e.g. the literal string "placeholder") — the schema only rejects empty strings
+      (`minLength: 1`), and the orchestrator treats any free-text field that trims
+      (ASCII whitespace) to empty or to the bare literal "placeholder" as refusal
+      output, marking the response malformed and the whole batch inconclusive; echo
+      the finding's real `finding_id`, `file`, and `line` and explain honestly in
+      `details`.
 
       ## Populating Your Response
 
@@ -1200,15 +1226,17 @@ agents:
                   type: integer
                   minimum: 1
                   description: "Integer ID echoed exactly from the delegated finding — primary pairing key (>= 1)"
-                # Free-text fields reuse the drafter schema's anti-placeholder pattern
-                # (content required, bare "placeholder" rejected, every alternative
-                # anchored — see the drafter schema comment). Every copy must stay
-                # byte-identical; src/pr-review-agent tests pin them.
+                # Free-text fields carry the same provider-minimal constraint as the
+                # drafter schema: `minLength: 1` only, no `pattern` keyword (see the
+                # drafter schema comment — the gateway rejects schemas carrying one).
+                # Whitespace-only and bare-"placeholder" values are schema-valid
+                # refusal output: the instructions forbid them, and the orchestrator's
+                # step-6 refusal content check fails the whole batch closed.
+                # src/pr-review-agent tests pin the pattern-free schemas.
                 file:
                   type: string
                   minLength: 1
-                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
-                  description: "File path echoed exactly from the finding — cross-checked against the finding_id pairing (never the literal 'placeholder')"
+                  description: "File path echoed exactly from the finding, cross-checked against the finding_id pairing — the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction"
                 line:
                   type: integer
                   minimum: 1
@@ -1219,13 +1247,11 @@ agents:
                 issue:
                   type: string
                   minLength: 1
-                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
-                  description: "One-line summary (never empty/whitespace-only)"
+                  description: "One-line summary — the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction"
                 details:
                   type: string
                   minLength: 1
-                  pattern: '^[ \t\n\r\f]*[^ \t\n\r\f]{1,10}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]{12,}[ \t\n\r\f]*$|^[ \t\n\r\f]*[^ \t\n\r\f]+(?:[ \t\n\r\f]+[^ \t\n\r\f]+)+[ \t\n\r\f]*$|^[ \t\n\r\f]*(?:[^ \t\n\r\fPp][^ \t\n\r\f]{10}|[Pp][^ \t\n\r\fLl][^ \t\n\r\f]{9}|[Pp][Ll][^ \t\n\r\fAa][^ \t\n\r\f]{8}|[Pp][Ll][Aa][^ \t\n\r\fCc][^ \t\n\r\f]{7}|[Pp][Ll][Aa][Cc][^ \t\n\r\fEe][^ \t\n\r\f]{6}|[Pp][Ll][Aa][Cc][Ee][^ \t\n\r\fHh][^ \t\n\r\f]{5}|[Pp][Ll][Aa][Cc][Ee][Hh][^ \t\n\r\fOo][^ \t\n\r\f]{4}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][^ \t\n\r\fLl][^ \t\n\r\f]{3}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][^ \t\n\r\fDd][^ \t\n\r\f]{2}|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][^ \t\n\r\fEe][^ \t\n\r\f]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][^ \t\n\r\fRr])[ \t\n\r\f]*$'
-                  description: "Explanation of verdict (never empty/whitespace-only, never the literal 'placeholder')"
+                  description: "Explanation of verdict — the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction"
                 in_changed_code:
                   type: boolean
                 evidence_strength:
