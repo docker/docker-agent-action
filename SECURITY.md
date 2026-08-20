@@ -95,8 +95,8 @@ The membership check **fails closed**: if no actor login can be resolved, or the
 actor is not an org member, the review is skipped. `src/check-org-membership`
 evaluates the authorization paths in order (the PR author for automatic review,
 then the trusted requester for `review_requested`), resolving the PR author live
-via the API so the directly-wired `pull_request` path verifies the author
-instead of an empty comment author.
+via the API so the directly-wired `pull_request` path verifies the author instead
+of an empty comment author.
 
 ### 2. Rate anomalies are detected and throttled
 
@@ -120,6 +120,22 @@ bound request frequency:
 - The existing in-action **cache lock** (`pr-review-lock-<repo>-<pr>-*`, released
   on completion via a cache marker, 3600 s TTL fallback for crashed runs)
   prevents concurrent reviews from racing on the same PR.
+
+### 3. Fork trigger artifacts and private trigger-context files
+
+A fork-controlled trigger artifact can contain only locator hints. The privileged
+`workflow_run` route resolves the completed successful run from GitHub, validates
+its base repository and immutable 40-hex head SHA, and fetches the PR and review
+comment live. The resolver stages server-derived canonical context by exclusively
+creating a `0600` JSON file in an attempt-specific randomized `runner.temp` root
+with mode `0700`; a pre-upload guard verifies containment, non-symlink status,
+and exact modes. Isolated consumers select the same-run artifact by immutable ID
+and verify its digest, then restore and verify `0700/0600` because artifact modes
+are not preserved. Canonical-derived files are exclusively created at `0600` in
+the same private job root. Locator, canonical, and derived trigger context never
+use predictable shared `/tmp` paths; this does not constrain unrelated runtime
+temporary files. If the pinned bundle has no resolver, workflow-run routes skip
+fail-closed while direct routes continue.
 
 ## Security Modules
 
