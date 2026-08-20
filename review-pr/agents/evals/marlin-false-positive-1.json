@@ -2,7 +2,7 @@
   "id": "34b3988f-0263-4379-8e4a-63519969d02c",
   "title": "Non-Marlin analytics library — should not trigger Marlin guide (run 1)",
   "evals": {
-    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && cp /configs/refs/posting-format.md /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
+    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
     "relevance": [
       "The agent ran 'echo $GITHUB_ACTIONS' before performing the review to detect the output mode",
       "The agent output the review to the console as formatted markdown instead of posting via gh api",

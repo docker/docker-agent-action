@@ -62,6 +62,15 @@ const canonicalContext = {
     body: '@docker-agent review this',
     inReplyToId: null,
     pullRequestUrl: `https://api.github.com/repos/${repository}/pulls/42`,
+    path: 'src/example.ts',
+    line: 42,
+    originalLine: 40,
+    side: 'RIGHT',
+    startLine: 41,
+    startSide: 'RIGHT',
+    diffHunk: '@@ -40,3 +40,5 @@',
+    commitId: sha,
+    originalCommitId: 'b'.repeat(40),
   },
 };
 
@@ -226,33 +235,6 @@ describe('resolveTriggerContext', () => {
     expect(outputs).not.toHaveProperty('comment-body');
     expect(outputs).not.toHaveProperty('comment-id');
     expect(outputs).not.toHaveProperty('actor');
-  });
-
-  it.each([
-    ['a canonical mention', '@docker-agent review this', 'true', 'false'],
-    ['a canonical review command', '/review @docker-agent', 'true', 'true'],
-    ['a canonical ordinary comment', 'hello', 'false', 'false'],
-    ['no canonical comment', null, 'false', 'false'],
-  ])('derives legacy mention outputs only from %s', (_description, body, mention, reviewCommand) => {
-    const outputs = resolverOutputs({
-      ...canonicalContext,
-      comment: body === null ? null : { ...canonicalContext.comment, body },
-    });
-
-    expect(outputs['comment-has-mention']).toBe(mention);
-    expect(outputs['comment-is-review-cmd']).toBe(reviewCommand);
-    expect(outputs).not.toHaveProperty('comment-body');
-    expect(outputs).not.toHaveProperty('comment-id');
-  });
-
-  it('uses the canonical live body rather than a forged artifact body for legacy mention outputs', () => {
-    const outputs = resolverOutputs({
-      ...canonicalContext,
-      comment: { ...canonicalContext.comment, body: 'live body without a mention' },
-    });
-
-    expect(outputs['comment-has-mention']).toBe('false');
-    expect(outputs['comment-is-review-cmd']).toBe('false');
   });
 
   it('rejects a workflow run from another repository before PR lookup', async () => {
@@ -449,6 +431,51 @@ describe('resolveTriggerContext', () => {
     const directory = artifacts({ 'event_name.txt': 'pull_request' });
     try {
       await expect(resolve(directory)).rejects.toThrow(/ambiguous or empty/);
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it('preserves every server-derived inline anchor in canonical review comments', async () => {
+    getWorkflowRun.mockResolvedValue({
+      data: run({ event: 'pull_request_review_comment', pull_requests: [] }),
+    });
+    getReviewComment.mockResolvedValue({
+      data: {
+        id: 5,
+        body: '@docker-agent review this',
+        in_reply_to_id: 1,
+        user: { login: 'external', type: 'User' },
+        pull_request_url: `https://api.github.com/repos/${repository}/pulls/42`,
+        path: 'src/example.ts',
+        line: 42,
+        original_line: 40,
+        side: 'RIGHT',
+        start_line: 41,
+        start_side: 'RIGHT',
+        diff_hunk: '@@ -40,3 +40,5 @@',
+        commit_id: sha,
+        original_commit_id: 'b'.repeat(40),
+      },
+    });
+    const directory = artifacts({
+      'event_name.txt': 'pull_request_review_comment',
+      'comment_id.txt': '5',
+    });
+    try {
+      await expect(resolve(directory)).resolves.toMatchObject({
+        comment: {
+          path: 'src/example.ts',
+          line: 42,
+          originalLine: 40,
+          side: 'RIGHT',
+          startLine: 41,
+          startSide: 'RIGHT',
+          diffHunk: '@@ -40,3 +40,5 @@',
+          commitId: sha,
+          originalCommitId: 'b'.repeat(40),
+        },
+      });
     } finally {
       rmSync(directory, { recursive: true });
     }

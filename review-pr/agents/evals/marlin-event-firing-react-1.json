@@ -2,7 +2,7 @@
   "id": "ed82e8e4-0b29-4a3c-80d8-55284bdfd6c0",
   "title": "Marlin SDK PageView fired in React render body with wrong timestamp format (run 1)",
   "evals": {
-    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && cp /configs/refs/posting-format.md /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
+    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
     "relevance": [
       "The agent detects the Marlin SDK import pattern (from \"@docker/data-contracts\") and recognizes this as a Marlin producer PR",
       "At least one finding identifies that marlin.track() is called directly in the React component render body, not inside a useEffect — this causes the event to fire on every render",
