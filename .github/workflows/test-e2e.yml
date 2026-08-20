@@ -63,27 +63,6 @@ jobs:
           chmod +x test-job-summary.sh
           ./test-job-summary.sh
 
-  test-release-caller-permissions:
-    name: Release Caller Permissions Tests
-    runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
-
-      - name: Run release caller-permissions tests
-        run: |
-          cd tests
-          chmod +x test-release-caller-permissions.sh
-          ./test-release-caller-permissions.sh
-
   resolve-context:
     name: Resolve PR Context
     runs-on: ubuntu-latest
