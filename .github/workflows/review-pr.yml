@@ -593,7 +593,7 @@ jobs:
     if: |
       always() && needs.resolve-context.result != 'failure' && (
         (github.event_name == 'pull_request_review_comment' && github.event.comment.in_reply_to_id && github.event.comment.user.login != 'docker-agent' && github.event.comment.user.type != 'Bot') ||
-        (needs.resolve-context.result == 'success' && needs.resolve-context.outputs.trigger-event == 'pull_request_review_comment' && needs.resolve-context.outputs.comment-in-reply-to-id != '' && needs.resolve-context.outputs.comment-author != 'docker-agent' && needs.resolve-context.outputs.comment-author-type != 'Bot' && needs.resolve-context.outputs.comment-author != 'docker-agent[bot]')
+        (inputs.trigger-run-id != '' && needs.resolve-context.result == 'success' && needs.resolve-context.outputs.canonical-context-available == 'true' && needs.resolve-context.outputs.canonical-context-artifact-id != '' && needs.resolve-context.outputs.trigger-event == 'pull_request_review_comment' && needs.resolve-context.outputs.trigger-route == 'feedback' && needs.resolve-context.outputs.comment-in-reply-to-id != '' && needs.resolve-context.outputs.comment-author != 'docker-agent' && needs.resolve-context.outputs.comment-author-type != 'Bot' && needs.resolve-context.outputs.comment-author != 'docker-agent[bot]')
       )
     runs-on: ubuntu-latest
     permissions:
@@ -601,11 +601,32 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      actions: read   # download cross-run artifacts
+      actions: read   # download same-run canonical context artifacts
 
     steps:
+      - name: Create feedback context directory
+        id: feedback-context-directory
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          runner_temp=$(realpath -e "${RUNNER_TEMP:?}")
+          root=$(mktemp -d "$runner_temp/docker-agent-feedback-context-attempt-${RUN_ATTEMPT:?}.XXXXXX")
+          canonical="$root/canonical"
+          mkdir "$canonical"
+          chmod 700 "$root" "$canonical"
+          [ "$(stat -c '%a' "$root")" = 700 ] && [ "$(stat -c '%a' "$canonical")" = 700 ]
+          reply_comment=$(mktemp "$root/reply-comment.XXXXXX.json")
+          comment_body=$(mktemp "$root/comment-body.XXXXXX.txt")
+          chmod 600 "$reply_comment" "$comment_body"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "canonical=$canonical" >> "$GITHUB_OUTPUT"
+          echo "reply-comment=$reply_comment" >> "$GITHUB_OUTPUT"
+          echo "comment-body=$comment_body" >> "$GITHUB_OUTPUT"
 
-      - name: Setup credentials
+      - name: Setup cross-run credentials
         if: inputs.trigger-run-id != ''
         uses: docker/docker-agent-action/setup-credentials@b08367e7e9a471822464be2bb9fdaa1c0fb6061b # v2.0.4
 
@@ -619,48 +640,110 @@ jobs:
             exit 1
           fi
 
-      - name: Download trigger context
-        # Bypass secret-masking: instead of consuming comment-json from
-        # resolve-context job outputs (which GitHub Actions silently drops when
-        # the value looks like a secret), download the artifact directly.
-        if: inputs.trigger-run-id != ''
+      - name: Validate canonical context artifact ID
+        id: canonical-artifact
+        if: inputs.trigger-run-id != '' && needs.resolve-context.result == 'success' && needs.resolve-context.outputs.canonical-context-available == 'true' && needs.resolve-context.outputs.canonical-context-artifact-id != ''
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ needs.resolve-context.outputs.canonical-context-artifact-id }}
+        run: |
+          if [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Canonical context artifact ID is invalid"
+            exit 1
+          fi
+
+      - name: Download canonical trigger context
+        if: inputs.trigger-run-id != '' && steps.canonical-artifact.outputs.valid == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: pr-review-context
-          path: /tmp/context
-          run-id: ${{ inputs.trigger-run-id }}
-          github-token: ${{ env.GITHUB_APP_TOKEN }}
+          artifact-ids: ${{ needs.resolve-context.outputs.canonical-context-artifact-id }}
+          path: ${{ steps.feedback-context-directory.outputs.canonical }}
+          digest-mismatch: error
+
+      - name: Guard downloaded feedback context
+        if: inputs.trigger-run-id != '' && steps.canonical-artifact.outputs.valid == 'true'
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          CONTEXT_ROOT: ${{ steps.feedback-context-directory.outputs.root }}
+          CANONICAL_DIRECTORY: ${{ steps.feedback-context-directory.outputs.canonical }}
+        run: |
+          set -euo pipefail
+          runner_temp=$(realpath -e "${RUNNER_TEMP:?}")
+          [ -d "$CONTEXT_ROOT" ] && [ ! -L "$CONTEXT_ROOT" ] && [ -d "$CANONICAL_DIRECTORY" ] && [ ! -L "$CANONICAL_DIRECTORY" ]
+          root=$(realpath -e "$CONTEXT_ROOT")
+          canonical_dir=$(realpath -e "$CANONICAL_DIRECTORY")
+          case "$root:$canonical_dir" in "$runner_temp"/*:"$root"/canonical) ;; *) exit 1 ;; esac
+          [ "$(find "$canonical_dir" -maxdepth 1 -type f -name canonical-trigger-context.json | wc -l | tr -d ' ')" = 1 ]
+          context="$canonical_dir/canonical-trigger-context.json"
+          [ -f "$context" ] && [ ! -L "$context" ] && [ "$(realpath -e "$context")" = "$canonical_dir/canonical-trigger-context.json" ]
+          chmod 700 "$root" "$canonical_dir"
+          chmod 600 "$context"
+          [ "$(stat -c '%a' "$root")" = 700 ] && [ "$(stat -c '%a' "$canonical_dir")" = 700 ] && [ "$(stat -c '%a' "$context")" = 600 ]
 
       - name: Parse comment context
         id: feedback
         shell: bash
         env:
-          # Direct path (same-repo pull_request_review_comment)
+          GH_TOKEN: ${{ github.token }}
           EVENT_COMMENT_JSON: ${{ toJSON(github.event.comment) }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_NAME: ${{ github.event_name }}
+          TRIGGER_RUN_ID: ${{ inputs.trigger-run-id }}
+          CANONICAL_CONTEXT: ${{ steps.feedback-context-directory.outputs.canonical }}/canonical-trigger-context.json
+          REPLY_COMMENT_FILE: ${{ steps.feedback-context-directory.outputs.reply-comment }}
+          COMMENT_BODY_FILE: ${{ steps.feedback-context-directory.outputs.comment-body }}
         run: |
-          if [ -f /tmp/context/comment.json ]; then
-            # Trigger path: downloaded artifact (bypasses secret-masking on job outputs)
-            cp /tmp/context/comment.json /tmp/reply_comment.json
-            echo "pr-number=$(cat /tmp/context/pr_number.txt || { echo '::error::pr_number.txt missing from artifact'; exit 1; })" >> $GITHUB_OUTPUT
-            echo "pr-head-sha=$(cat /tmp/context/pr_head_sha.txt 2>/dev/null || echo '')" >> $GITHUB_OUTPUT
+          if [ -n "$TRIGGER_RUN_ID" ]; then
+            if ! jq -e --arg run_id "$TRIGGER_RUN_ID" '
+              (.runId | tostring) == $run_id and
+              .event == "pull_request_review_comment" and
+              (.pullRequest.number | (type == "number" and . > 0)) and
+              (.pullRequest.headSha | type == "string" and test("^[0-9a-fA-F]{40}$")) and
+              (.comment | type == "object") and
+              (.comment.id | type == "number" and . > 0) and
+              (.comment.inReplyToId | type == "number" and . > 0)
+            ' "$CANONICAL_CONTEXT" > /dev/null; then
+              echo "::error::Canonical trigger context is malformed or belongs to a different run"
+              exit 1
+            fi
+            # Preserve the server-derived anchor so replies retain direct-event fidelity.
+            jq '.comment | {
+              id,
+              body,
+              in_reply_to_id: .inReplyToId,
+              path,
+              line,
+              original_line: .originalLine,
+              side,
+              start_line: .startLine,
+              start_side: .startSide,
+              diff_hunk: .diffHunk,
+              commit_id: .commitId,
+              original_commit_id: .originalCommitId,
+              user: {login: .author, type: .authorType}
+            }' "$CANONICAL_CONTEXT" > "$REPLY_COMMENT_FILE"
+            echo "pr-number=$(jq -r '.pullRequest.number' "$CANONICAL_CONTEXT")" >> $GITHUB_OUTPUT
+            PR_HEAD_SHA=$(jq -r '.pullRequest.headSha' "$CANONICAL_CONTEXT")
           elif [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
-            # Direct path: comment data from event payload
-            printf '%s' "$EVENT_COMMENT_JSON" > /tmp/reply_comment.json
+            printf '%s' "$EVENT_COMMENT_JSON" > "$REPLY_COMMENT_FILE"
             echo "pr-number=$EVENT_PR_NUMBER" >> $GITHUB_OUTPUT
-            echo "pr-head-sha=$EVENT_PR_HEAD_SHA" >> $GITHUB_OUTPUT
+            PR_HEAD_SHA=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$EVENT_PR_NUMBER" --jq '.head.sha')
           else
             echo "::error::No comment data available"
             exit 1
           fi
-
-          echo "comment-id=$(jq -r '.id' /tmp/reply_comment.json)" >> $GITHUB_OUTPUT
-          echo "comment-author=$(jq -r '.user.login' /tmp/reply_comment.json)" >> $GITHUB_OUTPUT
-          # Use // empty so null in_reply_to_id becomes empty string (not the literal "null")
-          echo "parent-id=$(jq -r '.in_reply_to_id // empty' /tmp/reply_comment.json)" >> $GITHUB_OUTPUT
-          jq -r '.body' /tmp/reply_comment.json > /tmp/comment_body.txt
+          if ! [[ "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Selected PR head SHA is invalid"
+            exit 1
+          fi
+          echo "pr-head-sha=$PR_HEAD_SHA" >> $GITHUB_OUTPUT
+          echo "comment-id=$(jq -r '.id' "$REPLY_COMMENT_FILE")" >> $GITHUB_OUTPUT
+          echo "comment-author=$(jq -r '.user.login' "$REPLY_COMMENT_FILE")" >> $GITHUB_OUTPUT
+          echo "parent-id=$(jq -r '.inReplyToId // .in_reply_to_id // empty' "$REPLY_COMMENT_FILE")" >> $GITHUB_OUTPUT
+          jq -r '.body' "$REPLY_COMMENT_FILE" > "$COMMENT_BODY_FILE"
 
       - name: Check if reply is to agent comment
         id: check
@@ -806,6 +889,7 @@ jobs:
           LINE: ${{ steps.check.outputs.line }}
           TRIGGER_COMMENT_AUTHOR: ${{ steps.feedback.outputs.comment-author }}
           TRIGGER_COMMENT_ID: ${{ steps.feedback.outputs.comment-id }}
+          COMMENT_BODY_FILE: ${{ steps.feedback-context-directory.outputs.comment-body }}
         run: |
           # Fetch the root comment (fail early if the API call errors)
           root=$(gh api "repos/$REPO/pulls/comments/$ROOT_ID") || {
@@ -818,7 +902,7 @@ jobs:
           # Uses --paginate to handle PRs with >100 review comments.
           # Each page is processed by jq independently, then merged with jq -s.
           # Note: the triggering comment may not appear here due to eventual
-          # consistency, so we append it from /tmp/comment_body.txt below.
+          # consistency, so we append it from $COMMENT_BODY_FILE below.
           all_comments=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/comments" | \
             jq -s --arg root_id "$ROOT_ID" \
             '[.[][] | select((.in_reply_to_id | tostring) == $root_id)] | sort_by(.created_at)') || {
@@ -853,7 +937,7 @@ jobs:
             if [ "$reply_count" -gt 0 ]; then
               for i in $(seq 0 $((reply_count - 1))); do
                 comment_id=$(echo "$all_comments" | jq -r ".[$i].id") || continue
-                # Skip the triggering comment — we append it from /tmp/comment_body.txt below
+                # Skip the triggering comment — we append it from $COMMENT_BODY_FILE below
                 if [ "$comment_id" = "$TRIGGER_COMMENT_ID" ]; then
                   continue
                 fi
@@ -869,22 +953,22 @@ jobs:
               done
             fi
 
-            # Always append the triggering comment last — sourced from /tmp/comment_body.txt
+            # Always append the triggering comment last — sourced from $COMMENT_BODY_FILE
             # (written by the Parse comment context step; safe for multi-line bodies).
             echo "[REPLY by @$TRIGGER_COMMENT_AUTHOR] ← this is the reply you are responding to"
-            cat /tmp/comment_body.txt
+            cat "$COMMENT_BODY_FILE"
             echo ""
             echo "$DELIM"
           } >> $GITHUB_OUTPUT
 
-          echo "✅ Built thread context with replies (triggering comment from /tmp/comment_body.txt)"
+          echo "✅ Built thread context with replies (triggering comment from $COMMENT_BODY_FILE)"
 
       - name: Checkout PR head
         if: steps.check.outputs.is_agent == 'true' && steps.auth.outputs.authorized == 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          ref: refs/pull/${{ steps.feedback.outputs.pr-number }}/head
+          ref: ${{ steps.feedback.outputs.pr-head-sha }}
 
       - name: Run reply
         if: steps.check.outputs.is_agent == 'true' && steps.auth.outputs.authorized == 'true'
@@ -906,14 +990,16 @@ jobs:
       - name: Save feedback artifact
         if: steps.check.outputs.is_agent == 'true'
         shell: bash
+        env:
+          REPLY_COMMENT_FILE: ${{ steps.feedback-context-directory.outputs.reply-comment }}
         run: |
-          # /tmp/reply_comment.json was written by the "Parse comment context" step
-          if [ ! -f /tmp/reply_comment.json ]; then
+          # $REPLY_COMMENT_FILE was written by the "Parse comment context" step
+          if [ ! -f "$REPLY_COMMENT_FILE" ]; then
             echo "::warning::No comment JSON available, skipping feedback capture"
             exit 0
           fi
           mkdir -p feedback
-          cp /tmp/reply_comment.json feedback/feedback.json
+          cp "$REPLY_COMMENT_FILE" feedback/feedback.json
           # Validate it's parseable JSON before uploading
           if ! jq empty feedback/feedback.json 2>/dev/null; then
             echo "::warning::Feedback JSON is malformed, skipping"
