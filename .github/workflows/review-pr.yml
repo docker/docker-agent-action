@@ -115,8 +115,6 @@ jobs:
       pr-head-sha: ${{ steps.read.outputs.pr-head-sha }}
       pr-base-sha: ${{ steps.read.outputs.pr-base-sha }}
       trigger-route: ${{ steps.read.outputs.trigger-route }}
-      comment-has-mention: ${{ steps.read.outputs.comment-has-mention }}
-      comment-is-review-cmd: ${{ steps.read.outputs.comment-is-review-cmd }}
       canonical-context-available: ${{ steps.read.outputs.canonical-context-available }}
       # Downstream reply jobs run on isolated runners. The resolver uploads the
       # server-derived context and consumers select it only by this immutable
@@ -1036,13 +1034,7 @@ jobs:
         !startsWith(github.event.comment.body, '/review') &&
         github.event.comment.user.login != 'docker-agent' &&
         github.event.comment.user.type != 'Bot') ||
-        (needs.resolve-context.result == 'success' &&
-        needs.resolve-context.outputs.trigger-event == 'pull_request_review_comment' &&
-        needs.resolve-context.outputs.comment-in-reply-to-id == '' &&
-        needs.resolve-context.outputs.comment-has-mention == 'true' &&
-        needs.resolve-context.outputs.comment-is-review-cmd != 'true' &&
-        needs.resolve-context.outputs.comment-author != 'docker-agent' &&
-        needs.resolve-context.outputs.comment-author-type != 'Bot')
+        (inputs.trigger-run-id != '' && needs.resolve-context.result == 'success' && needs.resolve-context.outputs.canonical-context-available == 'true' && needs.resolve-context.outputs.canonical-context-artifact-id != '' && needs.resolve-context.outputs.trigger-event == 'pull_request_review_comment' && needs.resolve-context.outputs.trigger-route == 'mention' && needs.resolve-context.outputs.comment-in-reply-to-id == '' && needs.resolve-context.outputs.comment-author != 'docker-agent' && needs.resolve-context.outputs.comment-author-type != 'Bot')
       )
     runs-on: ubuntu-latest
     permissions:
@@ -1050,72 +1042,139 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      actions: read   # download cross-run artifacts
+      actions: read   # download same-run canonical context artifacts
 
     steps:
-      - name: Setup credentials
+      - name: Setup direct credentials
         uses: docker/docker-agent-action/setup-credentials@b08367e7e9a471822464be2bb9fdaa1c0fb6061b # v2.0.4
 
-      - name: Download trigger context
-        if: inputs.trigger-run-id != ''
+      - name: Validate canonical context artifact ID
+        id: canonical-artifact
+        if: inputs.trigger-run-id != '' && needs.resolve-context.result == 'success' && needs.resolve-context.outputs.canonical-context-available == 'true' && needs.resolve-context.outputs.canonical-context-artifact-id != ''
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ needs.resolve-context.outputs.canonical-context-artifact-id }}
+        run: |
+          if [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Canonical context artifact ID is invalid"
+            exit 1
+          fi
+
+      - name: Create mention context directory
+        id: mention-context-directory
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          runner_temp=$(realpath -e "${RUNNER_TEMP:?}")
+          root=$(mktemp -d "$runner_temp/docker-agent-mention-context-attempt-${RUN_ATTEMPT:?}.XXXXXX")
+          canonical="$root/canonical"
+          mkdir "$canonical"
+          mention_event=$(mktemp "$root/mention-event.XXXXXX.json")
+          chmod 700 "$root" "$canonical"
+          chmod 600 "$mention_event"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "canonical=$canonical" >> "$GITHUB_OUTPUT"
+          echo "mention-event=$mention_event" >> "$GITHUB_OUTPUT"
+
+      - name: Download canonical trigger context
+        if: inputs.trigger-run-id != '' && steps.canonical-artifact.outputs.valid == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: pr-review-context
-          path: /tmp/context
-          run-id: ${{ inputs.trigger-run-id }}
-          github-token: ${{ env.GITHUB_APP_TOKEN }}
+          artifact-ids: ${{ needs.resolve-context.outputs.canonical-context-artifact-id }}
+          path: ${{ steps.mention-context-directory.outputs.canonical }}
+          digest-mismatch: error
+
+      - name: Guard downloaded mention context
+        if: inputs.trigger-run-id != '' && steps.canonical-artifact.outputs.valid == 'true'
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          CONTEXT_ROOT: ${{ steps.mention-context-directory.outputs.root }}
+          CANONICAL_DIRECTORY: ${{ steps.mention-context-directory.outputs.canonical }}
+        run: |
+          set -euo pipefail
+          runner_temp=$(realpath -e "${RUNNER_TEMP:?}")
+          [ -d "$CONTEXT_ROOT" ] && [ ! -L "$CONTEXT_ROOT" ] && [ -d "$CANONICAL_DIRECTORY" ] && [ ! -L "$CANONICAL_DIRECTORY" ]
+          root=$(realpath -e "$CONTEXT_ROOT")
+          canonical_dir=$(realpath -e "$CANONICAL_DIRECTORY")
+          case "$root:$canonical_dir" in "$runner_temp"/*:"$root"/canonical) ;; *) exit 1 ;; esac
+          [ "$(find "$canonical_dir" -maxdepth 1 -type f -name canonical-trigger-context.json | wc -l | tr -d ' ')" = 1 ]
+          context="$canonical_dir/canonical-trigger-context.json"
+          [ -f "$context" ] && [ ! -L "$context" ] && [ "$(realpath -e "$context")" = "$canonical_dir/canonical-trigger-context.json" ]
+          chmod 700 "$root" "$canonical_dir"
+          chmod 600 "$context"
+          [ "$(stat -c '%a' "$root")" = 700 ] && [ "$(stat -c '%a' "$canonical_dir")" = 700 ] && [ "$(stat -c '%a' "$context")" = 600 ]
 
       - name: Synthesize mention-reply event context
-        if: inputs.trigger-run-id != ''
+        if: inputs.trigger-run-id != '' && steps.canonical-artifact.outputs.valid == 'true'
         shell: bash
+        env:
+          TRIGGER_RUN_ID: ${{ inputs.trigger-run-id }}
+          CANONICAL_CONTEXT: ${{ steps.mention-context-directory.outputs.canonical }}/canonical-trigger-context.json
+          MENTION_EVENT_FILE: ${{ steps.mention-context-directory.outputs.mention-event }}
         run: |
-          if [ ! -f /tmp/context/comment.json ]; then
-            echo "::warning::comment.json not found in artifact — cannot synthesize mention event"
-            exit 0
+          if ! jq -e --arg run_id "$TRIGGER_RUN_ID" '
+            (.runId | tostring) == $run_id and
+            .event == "pull_request_review_comment" and
+            (.pullRequest.number | (type == "number" and . > 0)) and
+            (.pullRequest.headSha | type == "string" and test("^[0-9a-fA-F]{40}$")) and
+            (.comment | type == "object") and
+            (.comment.id | type == "number" and . > 0) and
+            (.comment.inReplyToId == null)
+          ' "$CANONICAL_CONTEXT" > /dev/null; then
+            echo "::error::Canonical trigger context is malformed or belongs to a different run"
+            exit 1
           fi
-          PR_NUMBER=$(cat /tmp/context/pr_number.txt 2>/dev/null || echo '')
-          if [ -z "$PR_NUMBER" ]; then
-            echo "::warning::pr_number.txt missing or empty — cannot synthesize mention event"
-            exit 0
-          fi
-          PR_HEAD_SHA=$(cat /tmp/context/pr_head_sha.txt 2>/dev/null || echo '')
-          REPO_NAME="${GITHUB_REPOSITORY##*/}"
-          REPO_FULL="${GITHUB_REPOSITORY}"
-          REPO_OWNER="${GITHUB_REPOSITORY_OWNER}"
-          jq -n \
-            --slurpfile comment /tmp/context/comment.json \
-            --arg pr_number "$PR_NUMBER" \
-            --arg pr_head_sha "$PR_HEAD_SHA" \
-            --arg repo_name "$REPO_NAME" \
-            --arg repo_full_name "$REPO_FULL" \
-            --arg repo_owner "$REPO_OWNER" \
-            '{
-              action: "created",
-              pull_request: {
-                number: ($pr_number | tonumber),
-                head: { sha: $pr_head_sha }
-              },
-              comment: $comment[0],
-              repository: {
-                name: $repo_name,
-                full_name: $repo_full_name,
-                owner: { login: $repo_owner }
-              },
-              sender: $comment[0].user
-            }' > /tmp/mention_event.json
-          echo "✅ Synthesized mention-reply event context at /tmp/mention_event.json"
+          jq '. as $context | {
+            action: "created",
+            pull_request: { number: $context.pullRequest.number, head: { sha: $context.pullRequest.headSha } },
+            comment: {
+              id: $context.comment.id,
+              body: $context.comment.body,
+              in_reply_to_id: $context.comment.inReplyToId,
+              path: $context.comment.path,
+              line: $context.comment.line,
+              original_line: $context.comment.originalLine,
+              side: $context.comment.side,
+              start_line: $context.comment.startLine,
+              start_side: $context.comment.startSide,
+              diff_hunk: $context.comment.diffHunk,
+              commit_id: $context.comment.commitId,
+              original_commit_id: $context.comment.originalCommitId,
+              user: { login: $context.comment.author, type: $context.comment.authorType }
+            },
+            repository: { full_name: env.GITHUB_REPOSITORY, name: (env.GITHUB_REPOSITORY | split("/")[1]), owner: { login: env.GITHUB_REPOSITORY_OWNER } },
+            sender: { login: $context.actor }
+          }' "$CANONICAL_CONTEXT" > "$MENTION_EVENT_FILE"
+          echo "✅ Synthesized mention-reply event context from the canonical server-fetched context"
 
       - name: Resolve event context for mention-reply action
         id: resolve-event
         shell: bash
+        env:
+          TRIGGER_RUN_ID: ${{ inputs.trigger-run-id }}
+          MENTION_EVENT_FILE: ${{ steps.mention-context-directory.outputs.mention-event }}
         run: |
-          if [ -f /tmp/mention_event.json ]; then
-            echo "path=/tmp/mention_event.json" >> $GITHUB_OUTPUT
-            echo "name=pull_request_review_comment" >> $GITHUB_OUTPUT
+          if [ -n "$TRIGGER_RUN_ID" ]; then
+            if [ ! -f "$MENTION_EVENT_FILE" ] || [ -L "$MENTION_EVENT_FILE" ]; then
+              echo "::error::Canonical mention event is unavailable"
+              exit 1
+            fi
+            echo "path=$MENTION_EVENT_FILE" >> "$GITHUB_OUTPUT"
+            echo "name=pull_request_review_comment" >> "$GITHUB_OUTPUT"
           else
-            echo "path=$GITHUB_EVENT_PATH" >> $GITHUB_OUTPUT
-            echo "name=$GITHUB_EVENT_NAME" >> $GITHUB_OUTPUT
+            echo "path=$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
+            echo "name=$GITHUB_EVENT_NAME" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Setup credentials
+        if: steps.resolve-event.outputs.path != ''
+        uses: docker/docker-agent-action/setup-credentials@b08367e7e9a471822464be2bb9fdaa1c0fb6061b # v2.0.4
 
       - name: Run mention-reply handler
         id: mention-context
@@ -1157,21 +1216,22 @@ jobs:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN || github.token }}
           REPO: ${{ github.repository }}
           EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_PATH: ${{ steps.resolve-event.outputs.path }}
           OUTCOME: ${{ steps.run-reply.outcome }}
-          EVENT_NAME: ${{ github.event_name }}
+          EVENT_NAME: ${{ steps.resolve-event.outputs.name }}
         run: |
           if [ "$OUTCOME" != "success" ]; then
             exit 0
           fi
           COMMENT_ID="$EVENT_COMMENT_ID"
-          if [ -z "$COMMENT_ID" ] && [ -f /tmp/mention_event.json ]; then
-            COMMENT_ID=$(jq -r '.comment.id // empty' /tmp/mention_event.json)
+          if [ -z "$COMMENT_ID" ] && [ -f "$EVENT_PATH" ]; then
+            COMMENT_ID=$(jq -r '.comment.id // empty' "$EVENT_PATH")
           fi
           if [ -z "$COMMENT_ID" ]; then
             echo "::warning::No comment ID available — skipping completion reaction"
             exit 0
           fi
-          if [ -f /tmp/mention_event.json ] || [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
+          if [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
             gh api "repos/$REPO/pulls/comments/$COMMENT_ID/reactions" \
               -X POST -f content='+1' || true
           else

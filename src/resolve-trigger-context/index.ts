@@ -18,10 +18,6 @@ export function resolverOutputs(context: CanonicalTriggerContext): Record<string
     'pr-head-sha': context.pullRequest.headSha,
     'pr-base-sha': context.pullRequest.baseSha,
     'trigger-route': triggerRoute(context),
-    // Preserve the legacy workflow-run mention gate until its canonical route
-    // replacement lands; both values derive exclusively from live context.
-    'comment-has-mention': String(comment?.body.includes('@docker-agent') ?? false),
-    'comment-is-review-cmd': String(comment?.body.startsWith('/review') ?? false),
     'comment-author': comment?.author ?? '',
     'comment-author-type': comment?.authorType ?? '',
     'comment-in-reply-to-id':
