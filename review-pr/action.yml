@@ -14,6 +14,14 @@ inputs:
     description: "Comment ID for reactions (auto-detected from github.event if not provided)"
     required: false
     default: ""
+  pr-head-sha:
+    description: "Immutable selected PR head commit SHA. Must be provided with pr-base-sha."
+    required: false
+    default: ""
+  pr-base-sha:
+    description: "Immutable selected PR base commit SHA. Must be provided with pr-head-sha."
+    required: false
+    default: ""
   additional-prompt:
     description: "Additional instructions appended to the review (e.g., language-specific patterns, project conventions)"
     required: false
@@ -248,46 +256,17 @@ runs:
         gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
           -X POST -f content='eyes' || true
 
-    - name: Get PR information
+    - name: Prepare immutable PR snapshot
       if: steps.lock-check.outputs.skip != 'true'
       id: pr-info
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.resolve-token.outputs.token }}
+        ACTION_PATH: ${{ github.action_path }}
+        GITHUB_TOKEN: ${{ steps.resolve-token.outputs.token }}
         PR_NUMBER: ${{ steps.resolve-context.outputs.pr-number }}
-        REPO: ${{ github.repository }}
-        READ_TOKEN: ${{ github.token }}
-      run: |
-        PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
-
-        gh pr view "$PR_URL" --json files -q '.files[].path' > changed_files.txt
-        gh pr view "$PR_URL" --json title,body,author,baseRefName,headRefName > pr_metadata.json
-        echo "files_count=$(wc -l < changed_files.txt | tr -d ' ')" >> $GITHUB_OUTPUT
-
-        # Pre-fetch diff for the agent so it doesn't need to call gh pr diff itself.
-        # Uses github.token (has contents:read) instead of the App token (used for posting reviews).
-        # Uses the full PR URL instead of just the number — gh can't resolve a bare number
-        # from a detached HEAD (refs/pull/N/head).
-        if GH_TOKEN="$READ_TOKEN" gh pr diff "$PR_URL" > pr.diff 2>pr_diff_stderr.txt; then
-          echo "✅ Pre-fetched PR diff via gh pr diff ($(wc -l < pr.diff | tr -d ' ') lines)"
-          rm -f pr_diff_stderr.txt
-        else
-          echo "::warning::gh pr diff failed: $(cat pr_diff_stderr.txt 2>/dev/null)"
-          rm -f pr.diff pr_diff_stderr.txt
-
-          # Fallback: git diff with merge-base (repo is checked out with full history)
-          MERGE_BASE=$(git merge-base origin/main HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || echo "")
-          if [ -n "$MERGE_BASE" ]; then
-            if git diff "$MERGE_BASE"...HEAD > pr.diff; then
-              echo "✅ Pre-fetched PR diff via git diff ($(wc -l < pr.diff | tr -d ' ') lines)"
-            else
-              echo "::warning::git diff failed — agent will fetch diff itself"
-              rm -f pr.diff
-            fi
-          else
-            echo "::warning::Could not determine merge base — agent will fetch diff itself"
-          fi
-        fi
+        PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
+        PR_BASE_SHA: ${{ inputs.pr-base-sha }}
+      run: node "$ACTION_PATH/../dist/prepare-review.js"
 
     # Incremental review: when a previous completed review exists, narrow pr.diff
     # to the commits pushed since it. The original full diff is preserved at
@@ -737,6 +716,7 @@ runs:
       uses: docker/docker-agent-action@b08367e7e9a471822464be2bb9fdaa1c0fb6061b # v2.0.4
       env:
         ACTION_PATH: ${{ github.action_path }}
+        PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
       with:
         agent: ${{ env.ACTION_PATH }}/agents/pr-review-feedback.yaml
         prompt: |
@@ -791,6 +771,7 @@ runs:
       shell: bash
       env:
         PR_NUMBER: ${{ steps.resolve-context.outputs.pr-number }}
+        PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
         EXTRA_PROMPT: ${{ inputs.additional-prompt }}
         REPO: ${{ github.repository }}
         CONFIDENCE_SCORE: ${{ steps.resolve-confidence.outputs.score }}
@@ -853,11 +834,14 @@ runs:
           fi
           echo "---"
           echo ""
+          echo "- **Selected review SHA**: \`${PR_HEAD_SHA}\`"
+          echo "- **Posting command**: \`/tmp/refs/posting-format.md\` contains this exact immutable SHA."
+          echo ""
           echo "## Instructions"
           echo ""
           echo "Execute the review pipeline:"
           echo ""
-          echo "1. **Gather**: Read the pre-fetched \`pr.diff\` file. If missing, run \`gh pr diff https://github.com/${REPO}/pull/${PR_NUMBER} > pr.diff\` (use the full URL, not just the number) so the validator reads the same diff"
+          echo "1. **Gather**: Read the pre-fetched \`pr.diff\` file. It is derived from the immutable selected base and head commits; do NOT replace it by fetching a live PR diff."
           echo '2. **Draft**: Delegate to `drafter` agent to generate bug hypotheses'
           echo '3. **Verify**: For each hypothesis, delegate to `verifier` agent'
           echo '4. **Post**: Aggregate findings and post review via `gh api`'
@@ -883,13 +867,27 @@ runs:
         } >> $GITHUB_OUTPUT
 
     - name: Copy reference files
+      id: copy-reference-files
       if: steps.lock-check.outputs.skip != 'true'
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
+        PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
       run: |
         mkdir -p /tmp/refs
         cp "$ACTION_PATH"/agents/refs/*.md /tmp/refs/
+        if ! [[ "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "::error::Selected PR head SHA is invalid; refusing to stage review posting"
+          exit 1
+        fi
+        sed "s/__PR_HEAD_SHA__/$PR_HEAD_SHA/g" "$ACTION_PATH/agents/refs/posting-format.md" > /tmp/refs/posting-format.md
+        if grep -q '__PR_HEAD_SHA__\|\$PR_HEAD_SHA' /tmp/refs/posting-format.md || \
+          [ "$(grep -o -- '--arg commit_id' /tmp/refs/posting-format.md | wc -l | tr -d ' ')" != 1 ] || \
+          ! grep -q -- "--arg commit_id \"$PR_HEAD_SHA\"" /tmp/refs/posting-format.md; then
+          echo "::error::Rendered posting template does not contain exactly one selected immutable SHA"
+          exit 1
+        fi
+        echo "posting-reference=/tmp/refs/posting-format.md" >> "$GITHUB_OUTPUT"
         # Stage the suggestion-block validator where the agent can run it before
         # posting (the agent's working dir is the consumer repo, not the action).
         if [ -f "$ACTION_PATH/../dist/validate-suggestions.js" ]; then
@@ -1036,7 +1034,13 @@ runs:
         SKIP_REASON: ${{ steps.lock-check.outputs.skip-reason }}
         LOCK_AGE: ${{ steps.lock-check.outputs.lock-age }}
         CHUNK_COUNT: ${{ steps.chunk-diff.outputs.chunk_count }}
+        PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
+        POSTING_REFERENCE: ${{ steps.copy-reference-files.outputs.posting-reference }}
       run: |
+        post_review() {
+          gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" --input -
+        }
+
         REVIEW_URL="https://github.com/$REPOSITORY/pull/$PR_NUMBER"
         echo "review-url=$REVIEW_URL" >> $GITHUB_OUTPUT
         TIMEOUT_NOTE=""
@@ -1048,7 +1052,19 @@ runs:
           STATUS="⏭️ **Review skipped** — another review is already in progress"
         elif [ -z "$EXIT_CODE" ]; then
           STATUS="⏭️ **Review skipped** — agent did not run"
-        elif [ "$EXIT_CODE" = "124" ]; then
+        else
+          if ! [[ "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::Selected PR head SHA is invalid; refusing to post a PR review" >&2
+            exit 1
+          fi
+          if [ ! -f "$POSTING_REFERENCE" ] || \
+            grep -q '__PR_HEAD_SHA__\|\$PR_HEAD_SHA' "$POSTING_REFERENCE" || \
+            [ "$(grep -o -- '--arg commit_id' "$POSTING_REFERENCE" | wc -l | tr -d ' ')" != 1 ] || \
+            ! grep -q -- "--arg commit_id \"$PR_HEAD_SHA\"" "$POSTING_REFERENCE"; then
+            echo "::error::Rendered posting reference does not contain exactly one selected immutable SHA" >&2
+            exit 1
+          fi
+          if [ "$EXIT_CODE" = "124" ]; then
           # Timeout (SIGKILL after 2700 s) — provide actionable guidance
           STATUS="⏱️ **Review timed out** (exit code: 124, limit: 2700 s)"
           TIMEOUT_NOTE="- **Exit code:** 124 (SIGKILL — 2700 s timeout)"
@@ -1061,10 +1077,9 @@ runs:
           else
             TIMEOUT_BODY="⏱️ **PR Review Timed Out** — The review agent hit the 2700 s time limit. This usually happens on large or complex diffs. Re-request a review from \`docker-agent\` to retry — if it times out again, consider splitting the PR into smaller pieces."
           fi
-          if ! jq -n --arg body "$TIMEOUT_BODY" --arg event "COMMENT" \
-            '{body: $body, event: $event, comments: []}' \
-          | gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" --input - \
-            2>&1; then
+          if ! jq -n --arg body "$TIMEOUT_BODY" --arg event "COMMENT" --arg commit_id "$PR_HEAD_SHA" \
+            '{body: $body, event: $event, commit_id: $commit_id, comments: []}' \
+          | post_review 2>&1; then
             echo "::warning::Failed to post timeout comment to PR"
           fi
         elif [ "$EXIT_CODE" != "0" ]; then
@@ -1076,10 +1091,9 @@ runs:
             STATUS="⚠️ **Review completed with warnings** (exit code: $EXIT_CODE)"
           else
             STATUS="❌ **Review failed** (exit code: $EXIT_CODE)"
-            if ! jq -n --arg body "❌ **PR Review Failed** — The review agent encountered an error and could not complete the review. [View logs]($RUN_URL)." --arg event "COMMENT" \
-              '{body: $body, event: $event, comments: []}' \
-            | gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" --input - \
-              2>&1; then
+            if ! jq -n --arg body "❌ **PR Review Failed** — The review agent encountered an error and could not complete the review. [View logs]($RUN_URL)." --arg event "COMMENT" --arg commit_id "$PR_HEAD_SHA" \
+              '{body: $body, event: $event, commit_id: $commit_id, comments: []}' \
+            | post_review 2>&1; then
               echo "::warning::Failed to post fallback comment to PR"
             fi
           fi
@@ -1102,12 +1116,13 @@ runs:
               echo "ℹ️  Fallback LGTM review already exists — skipping duplicate post"
             else
               echo "::warning::Agent exited 0 but no review was posted — posting fallback LGTM review"
-              jq -n --arg body "🟢 **No issues found** — LGTM! [View logs]($RUN_URL)." --arg event "COMMENT" \
-                '{body: $body, event: $event, comments: []}' \
-              | gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" --input - 2>&1 || \
+              jq -n --arg body "🟢 **No issues found** — LGTM! [View logs]($RUN_URL)." --arg event "COMMENT" --arg commit_id "$PR_HEAD_SHA" \
+                '{body: $body, event: $event, commit_id: $commit_id, comments: []}' \
+              | post_review 2>&1 || \
                 echo "::warning::Failed to post fallback LGTM review to PR"
             fi
           fi
+        fi
         fi
 
         # Override the default summary with a cleaner one for PR reviews

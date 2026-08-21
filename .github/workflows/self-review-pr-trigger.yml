@@ -42,19 +42,13 @@ jobs:
       - name: Save event context
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          REQUESTED_REVIEWER: ${{ github.event.requested_reviewer.login }}
-          COMMENT_JSON: ${{ toJSON(github.event.comment) }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           mkdir -p context
           printf '%s' "${{ github.event_name }}" > context/event_name.txt
           printf '%s' "$PR_NUMBER" > context/pr_number.txt
-          printf '%s' "$PR_HEAD_SHA" > context/pr_head_sha.txt
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            printf '%s' "$REQUESTED_REVIEWER" > context/requested_reviewer.txt
-          fi
           if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
-            printf '%s' "$COMMENT_JSON" > context/comment.json
+            printf '%s' "$COMMENT_ID" > context/comment_id.txt
           fi
 
       - name: Upload context

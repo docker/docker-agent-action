@@ -44,7 +44,7 @@ That's it. All three events (`pull_request`, `issue_comment`, `pull_request_revi
 
 ### Repos that accept fork PRs (2 workflows)
 
-Fork PRs are subject to GitHub's security restrictions: `pull_request` and `pull_request_review_comment` events get **read-only tokens, no secrets, and no OIDC**. To work around this, you need a second "trigger" workflow that saves event context as an artifact, then a `workflow_run` handler picks it up with full permissions.
+Fork PRs are subject to GitHub's security restrictions: `pull_request` and `pull_request_review_comment` events get **read-only tokens, no secrets, and no OIDC**. To work around this, you need a second "trigger" workflow that saves only untrusted locator hints as an artifact, then a `workflow_run` handler picks it up with full permissions.
 
 **`.github/workflows/pr-review-trigger.yml`** — lightweight, no secrets needed:
 
@@ -70,19 +70,13 @@ jobs:
       - name: Save event context
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          REQUESTED_REVIEWER: ${{ github.event.requested_reviewer.login }}
-          COMMENT_JSON: ${{ toJSON(github.event.comment) }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           mkdir -p context
           printf '%s' "${{ github.event_name }}" > context/event_name.txt
           printf '%s' "$PR_NUMBER" > context/pr_number.txt
-          printf '%s' "$PR_HEAD_SHA" > context/pr_head_sha.txt
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            printf '%s' "$REQUESTED_REVIEWER" > context/requested_reviewer.txt
-          fi
           if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
-            printf '%s' "$COMMENT_JSON" > context/comment.json
+            printf '%s' "$COMMENT_ID" > context/comment_id.txt
           fi
 
       - name: Upload context
@@ -128,6 +122,21 @@ jobs:
     with:
       trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
 ```
+
+> **Artifact trust boundary:** The trigger artifact is controlled by fork code and is never trusted for identity, prompt content, PR routing, posting targets, or revisions. The reusable workflow fetches the workflow run, PR, and review comment from GitHub, binds comment events to the original run actor, and checks out the resolved immutable SHA. Locator, canonical, and canonical-derived trigger context never use predictable shared `/tmp` paths: each job uses an attempt-specific randomized `runner.temp` root at `0700`; canonical JSON and derived files are exclusively created at `0600`. The producer verifies containment, non-symlink status, and exact modes before upload. Downstream jobs select the same-run artifact only by immutable ID, verify its digest, and restore and verify `0700/0600` because artifact modes are not preserved. Those jobs never download an artifact by name or read the fork trigger artifact. This invariant does not restrict unrelated runtime temporary files.
+>
+> **Trigger-artifact upgrade and rollback compatibility:**
+>
+> | Trigger artifact producer | Reusable workflow consumer | Supported? | Required order / behavior |
+> | --- | --- | --- | --- |
+> | New minimized locator artifact | Updated reusable workflow | Yes | Normal target state. The resolver uses `event_name.txt`, `pr_number.txt`, and (for review comments) `comment_id.txt` to locate data, then server-fetches authoritative values. |
+> | Legacy full-context artifact | Updated reusable workflow | Yes | Safe rollout bridge. The resolver extracts only the comment ID from legacy `comment.json`, then server-fetches authoritative values. |
+> | New minimized locator artifact | Older reusable workflow | Not guaranteed | Upgrade the reusable workflow **before** minimizing the trigger artifact. Roll back by restoring the legacy artifact format until the consumer is upgraded. |
+>
+> The repository's currently pinned `v2.0.4` self-reference predates immutable `pr-head-sha` and
+> `pr-base-sha` inputs, so it does not accept them. After releasing the updated reusable workflow,
+> bump every internal pin and its version comment before relying on dogfooding for this path. The
+> current pin must not be treated as coverage of immutable-SHA input wiring.
 
 #### How the two workflows interact
 
@@ -268,7 +277,7 @@ When using `docker/docker-agent-action/.github/workflows/review-pr.yml`:
 | Input               | Description                                                            | Default |
 | ------------------- | ---------------------------------------------------------------------- | ------- |
 | `trigger-run-id`    | Workflow run ID from `pr-review-trigger.yml` (for `workflow_run` path) | -       |
-| `pr-number`         | PR number override (auto-detected from event or trigger artifact)      | -       |
+| `pr-number`         | PR number override (auto-detected from the direct event or server-resolved trigger-run context) | -       |
 | `comment-id`        | Comment ID for reactions (auto-detected)                               | -       |
 | `additional-prompt` | Additional review guidelines                                           | -       |
 | `model`             | Model override (e.g., `anthropic/claude-haiku-4-5`)                    | -       |
@@ -278,7 +287,10 @@ When using `docker/docker-agent-action/.github/workflows/review-pr.yml`:
 
 ### `review-pr` (Composite Action)
 
-PR number and comment ID are auto-detected from `github.event` when not provided.
+PR number and comment ID are auto-detected from `github.event` when not provided. The reusable
+workflow resolves an immutable base/head snapshot for both direct and `workflow_run` routes;
+all review posts use that selected head SHA as `commit_id`, so a force-push cannot retarget a
+review after its diff was prepared.
 
 > **API Keys:** Provide at least one API key for your preferred provider. You don't need all of them.
 
@@ -286,6 +298,8 @@ PR number and comment ID are auto-detected from `github.event` when not provided
 | -------------------------- | ---------------------------------------------------------------- | -------- |
 | `pr-number`                | PR number (auto-detected)                                        | No       |
 | `comment-id`               | Comment ID for reactions (auto-detected)                         | No       |
+| `pr-head-sha`              | Selected immutable 40-hex PR head SHA; must be supplied with `pr-base-sha` | No |
+| `pr-base-sha`              | Selected immutable 40-hex PR base SHA; must be supplied with `pr-head-sha` | No |
 | `additional-prompt`        | Additional review guidelines (appended to built-in instructions) | No       |
 | `model`                    | Model override (default: `anthropic/claude-sonnet-4-5`)          | No       |
 | `anthropic-api-key`        | Anthropic API key                                                | No\*     |

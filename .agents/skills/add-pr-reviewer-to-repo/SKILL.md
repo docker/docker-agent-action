@@ -132,7 +132,7 @@ Replace `@VERSION` with the tag from Step 2 (e.g. `@v2.0.0`).
 
 ## 4b. Fork PRs — 2-Workflow Pattern
 
-Fork PRs run under GitHub's security restrictions: `pull_request` and `pull_request_review_comment` events get read-only tokens, no secrets, and no OIDC. The solution is a lightweight "trigger" workflow that saves event context as an artifact; a `workflow_run` handler then picks it up with full permissions.
+Fork PRs run under GitHub's security restrictions: `pull_request` and `pull_request_review_comment` events get read-only tokens, no secrets, and no OIDC. The solution is a lightweight "trigger" workflow that saves only untrusted locator hints as an artifact; a `workflow_run` handler then picks it up with full permissions.
 
 ### File 1: `.github/workflows/pr-review-trigger.yml`
 
@@ -150,20 +150,23 @@ permissions: {}
 
 jobs:
   save-context:
+    # A review request for anyone other than docker-agent must not fan out to a review.
+    if: >
+      github.event_name != 'pull_request' ||
+      github.event.action != 'review_requested' ||
+      github.event.requested_reviewer.login == 'docker-agent'
     runs-on: ubuntu-latest
     steps:
       - name: Save event context
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          COMMENT_JSON: ${{ toJSON(github.event.comment) }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
           mkdir -p context
           printf '%s' "${{ github.event_name }}" > context/event_name.txt
           printf '%s' "$PR_NUMBER" > context/pr_number.txt
-          printf '%s' "$PR_HEAD_SHA" > context/pr_head_sha.txt
           if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
-            printf '%s' "$COMMENT_JSON" > context/comment.json
+            printf '%s' "$COMMENT_ID" > context/comment_id.txt
           fi
 
       - name: Upload context
@@ -234,6 +237,24 @@ pull_request_review_comment
 
 `issue_comment` always has full permissions regardless of fork status, so `/review` commands and `@docker-agent` mentions bypass the trigger workflow entirely.
 
+### Trigger-artifact upgrade and rollback compatibility
+
+The trigger artifact is an **untrusted locator**. The reusable workflow fetches all authoritative
+PR and comment data from GitHub; it only uses `event_name.txt`, `pr_number.txt`, and (for review
+comments) `comment_id.txt` to locate that data.
+
+| Trigger artifact producer | Reusable workflow consumer | Supported? | Required order / behavior |
+| --- | --- | --- | --- |
+| New minimized locator artifact | Updated reusable workflow | Yes | Normal target state. The resolver uses the locator files and server-fetches authoritative values. |
+| Legacy full-context artifact | Updated reusable workflow | Yes | Safe rollout bridge. The resolver extracts only the comment ID from legacy `comment.json`, then server-fetches authoritative values. |
+| New minimized locator artifact | Older reusable workflow | Not guaranteed | Upgrade the reusable workflow **before** minimizing the trigger artifact. Roll back by restoring the legacy artifact format until the consumer is upgraded. |
+
+For this repository's self-review workflow, the currently pinned `v2.0.4` self-reference predates
+`pr-head-sha` and `pr-base-sha`; it does not accept those immutable SHA inputs. After releasing the
+updated reusable workflow, bump every internal pin and its version comment before relying on
+dogfooding for this path. The current pin must not be treated as coverage of immutable-SHA input
+wiring.
+
 ---
 
 ## 5. Upgrade Checklist
@@ -244,6 +265,9 @@ For repos that already have the workflows, verify each item:
 - [ ] **All required permissions are present** — `contents: read`, `pull-requests: write`, `issues: write`, `id-token: write`, `actions: write`. Missing any of these causes silent failures or OIDC/artifact errors. Note: missing `actions: write` specifically causes a 403 when the reusable workflow tries to store binary cache or upload/download artifacts (cache write operations require `write`; artifact download requires only `read`).
 - [ ] **`checks: write` is present** (optional but recommended) — without it the review won't appear as a check run on the PR.
 - [ ] **Bot-filter `if` condition is correct** — the condition must filter out `docker-agent`, `docker-agent[bot]`, any `Bot` user type, and comments containing `<!-- docker-agent-review -->` or `<!-- docker-agent-review-reply -->`. A missing or incomplete filter causes infinite review loops.
+- [ ] **Fork repos: reviewer-target gate is present** — if `pull_request.review_requested` is enabled, `save-context` must run it only when `github.event.requested_reviewer.login == 'docker-agent'`. A request for a human, team, or other bot must leave `save-context` skipped and must not invoke the privileged `workflow_run` handler; a request for exactly `docker-agent` proceeds.
+- [ ] **Fork artifact rollout order is safe** — upgrade the reusable workflow before switching the trigger to the minimized locator artifact. New minimized artifacts with an older reusable workflow are not guaranteed to work; roll back by restoring the legacy artifact format until the consumer is upgraded.
+- [ ] **Repository self-review pins are upgraded after release** — the currently pinned `v2.0.4` self-reference predates immutable `pr-head-sha`/`pr-base-sha` inputs. Bump its SHA and version comment after release; do not claim the current dogfood pin exercises immutable-SHA input wiring.
 - [ ] **Fork repos: trigger workflow has the artifact upload step** — the `actions/upload-artifact` step must be present in `pr-review-trigger.yml`, pinned to a specific commit SHA (not just a tag). Without it the `workflow_run` handler has no artifact to download.
 - [ ] **Fork repos: `trigger-run-id` input is wired correctly** — must be `${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}`. An empty string is safe for `issue_comment` events; the reusable workflow handles both paths.
 - [ ] **Fork repos: `workflow_run.workflows` array matches the trigger workflow name exactly** — the string `"PR Review - Trigger"` (or whatever you named it) must match the `name:` field in `pr-review-trigger.yml` character-for-character.

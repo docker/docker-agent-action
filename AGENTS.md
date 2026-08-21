@@ -56,6 +56,14 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   │   ├── index.ts                 # CLI entry → bundled to dist/incremental-review.js
 │   │   ├── incremental-review.ts    # Core planIncrementalReview()/findLastReviewedSha() pure functions.
 │   │   └── __tests__/
+│   ├── prepare-review/              # Creates an immutable checked-out PR snapshot and its diff/metadata files.
+│   │   ├── index.ts                 # CLI entry → bundled to dist/prepare-review.js
+│   │   ├── prepare-review.ts        # Resolves immutable base/head SHAs and writes review inputs.
+│   │   └── __tests__/
+│   ├── resolve-trigger-context/     # Server-resolves canonical workflow-run context for protected artifact transfer.
+│   │   ├── index.ts                 # CLI entry → bundled to dist/resolve-trigger-context.js
+│   │   ├── resolve-trigger-context.ts # Produces canonical context and downstream job outputs.
+│   │   └── __tests__/
 │   ├── score-confidence/            # Per-finding confidence scoring for the PR review pipeline.
 │   │   ├── index.ts                 # CLI entry → bundled to dist/score-confidence.js
 │   │   ├── score-confidence.ts      # Core scoreFinding()/scoreFindings() pure functions + posting policy.
@@ -179,7 +187,8 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 ### `review-pr` action specifics
 
 - Uses a **best-effort cache lock** (`pr-review-lock-<repo>-<pr>-*` cache key) to avoid concurrent reviews on the same PR. Completed runs release the lock by saving a `-released` marker cache entry that shadows their lock entry (cache saves work regardless of token scopes; the REST cache DELETE is best-effort cleanup only). The 3600s TTL is a fallback for crashed holders and must stay above the review agent's 2700s wall-clock budget (45 min, enforced by the root action's `total-timeout` across all attempts) so an in-flight review is never treated as stale. Reviews are idempotent so the small race window is acceptable.
-- **Memory persistence** uses `actions/cache` keyed by `pr-review-memory-<repo>-<job>-<run_id>` with prefix-based restore. The DB lives at `${{ github.workspace }}/.cache/pr-review-memory.db`.
+- **Memory persistence** uses `actions/cache` keyed by `pr-review-memory-<repo>-<job>-<run_id>` with prefix-based restore. The review memory database lives at `${{ github.workspace }}/.cache/pr-review-memory.db`.
+- **Fork workflow-run private context files** are canonicalized from GitHub API data. Trigger artifacts are untrusted locators only; server-derived PR/comment data and an immutable 40-hex SHA drive authorization, prompts, posting, and checkout. Attempt-specific randomized `runner.temp` roots are `0700`; the resolver exclusively creates canonical JSON at `0600`, and a pre-upload guard verifies containment, non-symlink status, and exact modes. Isolated consumers select the same-run artifact by immutable ID, verify its digest, then restore and verify `0700/0600` because artifact modes are not preserved. Canonical-derived files are exclusively created at `0600` in the same private job root. Never use predictable shared `/tmp` paths for locator, canonical, or derived trigger context; unrelated reviewed runtime temporary files are outside this invariant. The artifact name includes the run ID and run attempt to avoid rerun collisions. If the pinned bundle has no resolver, workflow-run routes skip fail-closed while direct routes continue.
 - **Feedback loop**: the `reply-to-feedback` job in `.github/workflows/review-pr.yml` (which runs the `pr-review-reply.yaml` agent) uploads a `pr-review-feedback` artifact on every reply via its "Upload feedback artifact" step. The next review run downloads all such artifacts, runs `pr-review-feedback.yaml` to call `add_memory(...)` for each, then deletes the artifacts.
 - **Bot reply detection** uses HTML markers: `<!-- docker-agent-review -->` on review comments, `<!-- docker-agent-review-reply -->` on agent replies (including mention-reply responses). **Don't change these strings** — workflows in consumer repos grep for them.
 - **Copilot-style triggers**: in addition to the original `pull_request_review` / `issue_comment /review` paths, `review-pr.yml` now also fires on:
@@ -195,7 +204,8 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 | Workflow                          | Purpose                                                              |
 | --------------------------------- | -------------------------------------------------------------------- |
 | `test.yml`                        | Unit + integration tests on push/PR.                                 |
-| `test-e2e.yml`                    | End-to-end action invocation against a real agent.                   |
+| `test-e2e.yml`                    | Secretless E2E coverage on PRs; credential-bearing scenarios only on trusted main pushes or manual dispatch. |
+| `test-e2e-reviewer.yml`           | Dispatch-only E2E workflow for the PR reviewer.                       |
 | `release.yml`                     | Publishes tagged releases (must include a built `dist/`).            |
 | `review-pr.yml`                   | **Reusable workflow** consumers call as `docker/docker-agent-action/.github/workflows/review-pr.yml@v…`. |
 | `self-review-pr.yml` + `-trigger.yml` | Dogfooding: the repo reviews its own PRs.                        |

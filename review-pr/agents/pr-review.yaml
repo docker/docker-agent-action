@@ -84,15 +84,10 @@ agents:
               first one that works). The drafter and the suggestion validator both read
               `pr.diff`, so a fallback MUST redirect into it, not just print to stdout —
               otherwise the validator sees no diff and strips every suggestion:
-              1. Check if `pr.diff` already exists in the working directory (pre-fetched by the CI workflow)
-              2. `gh pr diff <URL> > pr.diff` using the full PR URL (e.g., `https://github.com/owner/repo/pull/123`).
-                 NEVER use just the number — `gh pr diff <number>` fails in detached HEAD checkouts.
-              3. `git diff $(git merge-base origin/main HEAD)...HEAD > pr.diff` — the repo is checked out
-                 with full history, so this always works as a last resort.
-              Do NOT try `curl`, `gh repo clone`, or any other method. The three options above are sufficient.
-              After obtaining the diff, log which method succeeded:
+              1. Check that `pr.diff` already exists in the working directory (pre-fetched from the immutable base/head snapshot by the CI workflow). If it is missing, stop and report that the trusted review diff is unavailable; never fetch a live PR diff or substitute another range.
+              After obtaining the pre-fetched diff, log:
               ```bash
-              echo "DIFF_METHOD=pr.diff"    # or gh_pr_diff or git_diff (whichever worked)
+              echo "DIFF_METHOD=trusted_snapshot"
               echo "DIFF_LINES=$(wc -l < pr.diff)"
               ```
            b. PR metadata is included in the prompt above (title, author, branch, file list,
@@ -478,18 +473,12 @@ agents:
         Some repos lack branch protection; `APPROVE` would bypass human review,
         `REQUEST_CHANGES` would block merging. The bot provides feedback only.
 
-        **Zero-findings example** (use this exact pattern ONLY when the findings list is
-        empty AND the merged `review_complete` is true — an incomplete review must
-        instead post the "### ⚠️ Review incomplete" body from Decision Rules rule 4,
-        never a 🟢 APPROVE body):
-        ```bash
-        REVIEW_BODY="### Assessment: 🟢 APPROVE"
-        jq -n --arg body "$REVIEW_BODY" --arg event "COMMENT" \
-          '{body: $body, event: $event, comments: []}' \
-        | gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input -
-        ```
-        Replace `{owner}`, `{repo}`, and `{pr}` with the actual values from the PR URL.
-        This call is mandatory even when there are zero findings — do not skip it.
+        **Zero-findings posting** (use only when findings are empty AND the merged
+        `review_complete` is true — incomplete reviews must instead post the
+        "### ⚠️ Review incomplete" body from Decision Rules rule 4, never a 🟢 APPROVE body):
+        set `REVIEW_BODY="### Assessment: 🟢 APPROVE"` and use the rendered command in
+        `/tmp/refs/posting-format.md`. It already contains the validated immutable `commit_id`.
+        This call is mandatory even when there are zero findings.
 
       - **Console output mode**: Output markdown (see Console format below). Never call `gh api`.
 

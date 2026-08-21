@@ -2,7 +2,7 @@
   "id": "cb05f5d2-8838-4302-ba78-70b6fb5f75ae",
   "title": "Marlin SDK AppInvoke analytics with PII risk — err.Error() and command args (run 1)",
   "evals": {
-    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && cp /configs/refs/posting-format.md /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
+    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
     "relevance": [
       "The agent ran 'echo $GITHUB_ACTIONS' before performing the review to detect the output mode",
       "The agent output the review to the console as formatted markdown instead of posting via gh api",

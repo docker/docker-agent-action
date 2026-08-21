@@ -344,10 +344,10 @@ describe('root orchestration contracts', () => {
 
   it('reserves the zero-findings 🟢 APPROVE template for complete merges', () => {
     expect(root).toContain(
-      'use this exact pattern ONLY when the findings list is empty AND the merged `review_complete` is true',
+      'use only when findings are empty AND the merged `review_complete` is true',
     );
     expect(root).toContain(
-      'an incomplete review must instead post the "### ⚠️ Review incomplete" body from Decision Rules rule 4, never a 🟢 APPROVE body',
+      'incomplete reviews must instead post the "### ⚠️ Review incomplete" body from Decision Rules rule 4, never a 🟢 APPROVE body',
     );
   });
 
