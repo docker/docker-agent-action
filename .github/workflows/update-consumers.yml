@@ -10,6 +10,16 @@ on:
         description: "Release version to propagate (e.g. v1.4.2). Defaults to latest release."
         required: false
         type: string
+      repos:
+        description: "Comma-separated allowlist of repos to process (e.g. docker/sailor,docker/compose). Empty = all discovered consumers."
+        required: false
+        type: string
+        default: ""
+      dry-run:
+        description: "Dry run: show the route (direct/fork/skip) and the diff that would be committed, but do not push commits or open PRs."
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -79,7 +89,7 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Build signed-commit CLI
+      - name: Build CLI tools
         run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Discover and update consumer repos
@@ -87,6 +97,8 @@ jobs:
           GH_TOKEN: ${{ env.GITHUB_APP_TOKEN }}
           SHA: ${{ steps.resolve.outputs.sha }}
           VERSION: ${{ steps.resolve.outputs.version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          REPO_ALLOWLIST: ${{ inputs.repos }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -e
@@ -113,24 +125,80 @@ jobs:
           echo "$REPOS"
           echo ""
 
+          # Apply the allowlist filter if provided (pilot runs on a few repos).
+          # Entries are compared against the repo field only — discovery lines
+          # are "repo file_path" pairs.
+          if [ -n "$REPO_ALLOWLIST" ]; then
+            FILTERED=""
+            IFS=',' read -ra ALLOWED <<< "$REPO_ALLOWLIST"
+            while IFS=' ' read -r R P; do
+              for A in "${ALLOWED[@]}"; do
+                # Trim surrounding whitespace via parameter expansion — unlike
+                # xargs this does not interpret backslashes or quotes, so a
+                # malformed entry cannot corrupt the filtering.
+                A_TRIMMED="${A#"${A%%[![:space:]]*}"}"
+                A_TRIMMED="${A_TRIMMED%"${A_TRIMMED##*[![:space:]]}"}"
+                if [ "$R" = "$A_TRIMMED" ]; then
+                  FILTERED+="$R $P"$'\n'
+                fi
+              done
+            done <<< "$REPOS"
+            REPOS=$(printf '%s' "$FILTERED")
+            if [ -z "$REPOS" ]; then
+              echo "::warning::Allowlist did not match any discovered consumer repos"
+              exit 0
+            fi
+            echo "After allowlist filter:"
+            echo "$REPOS"
+            echo ""
+          fi
+
+          # review-pr.yml as of the target version: the permission sync below
+          # compares each consumer's caller grants against what THIS version
+          # requires (issue #72: v2.0.3 raised actions: read → write and broke
+          # callers granting only read). Abort rather than open PRs that could
+          # break callers unchecked.
+          TARGET_REVIEW_PR=$(mktemp)
+          gh api -H "Accept: application/vnd.github.raw" \
+            "repos/docker/docker-agent-action/contents/.github/workflows/review-pr.yml?ref=$SHA" \
+            > "$TARGET_REVIEW_PR" || {
+            echo "::error::Could not fetch review-pr.yml at $SHA for the caller-permissions check"
+            exit 1
+          }
+
           # Pattern to match any docker-agent-action workflow ref (SHA, tag, branch, SHA+comment)
           OLD_PATTERN='docker-agent-action/\.github/workflows/review-pr\.yml@'
 
           BRANCH="auto/update-docker-agent-action"
           RELEASE_URL="https://github.com/docker/docker-agent-action/releases/tag/$VERSION"
+          SUMMARY_CHANGED=""
+          SUMMARY_SKIPPED=""
+
+          # Single EXIT trap registered once, referencing a global — traps don't
+          # stack, so a per-iteration trap would silently replace the previous
+          # handler. cleanup_workdir is also called explicitly on every skip
+          # path and is a no-op when already cleaned.
+          CURRENT_WORK_DIR=""
+          cleanup_workdir() {
+            cd /
+            if [ -n "$CURRENT_WORK_DIR" ]; then
+              rm -rf "$CURRENT_WORK_DIR"
+              CURRENT_WORK_DIR=""
+            fi
+          }
+          trap cleanup_workdir EXIT
 
           while IFS=' ' read -r REPO FILE_PATH; do
             echo "=========================================="
             echo "Processing ${REPO} (${FILE_PATH})..."
             echo "=========================================="
 
-            # Clone the repo into a temp directory
-            # Set up cleanup trap for this iteration
             WORK_DIR=$(mktemp -d)
-            trap 'cd /; rm -rf "$WORK_DIR"' EXIT
+            CURRENT_WORK_DIR="$WORK_DIR"
             if ! gh repo clone "$REPO" "$WORK_DIR" -- --depth=1 2>/dev/null; then
               echo "::warning::Failed to clone $REPO — skipping (token may lack access)"
-              rm -rf "$WORK_DIR"
+              SUMMARY_SKIPPED+="- ${REPO} (clone failed)"$'\n'
+              cleanup_workdir
               continue
             fi
 
@@ -139,15 +207,15 @@ jobs:
             # Check that the file exists and contains the pattern
             if [ ! -f "$FILE_PATH" ]; then
               echo "::warning::$FILE_PATH not found in $REPO — skipping"
-              cd /
-              rm -rf "$WORK_DIR"
+              SUMMARY_SKIPPED+="- ${REPO} (${FILE_PATH} not found)"$'\n'
+              cleanup_workdir
               continue
             fi
 
             if ! grep -q "$OLD_PATTERN" "$FILE_PATH"; then
               echo "Pattern not found in $FILE_PATH — may already be up to date, skipping"
-              cd /
-              rm -rf "$WORK_DIR"
+              SUMMARY_SKIPPED+="- ${REPO} (no reusable-workflow ref found)"$'\n'
+              cleanup_workdir
               continue
             fi
 
@@ -156,41 +224,183 @@ jobs:
             SAFE_SHA=$(printf '%s' "$SHA" | sed 's/[|&\]/\\&/g')
             sed -i 's|\(docker/docker-agent-action/\.github/workflows/review-pr\.yml@\).*|\1'"${SAFE_SHA}"' # '"${SAFE_VERSION}"'|g' "$FILE_PATH"
 
+            # Raise the caller's `permissions:` grants to what the target
+            # version requires — a called workflow cannot elevate its caller's
+            # permissions, so an under-granting caller fails GitHub's startup
+            # validation as soon as the bump merges. A check failure must not
+            # drop the version bump itself, so it degrades to a warning.
+            SYNC_OUT=$(node "$GITHUB_WORKSPACE/dist/sync-caller-permissions.js" \
+              --reusable "$TARGET_REVIEW_PR" "$FILE_PATH") || {
+              echo "::warning::sync-caller-permissions failed on $REPO/$FILE_PATH — proceeding without the permissions check"
+              SYNC_OUT=""
+            }
+            PERM_CHANGED=$(printf '%s\n' "$SYNC_OUT" | grep '^changed ' || true)
+            PERM_MANUAL=$(printf '%s\n' "$SYNC_OUT" | grep '^manual ' || true)
+
             if git diff --quiet "$FILE_PATH"; then
-              echo "No changes after sed — already up to date"
-              cd /
-              rm -rf "$WORK_DIR"
+              echo "No ref or permission changes — already up to date"
+              SUMMARY_SKIPPED+="- ${REPO} (already up to date)"$'\n'
+              cleanup_workdir
               continue
             fi
 
             echo "Updated reference to ${SHA} # ${VERSION}"
 
-            # Create signed commit via API
+            # Resolve how the update would be delivered (read-only, so a dry
+            # run can report the routing without performing any writes):
+            #   direct: the machine user has write — commit a branch into the repo.
+            #   fork:   no write access — fork under the machine user, commit on
+            #           the fork, and open a cross-repo PR (head "owner:branch").
+            #   skip:   no write access AND forking disabled — needs a manual update.
+            # Fetch the repo metadata in one call (race-free vs separate calls)
+            # and coerce missing fields with jq's `// false`: `gh ... --jq` prints
+            # the string "null" for an absent field, which is neither "true" nor
+            # "false" and would misroute a repo.
+            REPO_META=$(gh api "repos/$REPO" 2>/dev/null || echo '{}')
+            DEFAULT_BRANCH=$(printf '%s' "$REPO_META" | jq -r '.default_branch // empty')
+            if [ -z "$DEFAULT_BRANCH" ]; then
+              echo "::warning::Failed to resolve default branch for $REPO — skipping"
+              SUMMARY_SKIPPED+="- ${REPO} (default-branch lookup failed)"$'\n'
+              cleanup_workdir
+              continue
+            fi
+            CAN_PUSH=$(printf '%s' "$REPO_META" | jq -r '.permissions.push // false')
+            ALLOW_FORKING=$(printf '%s' "$REPO_META" | jq -r '.allow_forking // false')
+            if [ "$CAN_PUSH" = "true" ]; then
+              ROUTE="direct"
+            elif [ "$ALLOW_FORKING" = "true" ]; then
+              ROUTE="fork"
+            else
+              ROUTE="skip"
+            fi
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "🧪 DRY RUN — route: ${ROUTE}; diff that would be committed:"
+              git --no-pager diff
+              if [ -n "$PERM_MANUAL" ]; then
+                echo "Caller-permission increases that would need a manual edit:"
+                printf '%s\n' "$PERM_MANUAL"
+              fi
+              if [ "$ROUTE" = "skip" ]; then
+                SUMMARY_SKIPPED+="- ${REPO} (dry run — no write access, forking disabled)"$'\n'
+              else
+                SUMMARY_CHANGED+="- ${REPO} (dry run — ${ROUTE} PR)"$'\n'
+              fi
+              cleanup_workdir
+              continue
+            fi
+
+            if [ "$ROUTE" = "skip" ]; then
+              echo "::warning::No write access and forking disabled on $REPO — skipping (needs a write grant or manual update)"
+              SUMMARY_SKIPPED+="- ${REPO} (no write access, forking disabled)"$'\n'
+              cleanup_workdir
+              continue
+            elif [ "$ROUTE" = "direct" ]; then
+              COMMIT_REPO="$REPO"
+              PR_HEAD="$BRANCH"
+            else
+              FORK_OWNER=$(gh api user --jq .login) || {
+                echo "::warning::Could not resolve the machine-user login for $REPO — skipping"
+                SUMMARY_SKIPPED+="- ${REPO} (could not resolve fork owner)"$'\n'
+                cleanup_workdir
+                continue
+              }
+              if [ -z "$FORK_OWNER" ]; then
+                echo "::warning::Machine-user login resolved to empty for $REPO — skipping"
+                SUMMARY_SKIPPED+="- ${REPO} (empty fork owner)"$'\n'
+                cleanup_workdir
+                continue
+              fi
+              FORK="${FORK_OWNER}/$(basename "$REPO")"
+              echo "No write access on $REPO — opening a fork PR from ${FORK}"
+              # Fork is idempotent (no-op when it already exists) and created
+              # asynchronously, so poll until the API can see it. The exit code is
+              # ignored on purpose (some gh versions return non-zero when the fork
+              # already exists), but stderr is kept so a genuine fork failure is
+              # distinguishable from slow async readiness in the skip warning.
+              FORK_ERR=$(gh repo fork "$REPO" --clone=false --default-branch-only 2>&1 >/dev/null || true)
+              FORK_READY=""
+              for _ in $(seq 1 10); do
+                if gh api "repos/$FORK" >/dev/null 2>&1; then FORK_READY=1; break; fi
+                sleep 3
+              done
+              if [ -z "$FORK_READY" ]; then
+                echo "::warning::Fork ${FORK} did not become available — skipping $REPO${FORK_ERR:+ (fork error: $FORK_ERR)}"
+                SUMMARY_SKIPPED+="- ${REPO} (fork not ready)"$'\n'
+                cleanup_workdir
+                continue
+              fi
+              # Guard against a name collision: proceed only if $FORK is really a
+              # fork of $REPO. gh can rename a fork, and the machine user may own
+              # an unrelated repo of the same basename — committing to the wrong
+              # repo must never happen.
+              FORK_PARENT=$(gh api "repos/$FORK" --jq '.parent.full_name // empty' 2>/dev/null || true)
+              if [ "$FORK_PARENT" != "$REPO" ]; then
+                echo "::warning::${FORK} is not a fork of ${REPO} (parent='${FORK_PARENT:-none}') — skipping to avoid writing to the wrong repo"
+                SUMMARY_SKIPPED+="- ${REPO} (fork name collision)"$'\n'
+                cleanup_workdir
+                continue
+              fi
+              # Force-sync the fork's default branch to upstream so the cross-repo
+              # PR diff shows only the update, not drift from a stale fork.
+              gh repo sync "$FORK" --branch "$DEFAULT_BRANCH" --force >/dev/null 2>&1 || true
+              COMMIT_REPO="$FORK"
+              PR_HEAD="${FORK_OWNER}:${BRANCH}"
+            fi
+
+            # Create signed commit via API, on whichever repo was resolved
+            # above (the upstream when we have write, else the fork).
             COMMIT_OID=$(GITHUB_TOKEN="${GH_TOKEN}" node "$GITHUB_WORKSPACE/dist/signed-commit.js" \
-              --repo "$REPO" \
+              --repo "$COMMIT_REPO" \
               --branch "$BRANCH" \
-              --base-ref main \
+              --base-ref "$DEFAULT_BRANCH" \
               --force \
               --message "chore: update docker-agent-action to $VERSION" \
               --add "$FILE_PATH") || {
-              echo "::warning::Failed to create signed commit in $REPO (may lack write access)"
-              cd /
-              rm -rf "$WORK_DIR"
+              echo "::warning::Failed to create signed commit in $COMMIT_REPO (may lack write access)"
+              SUMMARY_SKIPPED+="- ${REPO} (commit failed)"$'\n'
+              cleanup_workdir
               continue
             }
 
             echo "✅ Signed commit: $COMMIT_OID"
 
-            # Create or update PR
-            EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number')
+            # Look up an existing open PR for idempotent re-runs. `gh pr list
+            # --head` matches a branch NAME only and does NOT support the
+            # "owner:branch" form, so a fork PR is looked up via the REST pulls
+            # endpoint, whose head=owner:branch filter does. `// empty` keeps an
+            # absent PR from becoming the literal string "null".
+            if [ "$COMMIT_REPO" != "$REPO" ]; then
+              EXISTING_PR=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f head="$PR_HEAD" --jq '.[0].number // empty' 2>/dev/null || true)
+            else
+              EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+            fi
+
+            # Surface what the permission sync did (or could not do) in the PR
+            # body, so consumer maintainers see why their permissions block
+            # changed — or what they must change themselves before merging.
+            PERM_SECTION=""
+            if [ -n "$PERM_CHANGED" ]; then
+              PERM_SECTION+="Also raises the caller \`permissions:\` grants that ${VERSION} requires (a caller granting less fails GitHub's workflow validation at startup):"$'\n'
+              while read -r _ P_BLOCK P_SCOPE P_FROM P_TO; do
+                PERM_SECTION+="- \`${P_SCOPE}\`: \`${P_FROM}\` → \`${P_TO}\` (${P_BLOCK})"$'\n'
+              done <<< "$PERM_CHANGED"
+            fi
+            if [ -n "$PERM_MANUAL" ]; then
+              PERM_SECTION+="> ⚠️ ${VERSION} requires caller permissions this PR could not raise automatically — make sure the calling job grants:"$'\n'
+              while read -r _ P_BLOCK P_SCOPE P_FROM P_TO; do
+                PERM_SECTION+="> - \`${P_SCOPE}: ${P_TO}\` (${P_BLOCK}, currently ${P_FROM})"$'\n'
+              done <<< "$PERM_MANUAL"
+            fi
 
             # Build PR body safely using printf to avoid shell expansion of FILE_PATH
             # FILE_PATH comes from GitHub API and could theoretically contain shell metacharacters
-            printf -v PR_BODY '%s\n%s\n%s\n%s\n%s' \
+            printf -v PR_BODY '%s\n%s\n%s\n%s\n%s%s' \
               "## Summary" \
               "Updates \`docker-agent-action\` reference in \`${FILE_PATH}\` to [${VERSION}](${RELEASE_URL})." \
               "- **Commit**: \`${SHA}\`" \
               "- **Version**: \`${VERSION}\`" \
+              "$PERM_SECTION" \
               "> Auto-generated by the [release](${RUN_URL}) workflow."
 
             if [ -n "$EXISTING_PR" ]; then
@@ -198,20 +408,43 @@ jobs:
               gh pr edit "$EXISTING_PR" --repo "$REPO" \
                 --title "chore: update docker-agent-action to $VERSION" \
                 --body "$PR_BODY" 2>&1 || echo "::warning::Failed to update PR #$EXISTING_PR in $REPO (may be non-fatal)"
+              PR_URL=$(gh pr view "$EXISTING_PR" --repo "$REPO" --json url --jq .url 2>/dev/null || echo "")
             else
               echo "Creating new PR in $REPO"
-              gh pr create --repo "$REPO" \
-                --head "$BRANCH" \
+              PR_URL=$(gh pr create --repo "$REPO" \
+                --head "$PR_HEAD" \
+                --base "$DEFAULT_BRANCH" \
                 --title "chore: update docker-agent-action to $VERSION" \
-                --body "$PR_BODY" || echo "::warning::Failed to create PR in $REPO"
+                --body "$PR_BODY") || {
+                echo "::warning::Failed to create PR in $REPO"
+                PR_URL=""
+              }
             fi
+            if [ -n "$PR_URL" ]; then
+              echo "PR: $PR_URL"
+            fi
+            SUMMARY_CHANGED+="- ${REPO}${PR_URL:+ (${PR_URL})}"$'\n'
 
-            # Clear trap and cleanup
-            trap - EXIT
-
-            cd /
-            rm -rf "$WORK_DIR"
+            cleanup_workdir
             echo ""
           done <<< "$REPOS"
+
+          # Job summary for triage — dry runs are reviewed from here before
+          # re-running with dry-run disabled.
+          {
+            echo "## Update consumers — $([ "$DRY_RUN" = "true" ] && echo 'DRY RUN' || echo 'EXECUTED')"
+            echo ""
+            echo "Target: \`${VERSION}\` @ \`${SHA}\`"
+            echo ""
+            if [ -n "$SUMMARY_CHANGED" ]; then
+              echo "### PRs opened / repos with changes"
+              printf '%s' "$SUMMARY_CHANGED"
+              echo ""
+            fi
+            if [ -n "$SUMMARY_SKIPPED" ]; then
+              echo "### Skipped"
+              printf '%s' "$SUMMARY_SKIPPED"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
           echo "Done updating consumer repos."
