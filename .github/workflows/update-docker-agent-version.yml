@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup credentials
-        uses: docker/docker-agent-action/setup-credentials@b08367e7e9a471822464be2bb9fdaa1c0fb6061b # v2.0.4
+        uses: docker/docker-agent-action/setup-credentials@069c1e899b9fcf5acd0210f275fc7ff2039b3ec5 # v2.0.5
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
