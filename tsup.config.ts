@@ -41,6 +41,7 @@ const entry = {
   'score-risk': src('score-risk'),
   security: src('security'),
   'signed-commit': src('signed-commit'),
+  'sync-caller-permissions': src('sync-caller-permissions'),
   'validate-suggestions': src('validate-suggestions'),
 };
 
