@@ -121,6 +121,19 @@ jobs:
             exit 0
           fi
 
+          # Never update the action repos themselves: their workflow files
+          # contain this workflow's own search string as a literal (e.g. the
+          # code-search query above), which the sed below would destroy. The
+          # old cagent-action repo is excluded for the same reason — it holds
+          # a copy of these workflows. Same guard as migrate-consumers.yml,
+          # adapted to the "repo file_path" discovery lines.
+          REPOS=$(printf '%s\n' "$REPOS" | grep -vE '^docker/(docker-agent-action|cagent-action) ' || true)
+
+          if [ -z "$REPOS" ]; then
+            echo "No consumer repos found after exclusions."
+            exit 0
+          fi
+
           echo "Found consumer repos:"
           echo "$REPOS"
           echo ""
