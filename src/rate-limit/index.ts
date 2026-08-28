@@ -15,8 +15,9 @@
  *
  * Counting is per LLM run, so each run contributes exactly one unit:
  *   - Reviews are posted via the Reviews API (POST /pulls/{n}/reviews) with no
- *     inline marker — a findings review, a zero-finding APPROVE, and the
- *     timeout/error/LGTM fallbacks all land there. They are counted from
+ *     inline marker — a findings review, a zero-finding 🟢 NO FINDINGS
+ *     completion, and the timeout/error/incomplete fallbacks all land there.
+ *     They are counted from
  *     `pulls.listReviews` by bot author (a real review run always carries an
  *     assessment/status body); the inline finding comments such a review carries
  *     are deliberately not counted, since that would be N units per single run.
@@ -40,6 +41,7 @@
  */
 import * as core from '@actions/core';
 import { Octokit } from '@octokit/rest';
+import { isActionPostedReview, matchesBotLogin } from '../review-assessment/review-assessment.js';
 
 // Reply markers identify the bot's conversational replies — one per reply LLM
 // run — posted as issue comments or inline review-comment replies. Full reviews
@@ -50,12 +52,11 @@ import { Octokit } from '@octokit/rest';
 // countable during migration.
 const REPLY_MARKERS = ['<!-- docker-agent-review-reply -->', '<!-- cagent-review-reply -->'];
 
-// GitHub presents the bot identity as "docker-agent" when posting with a machine
-// user token, or "docker-agent[bot]" through a GitHub App installation token.
-// Match both so the count is correct regardless of which token posted.
-function matchesBotLogin(login: string | null | undefined, botLogin: string): boolean {
-  return login === botLogin || login === `${botLogin}[bot]`;
-}
+// The bot posts as "docker-agent" (machine user token) or "docker-agent[bot]"
+// (GitHub App installation token); reviews posted through the action's public
+// github-token input under another `[bot]` identity are recognized by the
+// per-run attribution marker their bodies carry (isActionPostedReview — shared
+// with src/incremental-review).
 
 export interface RateAnomalyOptions {
   owner: string;
@@ -100,9 +101,10 @@ function isAgentReplyComment(c: CommentLike, botLogin: string, windowStartMs: nu
 }
 
 function isAgentReview(r: ReviewLike, botLogin: string, windowStartMs: number): boolean {
-  if (!matchesBotLogin(r.user?.login, botLogin)) return false;
+  if (!isActionPostedReview(r.user?.login, r.body, botLogin)) return false;
   // A real review run always carries an assessment/status body ("### Assessment:
-  // …", or a timeout/error/LGTM fallback). Standalone inline comments and replies
+  // …", or a timeout/error/incomplete fallback). Standalone inline comments and
+  // replies
   // surface in this endpoint as empty-body review entries; skipping them keeps
   // each review run counted exactly once and avoids double-counting an inline
   // reply (already counted via its reply marker on the comment endpoints).

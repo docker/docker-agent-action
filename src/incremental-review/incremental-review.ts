@@ -12,10 +12,12 @@
  * every posted review: `commit_id` on `GET /pulls/{n}/reviews` is the PR head
  * SHA at posting time. This survives across workflow runs, requires no extra
  * writes, and cannot be edited away like a marker embedded in a comment body.
- * Only reviews that represent a *completed* run count — an assessment body
- * ("### Assessment:") or the zero-findings LGTM fallback. Timeout and failure
- * fallback reviews do NOT mark commits as reviewed, so the next run re-covers
- * them.
+ * Only reviews that represent a *completed* run count — a body carrying the
+ * "### Assessment:" header and no incomplete/inconclusive marker. Timeout,
+ * failure, and incomplete/no-post fallback reviews do NOT mark commits as
+ * reviewed, so the next run re-covers them. The legacy zero-findings LGTM
+ * fallback ("🟢 **No issues found**") is deliberately not trusted either: it
+ * was synthesized from exit code 0 alone, without evidence a review happened.
  *
  * ## Fallbacks to a full review (see planIncrementalReview)
  *
@@ -34,6 +36,8 @@
  * the last review cancel out against the base (net-zero) is not part of the
  * PR diff, so GitHub would reject inline comments anchored there (HTTP 422).
  */
+
+import { isActionPostedReview } from '../review-assessment/review-assessment.js';
 
 /** Result of one git invocation. Injectable for deterministic tests. */
 export interface GitResult {
@@ -64,17 +68,33 @@ export interface IncrementalPlan {
 // looser (e.g. a body that starts with "-") must never get through.
 const SHA40 = /^[0-9a-f]{40}$/i;
 
-// Bodies that mark a review run as completed. The timeout ("⏱️ **PR Review
-// Timed Out**") and failure ("❌ **PR Review Failed**") fallbacks match
-// neither, so unreviewed commits stay unreviewed.
-const COMPLETED_BODY_MARKERS = ['### Assessment:', '🟢 **No issues found**'];
+// Bodies that mark a review run as completed: only the assessment header a
+// finished pipeline emits. The timeout ("⏱️ **PR Review Timed Out**"), failure
+// ("❌ **PR Review Failed**"), and no-post ("⚠️ **Review incomplete**")
+// fallbacks match nothing here, so unreviewed commits stay unreviewed. The
+// legacy zero-findings LGTM fallback ("🟢 **No issues found**") is NOT a
+// completion marker: it was posted blindly on exit 0 without a posted-review
+// marker, so trusting it would permanently skip commits that were never
+// actually reviewed.
+const COMPLETED_BODY_MARKERS = ['### Assessment:'];
+
+// Bodies that mark a review run as NOT completed, whatever else they contain.
+// Defense-in-depth: an incomplete or inconclusive review must never advance
+// the checkpoint even if an "### Assessment:" line leaks into the same body.
+const INCOMPLETE_BODY_MARKERS = [
+  '### ⚠️ Review incomplete',
+  '### ⚠️ Verification inconclusive',
+  '⚠️ **Review incomplete**',
+];
 
 // GitHub presents the bot identity as "docker-agent" when posting with a
 // machine user token, or "docker-agent[bot]" through a GitHub App installation
-// token. Match both (same convention as src/rate-limit).
-function matchesBotLogin(login: string | null | undefined, botLogin: string): boolean {
-  return login === botLogin || login === `${botLogin}[bot]`;
-}
+// token. The action's public github-token input additionally lets consumers
+// post through other identities (the default github.token posts as
+// "github-actions[bot]"), so reviews carrying the action's per-run marker are
+// also recognized when their login is `[bot]`-suffixed — see
+// isActionPostedReview for why plain user logins never qualify (a forged
+// marker must not pin the checkpoint past unreviewed commits).
 
 /**
  * Find the head SHA recorded on the most recent *completed* docker-agent
@@ -86,9 +106,10 @@ export function findLastReviewedSha(
 ): string | null {
   let best: { sha: string; at: number } | null = null;
   for (const review of reviews) {
-    if (!matchesBotLogin(review.user?.login, botLogin)) continue;
+    if (!isActionPostedReview(review.user?.login, review.body, botLogin)) continue;
     const body = review.body ?? '';
     if (!COMPLETED_BODY_MARKERS.some((marker) => body.includes(marker))) continue;
+    if (INCOMPLETE_BODY_MARKERS.some((marker) => body.includes(marker))) continue;
     const sha = review.commit_id ?? '';
     if (!SHA40.test(sha)) continue;
     if (!review.submitted_at) continue;

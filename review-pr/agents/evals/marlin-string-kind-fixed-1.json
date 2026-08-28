@@ -2,7 +2,7 @@
   "id": "2a204370-80fb-4ad5-bea2-75ccb3696e64",
   "title": "Marlin SDK WebClick with action and elementTag from user input — string_kind and action discriminator violations (run 1)",
   "evals": {
-    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
+    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed -e 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' -e 's|__REPOSITORY__|example/repo|g' -e 's/__PR_NUMBER__/1/g' -e 's/__REVIEW_RUN_NONCE__/0123456789abcdef0123456789abcdef/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
     "relevance": [
       "The agent detects the Marlin SDK import pattern (from \"@docker/data-contracts\") and recognizes this as a Marlin producer PR",
       "At least one finding identifies that the action field (STRING_KIND_FIXED) receives user-supplied input from req.body.action, which violates string_kind correctness",

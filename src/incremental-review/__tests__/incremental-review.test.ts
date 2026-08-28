@@ -28,7 +28,7 @@ const HEAD_SHA = 'c'.repeat(40);
 function review(overrides: Partial<ReviewLike> = {}): ReviewLike {
   return {
     user: { login: 'docker-agent' },
-    body: '### Assessment: 🟢 APPROVE',
+    body: '### Assessment: 🟢 NO FINDINGS',
     commit_id: SHA_A,
     submitted_at: '2026-01-01T10:00:00Z',
     ...overrides,
@@ -53,8 +53,68 @@ describe('findLastReviewedSha', () => {
     expect(findLastReviewedSha(reviews)).toBe(SHA_B);
   });
 
-  it('accepts the LGTM fallback body as a completed review', () => {
-    expect(findLastReviewedSha([review({ body: '🟢 **No issues found** — LGTM!' })])).toBe(SHA_A);
+  it('rejects the legacy LGTM fallback body (synthesized from exit 0, never a checkpoint)', () => {
+    expect(findLastReviewedSha([review({ body: '🟢 **No issues found** — LGTM!' })])).toBeNull();
+  });
+
+  it('still checkpoints the LEGACY "### Assessment: 🟢 APPROVE" body', () => {
+    // Reviews posted before the zero-findings label was neutralized to
+    // "🟢 NO FINDINGS" are genuine completed runs: the "### Assessment:"
+    // marker — not the label — is what advances the checkpoint.
+    expect(findLastReviewedSha([review({ body: '### Assessment: 🟢 APPROVE' })])).toBe(SHA_A);
+  });
+
+  it('never advances to a newer legacy LGTM SHA over an older valid assessment', () => {
+    // Defense-in-depth for historical false LGTMs: the newest entry being a
+    // legacy LGTM must not shadow the older genuinely-completed review — the
+    // commits after SHA_A were never reviewed and must be re-covered.
+    const reviews = [
+      review({ commit_id: SHA_A, submitted_at: '2026-01-01T10:00:00Z' }),
+      review({
+        body: '🟢 **No issues found** — LGTM!',
+        commit_id: SHA_B,
+        submitted_at: '2026-01-03T10:00:00Z',
+      }),
+    ];
+    expect(findLastReviewedSha(reviews)).toBe(SHA_A);
+  });
+
+  it('lets a newer valid assessment win over older legacy LGTM and fallback bodies', () => {
+    // Ignoring legacy LGTMs must not pin the checkpoint in the past forever:
+    // once a later real completed review exists, its SHA wins.
+    const reviews = [
+      review({
+        body: '🟢 **No issues found** — LGTM!',
+        commit_id: SHA_A,
+        submitted_at: '2026-01-01T10:00:00Z',
+      }),
+      review({
+        body: '⚠️ **Review incomplete** — no review was posted.',
+        commit_id: SHA_A,
+        submitted_at: '2026-01-02T10:00:00Z',
+      }),
+      review({ commit_id: SHA_B, submitted_at: '2026-01-03T10:00:00Z' }),
+    ];
+    expect(findLastReviewedSha(reviews)).toBe(SHA_B);
+  });
+
+  it('rejects incomplete and inconclusive fallback bodies', () => {
+    const bodies = [
+      '⚠️ **Review incomplete** — The review agent finished without posting a review.',
+      '### ⚠️ Review incomplete\nchunk 2: Drafter did not complete',
+      '### ⚠️ Verification inconclusive\nUnverified findings below.',
+    ];
+    for (const body of bodies) {
+      expect(findLastReviewedSha([review({ body })]), body).toBeNull();
+    }
+  });
+
+  it('never checkpoints a body combining an assessment line with an incomplete marker', () => {
+    expect(
+      findLastReviewedSha([
+        review({ body: '### ⚠️ Review incomplete\n### Assessment: 🟢 NO FINDINGS' }),
+      ]),
+    ).toBeNull();
   });
 
   it('accepts the GitHub App bot login variant', () => {
@@ -63,6 +123,53 @@ describe('findLastReviewedSha', () => {
 
   it('ignores reviews from other users even with a matching body', () => {
     expect(findLastReviewedSha([review({ user: { login: 'alice' } })])).toBeNull();
+  });
+
+  it('checkpoints marker-bearing action reviews posted by other [bot] identities', () => {
+    // The action's github-token input defaults to github.token, which posts
+    // as github-actions[bot] — those runs embed the per-run attribution
+    // marker, so their completed reviews still advance the checkpoint.
+    const marker = `<!-- docker-agent-review-run:${'0'.repeat(32)} -->`;
+    const marked = review({
+      user: { login: 'github-actions[bot]' },
+      body: `### Assessment: 🟡 NEEDS ATTENTION\n\n${marker}`,
+    });
+    expect(findLastReviewedSha([marked])).toBe(SHA_A);
+  });
+
+  it('never checkpoints a marker-bearing review from a non-[bot] login', () => {
+    // The marker format is public, so a PR author could paste one into their
+    // own review to pin the checkpoint past unreviewed commits. Only
+    // App-reserved [bot] logins (or the legacy docker-agent identities) count.
+    const marker = `<!-- docker-agent-review-run:${'0'.repeat(32)} -->`;
+    const forged = review({
+      user: { login: 'mallory' },
+      body: `### Assessment: 🟢 NO FINDINGS\n\n${marker}`,
+    });
+    expect(findLastReviewedSha([forged])).toBeNull();
+  });
+
+  it('never checkpoints an unmarked review from a non-legacy [bot] login', () => {
+    const unmarked = review({
+      user: { login: 'github-actions[bot]' },
+      body: '### Assessment: 🟢 NO FINDINGS',
+    });
+    expect(findLastReviewedSha([unmarked])).toBeNull();
+  });
+
+  it('rejects marker-bearing incomplete/inconclusive bodies from [bot] identities', () => {
+    const marker = `<!-- docker-agent-review-run:${'0'.repeat(32)} -->`;
+    const bodies = [
+      `### ⚠️ Review incomplete\nchunk 2: Drafter did not complete\n\n${marker}`,
+      `### ⚠️ Verification inconclusive\nUnverified findings below.\n\n${marker}`,
+      `⚠️ **Review incomplete** — no review was posted.\n\n${marker}`,
+    ];
+    for (const body of bodies) {
+      expect(
+        findLastReviewedSha([review({ user: { login: 'github-actions[bot]' }, body })]),
+        body,
+      ).toBeNull();
+    }
   });
 
   it('ignores timeout and failure fallback reviews (commits stay unreviewed)', () => {

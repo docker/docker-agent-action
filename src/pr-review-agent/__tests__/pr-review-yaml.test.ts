@@ -26,8 +26,10 @@
  *      object, `review_complete: false`, no salvage) or the WHOLE verifier
  *      batch (inconclusive COMMENT fallback before pairing — no approve, no
  *      retry, no partial merge). The root must also treat a `transfer_task`
- *      tool error exactly like empty/malformed output (never approve, never
- *      retry), aggregate batched CI drafter responses fail-closed (merged
+ *      tool error exactly like empty/malformed output (never approve; never
+ *      retried except under the bounded runtime-delegation retry, which is
+ *      recognized-failure-only, sequential, and once per chunk), aggregate
+ *      batched CI drafter responses fail-closed (merged
  *      review_complete is true only when EVERY delegation returned valid JSON
  *      with review_complete true; an incomplete merge never approves at ANY
  *      finding count and must post an explicit incomplete heading carrying the
@@ -37,6 +39,15 @@
  *      cross-check (omission/addition/duplicate/mismatch => inconclusive
  *      COMMENT fallback, no partial merge — JSON Schema cannot express this
  *      cardinality, so it lives in the instructions).
+ *
+ * Honest limitation: layer 2 — the bounded retry included — is a PROMPT-LEVEL
+ * contract. No runtime code intercepts `transfer_task` failures, counts retry
+ * attempts, or recomputes the merged outcome; these tests pin the instruction
+ * text, not an enforcement mechanism. A model that violates the contract is
+ * caught by the fail-closed backstops instead: the aggregation rule keeps the
+ * merged result incomplete (never approving), and review-pr/action.yml's
+ * API-verified no-post detection (workflow-security tests) surfaces a run
+ * that finished without posting.
  *
  * Like src/caller-permissions, this reads the YAML as text with a focused,
  * dependency-free extractor instead of pulling in a YAML parser.
@@ -225,11 +236,55 @@ describe('semantic refusal rule (executable mirror)', () => {
 describe('root orchestration contracts', () => {
   const root = normalize(rootAgent);
 
-  it('treats a drafter transfer_task tool error like a malformed response, never retried', () => {
+  it('treats a drafter transfer_task tool error as the fallback object, never approving', () => {
     expect(root).toContain('A `transfer_task` tool error counts as exactly this same case');
     expect(root).toContain(
-      'do NOT retry the delegation and NEVER approve on the basis of an errored delegation',
+      "treat that delegation's response as the fallback object above and NEVER approve on the basis of an errored delegation",
     );
+    expect(root).toContain(
+      'Do NOT retry it, with ONE narrow exception — the bounded runtime-delegation retry defined below',
+    );
+  });
+
+  it('bounds the drafter retry to recognized runtime delegation failures', () => {
+    // Prompt-level contract: the bound is instruction text the model follows,
+    // not runtime-enforced — nothing counts retries. These assertions pin the
+    // wording; the fail-closed backstops (aggregation rule, API-verified
+    // no-post detection) cover a model that ignores it.
+    expect(root).toContain(
+      'Bounded retry for runtime delegation failures (REQUIRED — runs after the whole batch settles, BEFORE the aggregation rule below)',
+    );
+    // Recognition is narrow: only the runtime rejecting the delegation itself
+    // (the batched-transfer misrouting seen in production) qualifies.
+    expect(root).toContain(
+      'a delegation error is a RUNTIME DELEGATION FAILURE only when the `transfer_task` tool call itself failed',
+    );
+    expect(root).toContain('"cannot transfer task"');
+    expect(root).toContain('"target agent not in sub-agents list"');
+    // Malformed/refusal output stays fail-closed and is never retried.
+    expect(root).toContain(
+      'Drafter OUTPUT that is empty, malformed, refused, partial, or schema-rejected is NEVER a runtime delegation failure and is NEVER retried',
+    );
+    // Sequential and bounded; successful chunks are retained.
+    expect(root).toContain(
+      're-delegate each such chunk exactly ONCE, one at a time (sequential single `transfer_task` calls — never re-batch retries)',
+    );
+    expect(root).toContain(
+      "keeping every successful delegation's response from the original batch",
+    );
+    expect(root).toContain(
+      'HARD BOUNDS: at most one retry per chunk, at most TWO retried chunks per review (when more than two chunks failed this way, retry the first two in chunk order and leave the rest as fallback objects), and one retry pass per review',
+    );
+    // Posting reserve: retrying never eats the budget needed to post — an
+    // incomplete posted review always beats a timed-out silent one.
+    expect(root).toContain('SKIP the retry pass entirely when posting time is at risk');
+    expect(root).toContain('a posted incomplete review beats a timeout');
+    expect(root).toContain(
+      'A retry never turns a failed or incomplete chunk into a success by itself — only a valid, complete JSON response does',
+    );
+    // Retry attempts stay visible in the diagnostic merged summary.
+    expect(root).toContain('(retried after runtime delegation failure)');
+    expect(root).toContain('(runtime delegation failure; sequential retry failed)');
   });
 
   it('routes malformed/refused drafter partial JSON through the incomplete-review fallback', () => {
@@ -277,7 +332,7 @@ describe('root orchestration contracts', () => {
       "Merged `findings` = the concatenation of every delegation's `findings` array.",
     );
     expect(root).toContain(
-      'Merged `review_complete` = true ONLY IF every delegation returned valid JSON with `review_complete: true`.',
+      'Merged `review_complete` = true ONLY IF every delegation returned valid JSON with `review_complete: true` (a chunk retried under the bounded runtime-delegation retry counts by its final result).',
     );
     expect(root).toContain(
       'If ANY delegation errored, was malformed, refused, or partial (i.e. became the fallback object above), or returned `review_complete: false`, the merged `review_complete` is false.',
@@ -307,7 +362,7 @@ describe('root orchestration contracts', () => {
       'If `review_complete` is `false` AND findings is non-empty → the review is INCOMPLETE, and it stays INCOMPLETE no matter what later steps find.',
     );
     expect(root).toContain(
-      'the posted review MUST use the incomplete-review body from Decision Rules rule 4 (the "### ⚠️ Review incomplete" heading plus the diagnostic merged `summary`) and MUST NOT carry a "🟢 APPROVE" label or any approve wording',
+      'the posted review MUST use the incomplete-review body from Decision Rules rule 4 (the "### ⚠️ Review incomplete" heading plus the diagnostic merged `summary`) and MUST NOT carry a "🟢 NO FINDINGS" label or any approve wording',
     );
     expect(root).toContain(
       'Verified findings — however high their confidence — never overwrite incompleteness.',
@@ -322,7 +377,7 @@ describe('root orchestration contracts', () => {
     expect(root).toContain(
       'Do NOT emit an "### Assessment:" line and do NOT use approve wording anywhere in the review body.',
     );
-    expect(root).toContain('a would-be "🟢 APPROVE" becomes "⚠️ INCOMPLETE" instead');
+    expect(root).toContain('a would-be "🟢 NO FINDINGS" becomes "⚠️ INCOMPLETE" instead');
     expect(root).toContain(
       'Confidence scores decide per-finding dispositions only — they never restore a complete or approving outcome.',
     );
@@ -342,12 +397,12 @@ describe('root orchestration contracts', () => {
     );
   });
 
-  it('reserves the zero-findings 🟢 APPROVE template for complete merges', () => {
+  it('reserves the zero-findings 🟢 NO FINDINGS template for complete, conclusive, zero-surviving merges', () => {
     expect(root).toContain(
-      'use only when findings are empty AND the merged `review_complete` is true',
+      'use only when ZERO findings of ANY severity survive — none inline AND none in any summary list, low included — AND the merged `review_complete` is true AND verification, where required, was conclusive.',
     );
     expect(root).toContain(
-      'incomplete reviews must instead post the "### ⚠️ Review incomplete" body from Decision Rules rule 4, never a 🟢 APPROVE body',
+      'Incomplete reviews must instead post the "### ⚠️ Review incomplete" body from Decision Rules rule 4, and inconclusive verification the "### ⚠️ Verification inconclusive" body — never a 🟢 NO FINDINGS body',
     );
   });
 
@@ -374,7 +429,80 @@ describe('root orchestration contracts', () => {
     expect(root).toContain(
       'or the `transfer_task` call itself fails or returns a tool error, which you MUST treat exactly like an empty/malformed response',
     );
-    expect(root).toContain('A `transfer_task` tool error is never grounds to approve or to retry.');
+    expect(root).toContain('A `transfer_task` tool error is never grounds to approve.');
+  });
+
+  it('bounds the verifier retry to recognized runtime delegation failures', () => {
+    expect(root).toContain(
+      'Do NOT retry the delegation for empty, malformed, refused, or partial verifier OUTPUT.',
+    );
+    expect(root).toContain(
+      'ONE bounded exception, mirroring step 5: a runtime delegation failure (the `transfer_task` call itself fails with e.g. "cannot transfer task" or "target agent not in sub-agents list") may be retried exactly once, sequentially',
+    );
+    expect(root).toContain(
+      'if the retry fails for any reason, apply this fallback — never a second retry',
+    );
+  });
+
+  it('keeps the inconclusive-verification fallback off the completion marker', () => {
+    expect(root).toContain(
+      'The inconclusive-verification body MUST open with "### ⚠️ Verification inconclusive"',
+    );
+    expect(root).toContain('never an "### Assessment:" line and never approve wording');
+    expect(root).toContain('an unverified review must never carry it');
+  });
+
+  it('surfaces surviving low findings instead of dropping them', () => {
+    // The #1814 regression: low findings skipped verification AND silently
+    // vanished from the review, which then claimed a clean result.
+    expect(root).toContain(
+      'Skip verification for "low" findings — but NEVER drop them: every surviving "low" finding stays in the review as a summary-only entry',
+    );
+    expect(root).toContain('Low-severity findings (not verified, not posted inline)');
+    expect(root).toContain(
+      'blocks the 🟢 NO FINDINGS label like any other surviving finding (Decision Rules rules 1–3)',
+    );
+    // Step 9 builds the dedicated review-body section.
+    expect(root).toContain('**Low-severity summary** — surviving low-severity findings');
+    expect(root).toContain(
+      'Never silently drop these: each one blocks the 🟢 NO FINDINGS label (Decision Rules rule 3).',
+    );
+  });
+
+  it('drives the assessment from every surviving finding, approving only on zero', () => {
+    // The TS module is an executable spec/mirror of these rules, honestly
+    // labeled as such — the prompt must never claim a runtime enforcer exists.
+    expect(root).toContain(
+      'YOU apply these rules — nothing else recomputes the assessment at runtime.',
+    );
+    expect(root).toContain(
+      '`src/review-assessment/review-assessment.ts` is their executable spec: an outcome-for-outcome mirror pinned by unit tests, not a runtime enforcer.',
+    );
+    expect(root).not.toContain('authoritative implementation of rules 1–4');
+    expect(root).toContain('**Collect the SURVIVING findings**');
+    expect(root).toContain(
+      'inline comments, the lower-confidence summary, the medium-severity floor list, and the unverified low-severity list',
+    );
+    expect(root).toContain(
+      'ANY other surviving finding (NOTABLE or MINOR — any severity, any surfaced disposition) → label as "🟡 NEEDS ATTENTION"',
+    );
+    expect(root).toContain('EXACTLY ZERO surviving findings → label as "🟢 NO FINDINGS"');
+    expect(root).toContain(
+      '"🟢 NO FINDINGS" is emitted ONLY for a complete review (merged `review_complete` true) with conclusive verification and zero surviving findings of EVERY severity.',
+    );
+    expect(root).toContain(
+      'A review that surfaces ANY finding — inline or summary-only, including a single unverified low — must NOT carry the NO FINDINGS label.',
+    );
+    expect(root).toContain(
+      'The label is a neutral completion marker, NEVER an approval: the bot never approves a PR, so no body may say "APPROVE", "LGTM", or "No issues found".',
+    );
+  });
+
+  it('lists low-severity findings in the console format', () => {
+    expect(root).toContain('### Low-severity findings (not verified, not posted inline)');
+    expect(root).toContain(
+      'Omit the "Lower-confidence", "Low-severity", and "Dismissed security" sections when they have no entries.',
+    );
   });
 
   it('assigns deterministic finding_ids before delegating to the verifier', () => {
@@ -437,7 +565,6 @@ describe('root orchestration contracts', () => {
 
 describe('verifier instruction contracts', () => {
   const verifier = normalize(verifierAgent);
-
   it('demands exactly one verdict per finding, paired by finding_id', () => {
     expect(verifier).toContain('You MUST produce exactly one verdict per finding');
     expect(verifier).toContain('never merge, split, invent, or pad verdicts');
@@ -462,5 +589,103 @@ describe('verifier instruction contracts', () => {
     );
     expect(verifier).toContain('marking the response malformed and the whole batch inconclusive');
     expect(verifier).not.toContain('the schema rejects it');
+  });
+});
+
+describe('posting template hazards', () => {
+  const template = readFileSync(
+    resolve(import.meta.dirname, '../../../review-pr/agents/refs/posting-format.md'),
+    'utf-8',
+  );
+
+  it('has no REVIEW_BODY assignment at all — posting is guarded on the computed outcome', () => {
+    // The old template pre-assigned an assessment badge to a REVIEW_BODY shell
+    // variable; every run that copied it verbatim posted a label it never
+    // computed (template bleed). Now no shell variable exists at all: the body
+    // is a quoted-heredoc file, and the chained posting command reaches
+    // `gh api` only after `test -s` and the trusted finalize-body validator
+    // accept it (exactly one computed status line, staged comments file parsed
+    // and 🟢 NO FINDINGS refused over any staged comment, marker appended
+    // mechanically). The workflow-security harness executes this chain.
+    expect(template).not.toMatch(/^REVIEW_BODY=/m);
+    expect(template).not.toMatch(/\$REVIEW_BODY|\$\{REVIEW_BODY/);
+    expect(template).toContain("cat > /tmp/review_body.md << 'REVIEW_BODY_EOF'");
+    expect(template).toContain('test -s /tmp/review_body.md \\');
+    expect(template).toContain(
+      '&& node /tmp/review-assessment.js finalize-body /tmp/review_body.md __REVIEW_RUN_NONCE__ /tmp/review_comments.json \\',
+    );
+    expect(template).toContain('--rawfile body /tmp/review_body.md');
+    expect(template).toContain('(the ONLY zero-findings outcome');
+    // The payload is staged to a trusted temp file and validated so `gh api`
+    // is never invoked when jq fails to construct it (no `jq | gh` pipe).
+    expect(template).toContain('> /tmp/review_payload.json \\');
+    expect(template).toContain(
+      `&& jq -e 'type == "object"' /tmp/review_payload.json > /dev/null \\`,
+    );
+    expect(template).not.toMatch(/\|\s*gh api/);
+  });
+
+  it('routes through action-staged placeholders, not literal {owner}/{repo}/{pr}', () => {
+    // Every recent successful run first 404ed on the literal route before the
+    // model hand-corrected it; trusted routing data is staged by the action.
+    expect(template).not.toMatch(/\{owner\}|\{repo\}|\{pr\}/);
+    expect(template).toContain(
+      '&& gh api "repos/__REPOSITORY__/pulls/__PR_NUMBER__/reviews" --input - < /tmp/review_payload.json',
+    );
+    expect(template).toContain('--arg commit_id "__PR_HEAD_SHA__"');
+    expect(template).toContain('Run the chained command exactly as rendered');
+  });
+
+  it('documents the non-approving body outcomes, including the low-severity list', () => {
+    expect(template).toContain('"### ⚠️ Review incomplete" (never an "### Assessment:" line)');
+    expect(template).toContain('"### ⚠️ Verification inconclusive"');
+    expect(template).toContain('#### Low-severity findings (not verified, not posted inline)');
+    expect(template).toContain(
+      'complete review, conclusive verification, ZERO surviving findings of every',
+    );
+  });
+});
+
+describe('COMMENT-event and neutral zero-findings label invariants', () => {
+  const template = readFileSync(
+    resolve(import.meta.dirname, '../../../review-pr/agents/refs/posting-format.md'),
+    'utf-8',
+  );
+
+  // Matches an event being SET to an approving value (jq --arg, JSON, YAML, or
+  // shell assignment) while skipping prose prohibitions like "never `APPROVE`",
+  // where words separate "event" from the value.
+  const approvingEventAssignment = /event\W{0,4}(?:APPROVE|REQUEST_CHANGES)/;
+
+  it('pins the COMMENT event and prohibits the approving events in the instructions', () => {
+    const root = normalize(rootAgent);
+    expect(root).toContain(
+      'ALWAYS use the `COMMENT` event — never `APPROVE` or `REQUEST_CHANGES`.',
+    );
+    expect(root).toContain(
+      'The GitHub review event is ALWAYS `COMMENT`, regardless of the assessment label. Never use `APPROVE` or `REQUEST_CHANGES`.',
+    );
+  });
+
+  it('never sets an APPROVE or REQUEST_CHANGES event in the yaml or the posting template', () => {
+    expect(source).not.toMatch(approvingEventAssignment);
+    expect(template).not.toMatch(approvingEventAssignment);
+    // The posting command hardcodes the COMMENT event, and no other event
+    // value is ever passed to jq.
+    expect(template).toContain('--arg event "COMMENT"');
+    expect(template.match(/--arg event "/g)).toEqual(['--arg event "']);
+  });
+
+  it('keeps the retired 🟢 APPROVE label and legacy LGTM wording out of the active policy', () => {
+    // The zero-findings outcome is the neutral 🟢 NO FINDINGS label; only
+    // historical reviews may carry "### Assessment: 🟢 APPROVE", and only
+    // src/incremental-review's marker matching still recognizes them.
+    for (const text of [source, template]) {
+      expect(text).not.toContain('🟢 APPROVE');
+      expect(text).not.toContain('LGTM!');
+      expect(text).not.toContain('🟢 **No issues found**');
+    }
+    expect(source).toContain('label as "🟢 NO FINDINGS"');
+    expect(template).toContain('"### Assessment: 🟢 NO FINDINGS"');
   });
 });

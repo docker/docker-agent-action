@@ -27,17 +27,41 @@ with `echo` — this causes double-escaping of newlines (`\n` rendered as litera
 
 Build the review body and comments, then use `jq` to produce correctly-escaped JSON:
 ```bash
-# Review body is the assessment badge, plus the lower-confidence and dismissed-security
-# summary sections when they have entries (high-confidence findings go in inline comments).
-# Append each section only when non-empty, e.g.:
+# Review body: write it to /tmp/review_body.md via a QUOTED heredoc — never a
+# shell variable (quoting breaks on ", backticks, and $) and never a default
+# copied from this file. The body is the header you computed via the Decision
+# Rules, plus the lower-confidence, low-severity, and dismissed-security
+# summary sections when they have entries (high-confidence findings go in
+# inline comments). Exactly ONE status line, chosen by YOUR computed outcome:
+#   - incomplete review (merged review_complete false)
+#       → body opens "### ⚠️ Review incomplete" (never an "### Assessment:" line)
+#   - verification inconclusive (malformed/unpaired verifier batch)
+#       → body opens "### ⚠️ Verification inconclusive" (never "### Assessment:")
+#   - ANY surviving finding — inline or summary-only, low severity included
+#       → "### Assessment: 🔴 CRITICAL" or "### Assessment: 🟡 NEEDS ATTENTION"
+#   - complete review, conclusive verification, ZERO surviving findings of every
+#     severity → "### Assessment: 🟢 NO FINDINGS" (the ONLY zero-findings outcome —
+#     a neutral completion label; the bot never approves, so never write APPROVE,
+#     LGTM, or "No issues found" wording into the body)
+# Legitimate note text (e.g. the incremental-review coverage note) may precede
+# the single status line. The validation step below refuses to post a body
+# that is empty, has no/conflicting status lines, carries approve/LGTM
+# wording, or pairs 🟢 NO FINDINGS with any findings section.
+cat > /tmp/review_body.md << 'REVIEW_BODY_EOF'
+<replace this whole placeholder with YOUR computed review body — the posting
+command refuses to run until the body carries exactly one valid status line>
+REVIEW_BODY_EOF
+# Example shape of a completed body with summary sections:
 #   ### Assessment: 🟡 NEEDS ATTENTION
 #
 #   #### Lower-confidence findings (not posted inline)
 #   - [medium] file.go:42 — issue (confidence: weak 48/100)
 #
+#   #### Low-severity findings (not verified, not posted inline)
+#   - [low] file.go:12 — issue
+#
 #   #### Dismissed security findings (review manually)
 #   - file.go:88 — issue (verifier mitigation: …)
-REVIEW_BODY="### Assessment: 🟢 APPROVE"   # or 🟡 NEEDS ATTENTION / 🔴 CRITICAL
 
 # Start with an empty comments array
 echo '[]' > /tmp/review_comments.json
@@ -110,15 +134,29 @@ jq '[.[] | select(.body | length > 0)]' /tmp/review_comments.json > /tmp/review_
   && mv /tmp/review_comments.tmp /tmp/review_comments.json
 echo "Posting review with $(jq length /tmp/review_comments.json) inline comment(s)"
 
-# The composite action replaces __PR_HEAD_SHA__ with the validated immutable review snapshot
-# before the agent runs. This command must contain the selected literal SHA.
-jq -n \
-  --arg body "$REVIEW_BODY" \
-  --arg event "COMMENT" \
-  --arg commit_id "__PR_HEAD_SHA__" \
-  --slurpfile comments /tmp/review_comments.json \
-  '{body: $body, event: $event, commit_id: $commit_id, comments: $comments[0]}' \
-| gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input -
+# The composite action replaces __PR_HEAD_SHA__ with the validated immutable review
+# snapshot, __REPOSITORY__/__PR_NUMBER__ with the trusted repository and PR number,
+# and __REVIEW_RUN_NONCE__ with this run's attribution nonce before the agent runs.
+# Run the chained command exactly as rendered — never rewrite the route, substitute
+# owner/repo/PR values, or skip the validation steps. The chain refuses to post when
+# the body file is missing/empty, when /tmp/review_comments.json is missing or not a
+# JSON array, when a 🟢 NO FINDINGS body is paired with ANY staged inline comment,
+# or when the trusted validator rejects the body; the validator also appends this
+# run's hidden attribution marker, which the workflow requires to verify that the
+# review was actually posted — a bypassed or hand-rolled posting command is reported
+# as an unverified run. The payload is staged to a trusted temp file and checked
+# before posting, so `gh api` is never invoked when jq fails to construct it.
+test -s /tmp/review_body.md \
+  && node /tmp/review-assessment.js finalize-body /tmp/review_body.md __REVIEW_RUN_NONCE__ /tmp/review_comments.json \
+  && jq -n \
+    --rawfile body /tmp/review_body.md \
+    --arg event "COMMENT" \
+    --arg commit_id "__PR_HEAD_SHA__" \
+    --slurpfile comments /tmp/review_comments.json \
+    '{body: $body, event: $event, commit_id: $commit_id, comments: $comments[0]}' \
+    > /tmp/review_payload.json \
+  && jq -e 'type == "object"' /tmp/review_payload.json > /dev/null \
+  && gh api "repos/__REPOSITORY__/pulls/__PR_NUMBER__/reviews" --input - < /tmp/review_payload.json
 ```
 
 The `<!-- docker-agent-review -->` marker MUST be on its own line, separated by a blank line

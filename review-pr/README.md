@@ -316,6 +316,22 @@ review after its diff was prepared.
 
 \*API keys are optional when using the reusable workflow (credentials are fetched via OIDC). Only required when using the composite action directly without OIDC.
 
+## Outputs
+
+Both the reusable workflow and the composite action expose the review outcome:
+
+| Output          | Description |
+| --------------- | ----------- |
+| `review-status` | API-verified outcome of the run: `completed`, `completed-with-warnings`, `incomplete`, `inconclusive`, `failed`, `timed-out`, `skipped`, `setup-failed`, or `unverified`. Derived from GitHub API state (this run's attribution marker on the selected SHA above the pre-run review baseline), never from the agent's exit code alone. `skipped` is reported only for the intentional concurrent-review lock skip; `setup-failed` means a setup step failed before the agent could run. From the reusable workflow it is empty when the review job did not run. |
+| `exit-code`     | Exit code from the review agent. Diagnostic only — `review-status` is the authoritative outcome. |
+| `review-url`    | URL to the reviewed pull request (composite action only). |
+
+Only `completed` and `completed-with-warnings` mean a verified review was posted for
+this run. The reusable workflow's check run and its final "Enforce review outcome"
+step key on the same output: an intentional skip is neutral, and every other
+non-success state fails the review job — a run that posted nothing can never end
+green.
+
 ---
 
 ## Example Output
@@ -373,8 +389,11 @@ lose the whole review. The validator is implemented and unit-tested in
 When no issues are found:
 
 ```markdown
-✅ Looks good! No issues found in the changed code.
+### Assessment: 🟢 NO FINDINGS
 ```
+
+The zero-findings label is a neutral completion marker — the review is always
+posted with the `COMMENT` event, never `APPROVE` or `REQUEST_CHANGES`.
 
 ---
 
@@ -531,16 +550,49 @@ Each eval file in `review-pr/agents/evals/` contains:
 - **`evals.relevance`**: Natural-language assertions checked against the agent's output
 - **`evals.setup`**: Setup commands run before the eval (e.g., installing `gh`)
 
+### Eval environment limits
+
+Know these before writing or debugging a fixture — each one has produced a
+broken eval in the past:
+
+- **Every eval runs in console output mode.** The eval schema accepts only
+  `relevance`, `working_dir`, `size`, `setup`, and `image` per eval (unknown
+  fields are rejected) — there is **no per-eval env field** — and the runner
+  executes `sh /setup.sh && exec /docker-agent …`, so environment exports in
+  `setup` are child-shell-local and never reach the agent process. A fixture
+  cannot set `GITHUB_ACTIONS=true`; do not write posting-mode expectations.
+  GitHub posting mode, pre-split `/tmp/drafter_chunk_*.diff` delegation, and
+  the posting chain are covered deterministically by
+  `src/pr-review-agent/__tests__/pr-review-yaml.test.ts` and
+  `src/resolve-trigger-context/__tests__/workflow-security.test.ts` instead.
+- **`setup` must not write to stderr on success.** Some runner versions treat
+  any setup stderr as fatal even on exit 0. Alpine's `apk add nodejs` prints
+  an ICU packaging note to stderr, so avoid installing Node in setup; append
+  `2>&1` to any command that chats on stderr when it succeeds.
+- **The container starts empty.** Only the agents directory is mounted (at
+  `/configs`, read-only); `/working_dir` has no repo checkout and no `dist/`
+  bundles, so `node dist/….js` cannot work in setup. Stage files with the
+  `working_dir` field or generate them in `setup` (e.g. `git init` a repo for
+  the console-mode diff flow).
+- **No external writes.** Setup and relevance criteria must never invoke
+  `gh api` or otherwise post to GitHub — evals must not be able to write to
+  real repositories.
+- **`--only` matches case-insensitive substrings** of eval file names, not
+  globs (`--only success` runs `success-1/2/3`; `success-*` matches nothing).
+
+`src/pr-review-agent/__tests__/eval-fixtures.test.ts` pins these invariants
+for every fixture in `review-pr/agents/evals/`.
+
 ### Eval naming conventions
 
 | Prefix       | Expected outcome                                                   |
 | ------------ | ------------------------------------------------------------------ |
-| `success-*`  | Clean PR, agent should APPROVE                                     |
-| `security-*` | PR with security concerns, agent should COMMENT or REQUEST_CHANGES |
+| `success-*`  | Clean PR, agent reports a neutral 🟢 NO FINDINGS review (console COMMENT format, never approval wording) |
+| `security-*` | PR with security concerns, agent should surface findings (COMMENT) |
 
 ### Writing new evals
 
-1. Find a PR with a known correct outcome (e.g., a clean PR that should be approved, or one with a real bug)
+1. Find a PR with a known correct outcome (e.g., a clean PR with no findings, or one with a real bug)
 2. Create a JSON file with the PR URL as the user message and relevance criteria describing the expected behavior
 3. Run the eval 3+ times to verify consistency
 

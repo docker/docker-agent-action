@@ -8,7 +8,7 @@
       "The agent output the review to the console as formatted markdown instead of posting via gh api",
       "The agent successfully read the diff from the pr.diff file on disk rather than trying to fetch it via gh or git",
       "The drafter response is valid JSON containing a 'findings' array, a 'summary' field, and 'review_complete' set to true",
-      "The review includes an assessment label (one of '🟢 APPROVE', '🟡 NEEDS ATTENTION', or '🔴 CRITICAL')"
+      "The review includes an assessment label (one of '🟢 NO FINDINGS', '🟡 NEEDS ATTENTION', or '🔴 CRITICAL')"
     ]
   },
   "messages": [

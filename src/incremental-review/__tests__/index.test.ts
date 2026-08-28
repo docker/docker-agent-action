@@ -76,7 +76,7 @@ const INCREMENTAL_DIFF = [
 function completedReview(): ReviewLike {
   return {
     user: { login: 'docker-agent' },
-    body: '### Assessment: 🟢 APPROVE',
+    body: '### Assessment: 🟢 NO FINDINGS',
     commit_id: SHA_A,
     submitted_at: '2026-01-01T10:00:00Z',
   };

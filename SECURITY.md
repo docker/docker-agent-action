@@ -111,7 +111,8 @@ bound request frequency:
   a sliding window (default 600 s) and, when the count crosses a threshold
   (default 8), flags a rate anomaly. It counts one unit per LLM run: full reviews
   via the Reviews API (`pulls.listReviews`, by bot author, covering findings,
-  zero-finding APPROVEs, and timeout/error/LGTM fallbacks, none of which carry an
+  zero-finding 🟢 NO FINDINGS completions, and timeout/error/incomplete fallbacks,
+  none of which carry an
   inline marker) plus marker-bearing reply comments. The review job skips the
   expensive review on a flagged anomaly; the conversational reply jobs are not
   gated (they are org-gated and per-PR serialized), though their replies still
