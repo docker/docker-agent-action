@@ -196,18 +196,18 @@ agents:
          A `transfer_task` tool error counts as exactly this same case: if a drafter
          delegation fails or returns a tool error instead of output, treat that
          delegation's response as the fallback object above — do NOT retry the delegation
-         and NEVER approve on the basis of an errored delegation.
+         and NEVER approve on the basis of an errored delegation. Similarly to an
+         errored delegation, a response
+         that parses as JSON but is partial, refused, or otherwise malformed (missing
+         required fields, wrong types, or placeholder/refusal text instead of real
+         content) must not be salvaged: treat it as the same fallback object so it
+         follows the incomplete-review fallback below (`review_complete: false`).
          **CRITICAL — on any `transfer_task` error: immediately treat that chunk as
          `review_complete: false`, add it to the fallback object, and carry that
          incompleteness through the aggregation rule below. Do NOT attempt to read
          diff files yourself or self-review — that violates the size budget, will
          exhaust context, and produces an unreviewed outcome that looks like a review.
          Stop and post the incomplete-review COMMENT (Decision Rules rule 4).**
-         Likewise, a response
-         that parses as JSON but is partial, refused, or otherwise malformed (missing
-         required fields, wrong types, or placeholder/refusal text instead of real
-         content) must not be salvaged: treat it as the same fallback object so it
-         follows the incomplete-review fallback below (`review_complete: false`).
          **Refusal content check (REQUIRED — applies to every parsed drafter
          response):** the schema only rejects empty strings (`minLength: 1`) — it
          cannot see whitespace-only or placeholder text. Inspect every
