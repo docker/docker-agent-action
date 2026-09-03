@@ -1197,12 +1197,12 @@ describe('fork workflow security regressions', () => {
       body: undefined,
     },
     {
-      name: 'fallback LGTM',
+      name: 'incomplete-run notice',
       exitCode: '0',
       verboseLog: 'no review',
       dedupCounts: [0, 0],
       reads: 2,
-      body: '🟢',
+      body: '⚠️',
     },
     { name: 'success without log', exitCode: '0', reads: 0, body: undefined },
   ])('executes the summary $name vector with exact review payload behavior', (vector) => {
