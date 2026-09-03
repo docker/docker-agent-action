@@ -1111,8 +1111,10 @@ runs:
             EXISTING=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" \
               --jq '[.[] | select((.body // "") | (startswith("⚠️ **Review did not complete**") or startswith("🟢 **No issues found**")))] | length' \
               2>/dev/null || echo "0")
+            # Incomplete-run notices are posted via post_review to the pulls reviews endpoint,
+            # so the ⚠️ prefix can never appear here. Only the legacy LGTM guard does real work.
             EXISTING_OLD=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq '[.[] | select((.body // "") | (startswith("⚠️ **Review did not complete**") or startswith("🟢 **No issues found**")))] | length' \
+              --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
               2>/dev/null || echo "0")
             if [ "${EXISTING:-0}" -gt 0 ] || [ "${EXISTING_OLD:-0}" -gt 0 ]; then
               echo "ℹ️  Incomplete-run notice already exists — skipping duplicate post"
