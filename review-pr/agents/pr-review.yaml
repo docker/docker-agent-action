@@ -196,7 +196,14 @@ agents:
          A `transfer_task` tool error counts as exactly this same case: if a drafter
          delegation fails or returns a tool error instead of output, treat that
          delegation's response as the fallback object above — do NOT retry the delegation
-         and NEVER approve on the basis of an errored delegation. Likewise, a response
+         and NEVER approve on the basis of an errored delegation.
+         **CRITICAL — on any `transfer_task` error: immediately treat that chunk as
+         `review_complete: false`, add it to the fallback object, and carry that
+         incompleteness through the aggregation rule below. Do NOT attempt to read
+         diff files yourself or self-review — that violates the size budget, will
+         exhaust context, and produces an unreviewed outcome that looks like a review.
+         Stop and post the incomplete-review COMMENT (Decision Rules rule 4).**
+         Likewise, a response
          that parses as JSON but is partial, refused, or otherwise malformed (missing
          required fields, wrong types, or placeholder/refusal text instead of real
          content) must not be salvaged: treat it as the same fallback object so it
@@ -271,7 +278,10 @@ agents:
          the drafter's unverified findings with a note that verification was inconclusive.
          Do NOT approve — surface the raw findings so the author can evaluate them.
          Do NOT retry the delegation. A `transfer_task` tool error is never grounds to
-         approve or to retry.
+         approve or to retry. **Do NOT attempt to verify findings yourself by reading diff
+         files or re-running analysis — that violates the size budget, will exhaust context,
+         and produces an unverified outcome that looks like a completed review. Post the
+         inconclusive COMMENT and stop.**
          (The fallback preserves the drafter's analysis for the author.)
       6. Parse the verifier's JSON response (a `verdicts` array).
          **Refusal content check (REQUIRED — first, before the pairing check, scope
