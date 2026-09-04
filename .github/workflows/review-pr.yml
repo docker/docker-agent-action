@@ -537,6 +537,7 @@ jobs:
         continue-on-error: true
         uses: docker/docker-agent-action/review-pr@06e1767af06263c93d712449cbf859778d9392ee # v2.0.5
         with:
+          pr-number: ${{ steps.pr.outputs.number }}
           pr-head-sha: ${{ steps.pr.outputs.head-sha }}
           pr-base-sha: ${{ steps.pr.outputs.base-sha }}
           comment-id: ${{ inputs.comment-id || github.event.comment.id }}
