@@ -145,10 +145,12 @@ agents:
          a. Check for pre-split chunk files: `ls /tmp/drafter_chunk_*.diff`
             The CI workflow splits the diff before the agent runs. If chunk files exist,
             use them directly — do NOT recreate them.
-         b. **Batch delegation**: Issue ALL `transfer_task` delegations in a single
-            tool-call batch — the orchestrator batches all `transfer_task` calls in
-            one tool-call response and then awaits each result in turn. Each delegation
-            is fully independent; responses are combined in step d below.
+         b. **Sequential delegation (REQUIRED)**: Process chunks ONE AT A TIME. Call
+            `transfer_task` for chunk 1, wait for its complete result, then call
+            `transfer_task` for chunk 2, and so on. NEVER emit more than one
+            `transfer_task` call in a single response — always include exactly one
+            `transfer_task` call per tool-call batch. Each delegation result is
+            collected before issuing the next; responses are combined in step d below.
 
          **Console output mode** (GITHUB_ACTIONS empty/unset):
          a. Do NOT run `ls /tmp/drafter_chunk_*.diff` — there are no pre-staged files
