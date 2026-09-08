@@ -191,10 +191,10 @@ runs:
             NOW=$(date +%s)
             AGE=$(( NOW - LOCK_TIME ))
             # TTL is a fallback for lock holders that crashed before releasing.
-            # It must exceed the review agent's 2700 s total budget (total-timeout
+            # It must exceed the review agent's 3600 s total budget (total-timeout
             # across all attempts) plus setup/posting overhead so an in-flight
             # review is never treated as stale.
-            if [ "$AGE" -lt 3600 ]; then
+            if [ "$AGE" -lt 4500 ]; then
               echo "⏭️ Review already in progress (started ${AGE}s ago) — skipping"
               echo "skip=true" >> $GITHUB_OUTPUT
               echo "skip-reason=concurrent" >> $GITHUB_OUTPUT
@@ -937,15 +937,15 @@ runs:
       with:
         agent: ${{ env.ACTION_PATH }}/agents/pr-review.yaml
         prompt: ${{ steps.context.outputs.review_prompt }}
-        # Budget: total-timeout (2700 s) is the hard wall-clock cap for this step,
+        # Budget: total-timeout (3600 s) is the hard wall-clock cap for this step,
         # attempts and retry delays included, so it always fits the caller's job
         # timeout with room for the cleanup steps below (lock release, summary,
-        # reactions) and stays below the 3600 s lock TTL, so an in-flight review
-        # is never treated as stale. No retry-on-timeout: a second 45-min pass can
+        # reactions) and stays below the 4500 s lock TTL, so an in-flight review
+        # is never treated as stale. No retry-on-timeout: a second 60-min pass can
         # never fit the same budget, so a timed-out review is surfaced to the PR
         # for a manual re-request instead of silently burning a doomed retry.
-        timeout: "2700"  # 45 min per attempt — allows complex reviews to complete
-        total-timeout: "2700"
+        timeout: "3600"  # 60 min per attempt — allows complex multi-chunk reviews to complete
+        total-timeout: "3600"
         anthropic-api-key: ${{ inputs.anthropic-api-key }}
         openai-api-key: ${{ inputs.openai-api-key }}
         google-api-key: ${{ inputs.google-api-key }}
@@ -972,7 +972,7 @@ runs:
     #      surviving lock entry. Cache saves go through the runner's cache
     #      service token, so this works regardless of the github-token scopes.
     # Cleanup runs first so a successful DELETE cannot remove the fresh marker.
-    # If both fail (e.g. runner crash), the lock expires via the 3600 s TTL.
+    # If both fail (e.g. runner crash), the lock expires via the 4500 s TTL.
     - name: Release review lock
       if: always() && steps.acquire-lock.outcome == 'success'
       continue-on-error: true
@@ -1003,7 +1003,7 @@ runs:
 
     - name: Save review lock release marker
       if: always() && steps.acquire-lock.outcome == 'success'
-      continue-on-error: true  # If this fails the lock expires via the TTL fallback (3600 s)
+      continue-on-error: true  # If this fails the lock expires via the TTL fallback (4500 s)
       uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: .cache/review-lock
@@ -1065,17 +1065,17 @@ runs:
             exit 1
           fi
           if [ "$EXIT_CODE" = "124" ]; then
-          # Timeout (SIGKILL after 2700 s) — provide actionable guidance
-          STATUS="⏱️ **Review timed out** (exit code: 124, limit: 2700 s)"
-          TIMEOUT_NOTE="- **Exit code:** 124 (SIGKILL — 2700 s timeout)"
-          TIMEOUT_NOTE+=$'\n'"- **Timeout limit:** 2700 s"
+          # Timeout (SIGKILL after 3600 s) — provide actionable guidance
+          STATUS="⏱️ **Review timed out** (exit code: 124, limit: 3600 s)"
+          TIMEOUT_NOTE="- **Exit code:** 124 (SIGKILL — 3600 s timeout)"
+          TIMEOUT_NOTE+=$'\n'"- **Timeout limit:** 3600 s"
           TIMEOUT_NOTE+=$'\n'"- Verbose log artifact (${VERBOSE_LOG_FILE}) uploaded for debugging."
           if [ -z "${CHUNK_COUNT}" ]; then
-            TIMEOUT_BODY="⏱️ **PR Review Timed Out** — The review agent hit the 2700 s time limit. Diff size is unknown (chunk-diff step did not produce output). Re-request a review from \`docker-agent\` to retry, or download the verbose log artifact for details."
+            TIMEOUT_BODY="⏱️ **PR Review Timed Out** — The review agent hit the 3600 s time limit. Diff size is unknown (chunk-diff step did not produce output). Re-request a review from \`docker-agent\` to retry, or download the verbose log artifact for details."
           elif [ "${CHUNK_COUNT}" = "1" ]; then
-            TIMEOUT_BODY="⏱️ **PR Review Timed Out** — The review agent hit the 2700 s time limit. The diff is small (1 chunk), so this may be an agent loop rather than a large-diff problem. Re-request a review from \`docker-agent\` to retry. If it times out again, download the verbose log artifact for details."
+            TIMEOUT_BODY="⏱️ **PR Review Timed Out** — The review agent hit the 3600 s time limit. The diff is small (1 chunk), so this may be an agent loop rather than a large-diff problem. Re-request a review from \`docker-agent\` to retry. If it times out again, download the verbose log artifact for details."
           else
-            TIMEOUT_BODY="⏱️ **PR Review Timed Out** — The review agent hit the 2700 s time limit. This usually happens on large or complex diffs. Re-request a review from \`docker-agent\` to retry — if it times out again, consider splitting the PR into smaller pieces."
+            TIMEOUT_BODY="⏱️ **PR Review Timed Out** — The review agent hit the 3600 s time limit. This usually happens on large or complex diffs. Re-request a review from \`docker-agent\` to retry — if it times out again, consider splitting the PR into smaller pieces."
           fi
           if ! jq -n --arg body "$TIMEOUT_BODY" --arg event "COMMENT" --arg commit_id "$PR_HEAD_SHA" \
             '{body: $body, event: $event, commit_id: $commit_id, comments: []}' \
