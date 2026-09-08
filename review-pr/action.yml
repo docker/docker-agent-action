@@ -1099,27 +1099,31 @@ runs:
           fi
         else
           STATUS="✅ **Review completed**"
-          # Defense-in-depth: if the log exists but no review was posted, post a fallback LGTM comment.
-          # This guards against the agent exiting 0 without calling gh api (e.g., zero-findings early exit).
+          # Defense-in-depth: if the log exists but no review was posted, the agent exited 0
+          # without calling gh api (e.g., delegation failure, zero-findings early exit). Post an
+          # explicit incomplete-run notice — never a synthetic LGTM, which would mask a broken
+          # pipeline as an approval.
           if [ -n "$VERBOSE_LOG_FILE" ] && [ -f "$VERBOSE_LOG_FILE" ] && ! grep -qE 'pullrequestreview-[0-9]+' "$VERBOSE_LOG_FILE" 2>/dev/null; then
-            # Dedup guard: skip posting if an identical fallback PR review already exists.
-            # Also check the old issue-comment endpoint for a one-time migration guard
-            # (prior runs posted to /issues/comments; this prevents a duplicate on the first
-            # run of this new code against PRs that already received an LGTM issue comment).
+            # Dedup guard: skip if an identical incomplete-run notice already exists.
+            # Also check both the new prefix and the legacy "No issues found" prefix so a
+            # prior LGTM fallback (from older action versions) is treated as a duplicate and
+            # never shadowed by a second incomplete notice on the same PR.
             EXISTING=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/reviews" \
-              --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
+              --jq '[.[] | select((.body // "") | (startswith("⚠️ **Review did not complete**") or startswith("🟢 **No issues found**")))] | length' \
               2>/dev/null || echo "0")
+            # Incomplete-run notices are posted via post_review to the pulls reviews endpoint,
+            # so the ⚠️ prefix can never appear here. Only the legacy LGTM guard does real work.
             EXISTING_OLD=$(gh api "repos/$REPOSITORY/issues/$PR_NUMBER/comments" \
               --jq '[.[] | select((.body // "") | startswith("🟢 **No issues found**"))] | length' \
               2>/dev/null || echo "0")
             if [ "${EXISTING:-0}" -gt 0 ] || [ "${EXISTING_OLD:-0}" -gt 0 ]; then
-              echo "ℹ️  Fallback LGTM review already exists — skipping duplicate post"
+              echo "ℹ️  Incomplete-run notice already exists — skipping duplicate post"
             else
-              echo "::warning::Agent exited 0 but no review was posted — posting fallback LGTM review"
-              jq -n --arg body "🟢 **No issues found** — LGTM! [View logs]($RUN_URL)." --arg event "COMMENT" --arg commit_id "$PR_HEAD_SHA" \
+              echo "::warning::Agent exited 0 but no review was posted — posting incomplete-run notice (not an approval)"
+              jq -n --arg body "⚠️ **Review did not complete** — The agent ran but did not post a review. [View logs]($RUN_URL) for details. Re-request a review from \`docker-agent\` to retry." --arg event "COMMENT" --arg commit_id "$PR_HEAD_SHA" \
                 '{body: $body, event: $event, commit_id: $commit_id, comments: []}' \
               | post_review 2>&1 || \
-                echo "::warning::Failed to post fallback LGTM review to PR"
+                echo "::warning::Failed to post incomplete-run notice to PR"
             fi
           fi
         fi
