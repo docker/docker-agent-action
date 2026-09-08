@@ -265,7 +265,7 @@ describe('root orchestration contracts', () => {
 
   it('parses every batched drafter delegation separately before aggregating', () => {
     expect(root).toContain(
-      "Parse each drafter delegation's JSON response separately (console mode has one delegation; CI batched mode has one per chunk)",
+      "Parse each drafter delegation's JSON response separately (console mode has one delegation; CI mode has one per chunk)",
     );
   });
 
