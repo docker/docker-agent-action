@@ -82,6 +82,9 @@ on:
       exit-code:
         description: "Exit code from the review"
         value: ${{ jobs.review.outputs.exit-code }}
+      review-status:
+        description: "API-verified review outcome: completed, completed-with-warnings, incomplete, inconclusive, failed, timed-out, skipped, setup-failed, or unverified (empty when the review job did not run)"
+        value: ${{ jobs.review.outputs.review-status }}
 
 permissions:
   contents: read
@@ -296,6 +299,7 @@ jobs:
       actions: write  # cache delete for review-lock release cleanup; feedback artifact list/delete
     outputs:
       exit-code: ${{ steps.run-review.outputs.exit-code }}
+      review-status: ${{ steps.run-review.outputs.review-status }}
 
     steps:
       - name: Resolve PR number
@@ -564,10 +568,33 @@ jobs:
         env:
           CHECK_ID: ${{ steps.create-check.outputs.check-id }}
           JOB_STATUS: ${{ job.status }}
+          REVIEW_STATUS: ${{ steps.run-review.outputs.review-status }}
+          RUN_REVIEW_OUTCOME: ${{ steps.run-review.outcome }}
         with:
           github-token: ${{ github.token }}
           script: |
-            const conclusion = process.env.JOB_STATUS === 'cancelled' ? 'cancelled' : process.env.JOB_STATUS === 'success' ? 'success' : 'failure';
+            // continue-on-error on the review step masks its failure from
+            // job.status, so the check conclusion is derived from the
+            // API-verified review-status instead. Only a verified completion
+            // may be green; an intentional skip is neutral ONLY when the
+            // composite itself succeeded — a failed step claiming skipped is
+            // a contradiction that stays red; every other state (incomplete,
+            // inconclusive, timed-out, failed, setup-failed, unverified, or a
+            // missing status from a crashed composite) is a failure.
+            const reviewStatus = process.env.REVIEW_STATUS || '';
+            const stepOutcome = process.env.RUN_REVIEW_OUTCOME || '';
+            let conclusion;
+            if (process.env.JOB_STATUS === 'cancelled') {
+              conclusion = 'cancelled';
+            } else if (reviewStatus === 'completed' || reviewStatus === 'completed-with-warnings') {
+              conclusion = 'success';
+            } else if (reviewStatus === 'skipped' && stepOutcome !== 'failure') {
+              conclusion = 'neutral';
+            } else if (reviewStatus === '' && stepOutcome === 'skipped') {
+              conclusion = 'neutral';
+            } else {
+              conclusion = 'failure';
+            }
             try {
               await github.rest.checks.update({
                 owner: context.repo.owner,
@@ -580,6 +607,49 @@ jobs:
             } catch (error) {
               core.warning(`Failed to update check run: ${error.message}`);
             }
+
+      # continue-on-error on the review step keeps the cleanup/check update
+      # above running, but it also masks review failures from the job result.
+      # This gate restores the honest outcome: only a verified completion (or
+      # an intentionally skipped review) leaves the reusable workflow green —
+      # fallback/verification failures must fail the job.
+      - name: Enforce review outcome
+        if: always()
+        shell: bash
+        env:
+          REVIEW_STATUS: ${{ steps.run-review.outputs.review-status }}
+          RUN_REVIEW_OUTCOME: ${{ steps.run-review.outcome }}
+        run: |
+          case "$REVIEW_STATUS" in
+            completed|completed-with-warnings)
+              echo "✅ Review outcome: $REVIEW_STATUS"
+              ;;
+            skipped)
+              # Expected no-op (the composite's concurrent-review lock) — but
+              # only when the step itself succeeded. A failed step claiming
+              # skipped is a contradiction that must not leave the job green.
+              if [ "$RUN_REVIEW_OUTCOME" = "failure" ]; then
+                echo "::error::Review step failed while reporting review-status=skipped — failing the review job"
+                exit 1
+              fi
+              echo "⏭️ Review intentionally skipped"
+              ;;
+            *)
+              if [ -z "$REVIEW_STATUS" ] && [ "$RUN_REVIEW_OUTCOME" = "skipped" ]; then
+                # The review step never ran: a pre-review guard (draft PR,
+                # authorization, rate anomaly, non-/review comment) filtered
+                # this event — an expected skip, not a review failure.
+                echo "⏭️ Review step skipped by a pre-review guard"
+                exit 0
+              fi
+              # Missing status with a run/failed step means required setup or
+              # the composite itself failed; any other status (incomplete,
+              # inconclusive, timed-out, failed, setup-failed, unverified) is
+              # a non-success review outcome. Neither may leave the job green.
+              echo "::error::Review outcome '$REVIEW_STATUS' is not a verified completion — failing the review job"
+              exit 1
+              ;;
+          esac
 
   # No rate-anomaly gate here (unlike the review job): conversational replies are
   # gated by org membership and serialized per-PR by the `concurrency:` group, and

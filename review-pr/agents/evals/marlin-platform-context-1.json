@@ -2,7 +2,7 @@
   "id": "b5394a48-d3f1-480c-9952-3a035e4876c3",
   "title": "Marlin SDK web event from Node server with raw integer enum and non-UUID account_id (run 1)",
   "evals": {
-    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
+    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed -e 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' -e 's|__REPOSITORY__|example/repo|g' -e 's/__PR_NUMBER__/1/g' -e 's/__REVIEW_RUN_NONCE__/0123456789abcdef0123456789abcdef/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
     "relevance": [
       "The agent detects the Marlin SDK import pattern (from \"@docker/data-contracts\") and recognizes this as a Marlin producer PR",
       "At least one finding identifies that a WebPageView event (which is a PLATFORM_CONTEXT_WEB event) is being fired from a Node.js server-side Express handler — it should use a PLATFORM_CONTEXT_NODE event instead",

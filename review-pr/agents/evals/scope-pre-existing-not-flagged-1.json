@@ -9,7 +9,7 @@
       "The drafter response is valid JSON containing a 'findings' array, a 'summary' field, and 'review_complete' set to true",
       "The review does NOT report that the error returned by fileutil.Remove is discarded or could leak temp files, because that error was already discarded on the pre-existing line (`_ = os.Remove(tmp.Name())`) — swapping os.Remove for fileutil.Remove does not introduce the discarded error, so it is pre-existing and not a regression",
       "The review does NOT ask the author to check or handle the error returned by fileutil.Remove",
-      "The assessment label is '🟢 APPROVE' or '🟡 NEEDS ATTENTION' — it is NOT '🔴 CRITICAL'"
+      "The assessment label is '🟢 NO FINDINGS' or '🟡 NEEDS ATTENTION' — it is NOT '🔴 CRITICAL'"
     ]
   },
   "messages": [

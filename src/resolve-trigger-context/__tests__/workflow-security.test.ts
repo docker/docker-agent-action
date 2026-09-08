@@ -6,20 +6,33 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { delimiter, dirname, resolve } from 'node:path';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { parseDocument } from 'yaml';
+import { findLastReviewedSha } from '../../incremental-review/incremental-review.js';
+import { builtReviewAssessmentCli } from '../../review-assessment/__tests__/build-cli.js';
 import { resolverOutputs } from '../index.js';
 import type { CanonicalComment, CanonicalTriggerContext } from '../resolve-trigger-context.js';
 
 const root = resolve(import.meta.dirname, '../../..');
-const safePath = '/usr/bin:/bin';
+// The review-assessment CLI harnesses run `node` from the rendered scripts,
+// so the spawning node's own directory is prepended to the deterministic
+// system-tool path.
+const safePath = `${dirname(process.execPath)}${delimiter}/usr/bin:/bin`;
+
+// Bundled once per test process (tsup, same shape as `pnpm build`): the
+// production scripts under test execute this exact runtime artifact.
+let reviewAssessmentCli = '';
+beforeAll(async () => {
+  reviewAssessmentCli = await builtReviewAssessmentCli();
+});
 
 function testEnvironment(values: Record<string, string>): NodeJS.ProcessEnv {
   return {
@@ -578,20 +591,39 @@ function requiredComment(context: CanonicalTriggerContext): CommentContext {
   return context.comment;
 }
 
-function actionStepRun(name: string): string {
+function reviewActionSteps(): WorkflowStep[] {
   const action = parseDocument(
     readFileSync(resolve(root, 'review-pr/action.yml'), 'utf8'),
   ).toJS() as Action;
-  const matches = action.runs?.steps?.filter((candidate) => candidate.name === name) ?? [];
-  if (matches.length !== 1 || !matches[0].run) throw new Error(`Expected one ${name} run body`);
-  return matches[0].run;
+  return action.runs?.steps ?? [];
+}
+
+function reviewActionStep(name: string): WorkflowStep {
+  const matches = reviewActionSteps().filter((candidate) => candidate.name === name);
+  if (matches.length !== 1) throw new Error(`Expected one ${name} step`);
+  return matches[0];
+}
+
+function actionStepRun(name: string): string {
+  const run = reviewActionStep(name).run;
+  if (!run) throw new Error(`Expected a ${name} run body`);
+  return run;
 }
 
 function summaryRun(): string {
   return actionStepRun('Post clean summary');
 }
 
-function runCopyReference(headSha: string, template: string): ReturnType<typeof spawnSync> {
+const TEST_NONCE = '0123456789abcdef0123456789abcdef';
+const TEST_MARKER = `<!-- docker-agent-review-run:${TEST_NONCE} -->`;
+
+function runCopyReference(
+  headSha: string,
+  template: string,
+  repository = 'docker/docker-agent-action',
+  prNumber = '88',
+  runNonce = TEST_NONCE,
+): { result: ReturnType<typeof spawnSync>; rendered: string } {
   const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-copy-reference-'));
   const actionPath = resolve(directory, 'action');
   const refs = resolve(actionPath, 'agents/refs');
@@ -606,6 +638,9 @@ function runCopyReference(headSha: string, template: string): ReturnType<typeof 
     writeFileSync(resolve(directory, 'posting-format.md'), template);
     cpSync(resolve(root, 'review-pr/agents/refs'), refs, { recursive: true });
     writeFileSync(resolve(refs, 'posting-format.md'), template);
+    // The step hard-requires the bundled CLI at $ACTION_PATH/../dist.
+    mkdirSync(resolve(directory, 'dist'), { recursive: true });
+    cpSync(reviewAssessmentCli, resolve(directory, 'dist/review-assessment.js'));
     const result = spawnSync(
       '/bin/bash',
       ['--noprofile', '--norc', '-e', '-o', 'pipefail', resolve(directory, 'run.sh')],
@@ -613,16 +648,22 @@ function runCopyReference(headSha: string, template: string): ReturnType<typeof 
         env: testEnvironment({
           ACTION_PATH: actionPath,
           PR_HEAD_SHA: headSha,
+          REPOSITORY: repository,
+          PR_NUMBER: prNumber,
+          RUN_NONCE: runNonce,
           GITHUB_OUTPUT: output,
         }),
         encoding: 'utf8',
       },
     );
-    if (result.status === 0)
+    let rendered = '';
+    if (result.status === 0) {
       expect(readFileSync(output, 'utf8')).toContain(
         'posting-reference=/tmp/refs/posting-format.md',
       );
-    return result;
+      rendered = readFileSync(resolve(originalRefs, 'posting-format.md'), 'utf8');
+    }
+    return { result, rendered };
   } finally {
     rmSync(originalRefs, { recursive: true, force: true });
     if (existsSync(backupRefs))
@@ -631,6 +672,16 @@ function runCopyReference(headSha: string, template: string): ReturnType<typeof 
   }
 }
 
+type ReviewState = {
+  id: number | null;
+  /** Review author as the API reports it. */
+  user?: { login?: string | null } | null;
+  commit_id?: string;
+  body?: string;
+  /** COMMENTED / APPROVED / CHANGES_REQUESTED / PENDING as GitHub reports it. */
+  state?: string;
+};
+
 type SummaryInvocation = {
   skipReason?: string;
   exitCode?: string;
@@ -638,45 +689,80 @@ type SummaryInvocation = {
   chunkCount?: string;
   headSha?: string;
   postingReference?: string;
-  dedupCounts?: [number, number];
+  /** BASELINE_MAX_REVIEW_ID env — the pre-run maximum review ID. */
+  baseline?: string;
+  /** RUN_NONCE env — this run's attribution nonce. */
+  nonce?: string;
+  /** Post-run review state the gh mock serves for the paginate lookup. */
+  reviews?: ReviewState[];
+  reviewsFetchFails?: boolean;
+  postFails?: boolean;
 };
 
 type GhRecord = { args: string; input: string };
+
+const summaryReviewsRoute = 'api --paginate repos/docker/docker-agent-action/pulls/88/reviews';
+
+/**
+ * Mock gh: records every invocation, serves the paginate reviews lookup from
+ * GH_REVIEWS_FILE (or fails it when GH_REVIEWS_FETCH_FAILS=1), rejects empty
+ * --input payloads like the real API, and fails posts when GH_POST_FAILS=1.
+ */
+function ghMock(): string {
+  return `#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+input=""
+if [[ "$args" == *" --input -" ]]; then input=$(cat); fi
+printf '%s\\n' "$(jq -cn --arg args "$args" --arg input "$input" '{args: $args, input: $input}')" >> "$GH_RECORDS"
+if [[ "$args" == "${summaryReviewsRoute}" ]]; then
+  if [[ "\${GH_REVIEWS_FETCH_FAILS:-}" == "1" ]]; then exit 1; fi
+  cat "$GH_REVIEWS_FILE"
+fi
+if [[ "$args" == *" --input -" ]]; then
+  if [[ -z "$input" ]]; then exit 22; fi
+  if [[ "\${GH_POST_FAILS:-}" == "1" ]]; then exit 1; fi
+fi
+`;
+}
 
 function runSummary(invocation: SummaryInvocation): {
   result: ReturnType<typeof spawnSync>;
   records: GhRecord[];
   summary: string;
+  outputs: string;
   directory: string;
 } {
   const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-summary-'));
   const output = resolve(directory, 'output');
   const summary = resolve(directory, 'summary');
   const recordsPath = resolve(directory, 'gh-records.jsonl');
+  const reviewsPath = resolve(directory, 'reviews.json');
   writeFileSync(recordsPath, '');
   writeFileSync(output, '');
   writeFileSync(summary, '');
+  writeFileSync(reviewsPath, JSON.stringify(invocation.reviews ?? []));
   const reference = invocation.postingReference ?? resolve(directory, 'posting-format.md');
   const sha = invocation.headSha ?? 'a'.repeat(40);
+  const nonce = invocation.nonce ?? TEST_NONCE;
   writeFileSync(resolve(directory, 'summary.sh'), summaryRun());
   if (!invocation.postingReference) {
-    writeFileSync(reference, `jq -n --arg commit_id "${sha}" '{commit_id: $commit_id}'`);
+    writeFileSync(
+      reference,
+      [
+        `node /tmp/review-assessment.js finalize-body /tmp/review_body.md ${TEST_NONCE} /tmp/review_comments.json`,
+        `jq -n --arg commit_id "${sha}" '{commit_id: $commit_id}' | gh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -`,
+      ].join('\n'),
+    );
   }
+  // The summary step classifies via the bundled CLI at $ACTION_PATH/../dist.
+  const actionPath = resolve(directory, 'action');
+  mkdirSync(actionPath, { recursive: true });
+  mkdirSync(resolve(directory, 'dist'), { recursive: true });
+  cpSync(reviewAssessmentCli, resolve(directory, 'dist/review-assessment.js'));
   if (invocation.verboseLog !== undefined)
     writeFileSync(resolve(directory, 'verbose.log'), invocation.verboseLog);
-  writeFileSync(
-    resolve(directory, 'gh'),
-    `#!/usr/bin/env bash
-set -euo pipefail
-args="$*"
-input=""
-if [[ "$args" == *" --input -" ]]; then input=$(cat); fi
-printf '%s\\n' "$(jq -cn --arg args "$args" --arg input "$input" '{args: $args, input: $input}')" >> "$GH_RECORDS"
-if [[ "$args" == *"/reviews --jq "* ]]; then
-  if [[ "$args" == *"/issues/"* ]]; then printf '%s\\n' "${invocation.dedupCounts?.[1] ?? 0}"; else printf '%s\\n' "${invocation.dedupCounts?.[0] ?? 0}"; fi
-fi
-`,
-  );
+  writeFileSync(resolve(directory, 'gh'), ghMock());
   chmodSync(resolve(directory, 'gh'), 0o755);
   const result = spawnSync(
     '/bin/bash',
@@ -696,6 +782,9 @@ fi
       env: testEnvironment({
         PATH: `${directory}${delimiter}${safePath}`,
         GH_RECORDS: recordsPath,
+        GH_REVIEWS_FILE: reviewsPath,
+        GH_REVIEWS_FETCH_FAILS: invocation.reviewsFetchFails ? '1' : '',
+        GH_POST_FAILS: invocation.postFails ? '1' : '',
         GITHUB_OUTPUT: output,
         GITHUB_STEP_SUMMARY: summary,
         REPOSITORY: 'docker/docker-agent-action',
@@ -707,9 +796,11 @@ fi
           invocation.verboseLog === undefined ? '' : resolve(directory, 'verbose.log'),
         CHUNK_COUNT: invocation.chunkCount ?? '',
         LOCK_AGE: '',
-        ACTION_PATH: directory,
+        ACTION_PATH: actionPath,
         PR_HEAD_SHA: sha,
         POSTING_REFERENCE: reference,
+        BASELINE_MAX_REVIEW_ID: invocation.baseline ?? '100',
+        RUN_NONCE: nonce,
       }),
       encoding: 'utf8',
     },
@@ -719,7 +810,13 @@ fi
     .split('\n')
     .filter(Boolean)
     .map((line) => JSON.parse(line) as GhRecord);
-  return { result, records, summary: readFileSync(summary, 'utf8'), directory };
+  return {
+    result,
+    records,
+    summary: readFileSync(summary, 'utf8'),
+    outputs: readFileSync(output, 'utf8'),
+    directory,
+  };
 }
 
 function reviewCreations(records: GhRecord[]): GhRecord[] {
@@ -1148,28 +1245,174 @@ describe('fork workflow security regressions', () => {
     expect(kills).toBe(72);
   });
 
+  const summarySha = 'a'.repeat(40);
+  const summaryOtherSha = 'b'.repeat(40);
+  const postedReview = (id = 101, commitId = summarySha, login = 'docker-agent'): ReviewState => ({
+    id,
+    user: { login },
+    commit_id: commitId,
+    body: `### Assessment: 🟡 NEEDS ATTENTION\n\n${TEST_MARKER}\n`,
+    state: 'COMMENTED',
+  });
+  const unmarkedReview = (
+    id = 101,
+    commitId = summarySha,
+    login = 'docker-agent',
+  ): ReviewState => ({
+    id,
+    user: { login },
+    commit_id: commitId,
+    body: '### Assessment: 🟡 NEEDS ATTENTION',
+    state: 'COMMENTED',
+  });
+  const agentStatusReview = (header: string): ReviewState => ({
+    id: 101,
+    user: { login: 'github-actions[bot]' },
+    commit_id: summarySha,
+    body: `${header}\nchunk 2: Drafter did not complete\n\n${TEST_MARKER}\n`,
+    state: 'COMMENTED',
+  });
+  const noticeReview = (commitId: string, login = 'docker-agent'): ReviewState => ({
+    id: 60,
+    user: { login },
+    commit_id: commitId,
+    body: '⚠️ **Review incomplete** — The review agent finished without posting a review.',
+    state: 'COMMENTED',
+  });
+
   it.each([
     {
-      name: 'normal agent-posted success',
+      name: 'API-verified success (verbose log says nothing)',
       exitCode: '0',
-      verboseLog: 'pullrequestreview-1',
-      reads: 0,
+      verboseLog: 'no review',
+      reviews: [postedReview()],
+      status: 'completed',
       body: undefined,
     },
     {
-      name: 'zero-findings already posted',
+      name: 'exit 0 with only a log-quoted review ID (no-post fallback)',
+      // The regression the API baseline fixes: an old review ID mentioned in
+      // the verbose log must never count as evidence this run posted a review.
+      exitCode: '0',
+      verboseLog: 'replying about pullrequestreview-999 from an old run',
+      reviews: [],
+      status: 'incomplete',
+      body: '⚠️ \\*\\*Review incomplete\\*\\*',
+    },
+    {
+      name: 'exit 0 with only a fresh human review on a different SHA',
       exitCode: '0',
       verboseLog: 'no review',
-      dedupCounts: [1, 0],
-      reads: 2,
+      reviews: [unmarkedReview(101, summaryOtherSha, 'human-reviewer')],
+      status: 'incomplete',
+      body: '⚠️ \\*\\*Review incomplete\\*\\*',
+    },
+    {
+      name: 'exit 0 with only a pre-baseline unmarked bot review on the selected SHA',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [unmarkedReview(100)],
+      status: 'incomplete',
+      body: '⚠️ \\*\\*Review incomplete\\*\\*',
+    },
+    {
+      name: 'exit 0 without a verbose log and no posted review',
+      exitCode: '0',
+      reviews: [],
+      status: 'incomplete',
+      body: '⚠️ \\*\\*Review incomplete\\*\\*',
+    },
+    {
+      name: 'exit 0 with a fresh marker review posted by the app-token identity',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [postedReview(101, summarySha, 'docker-agent[bot]')],
+      status: 'completed',
       body: undefined,
+    },
+    {
+      // The github-token input defaults to github.token, which posts as
+      // github-actions[bot]; a custom PAT posts as an arbitrary machine user.
+      // Attribution is by exact marker, so both complete.
+      name: 'exit 0 with a fresh marker review posted by the default-token identity',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [postedReview(101, summarySha, 'github-actions[bot]')],
+      status: 'completed',
+      body: undefined,
+    },
+    {
+      name: 'exit 0 with a fresh marker review posted by a consumer machine user',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [postedReview(101, summarySha, 'consumer-machine-user')],
+      status: 'completed',
+      body: undefined,
+    },
+    {
+      name: 'exit 0 with a fresh same-SHA unmarked review from a human (unrelated)',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [unmarkedReview(101, summarySha, 'human-reviewer')],
+      status: 'incomplete',
+      body: '⚠️ \\*\\*Review incomplete\\*\\*',
+    },
+    {
+      // The agent honestly posted an incomplete review (unreviewed chunks):
+      // that semantic status stands — no duplicate notice, never completed.
+      name: 'exit 0 with an agent-posted incomplete review body',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [agentStatusReview('### ⚠️ Review incomplete')],
+      status: 'incomplete',
+      body: undefined,
+    },
+    {
+      name: 'exit 0 with an agent-posted inconclusive review body',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [agentStatusReview('### ⚠️ Verification inconclusive')],
+      status: 'inconclusive',
+      body: undefined,
+    },
+    {
+      name: 'incomplete notice already posted for this SHA',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [noticeReview(summarySha)],
+      status: 'incomplete',
+      body: undefined,
+    },
+    {
+      name: 'incomplete notice from the app-token identity dedups',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [noticeReview(summarySha, 'docker-agent[bot]')],
+      status: 'incomplete',
+      body: undefined,
+    },
+    {
+      name: 'incomplete notice from a human on this SHA never dedups',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [noticeReview(summarySha, 'human-reviewer')],
+      status: 'incomplete',
+      body: '⚠️ \\*\\*Review incomplete\\*\\*',
+    },
+    {
+      name: 'incomplete notice on another SHA never dedups',
+      exitCode: '0',
+      verboseLog: 'no review',
+      reviews: [noticeReview(summaryOtherSha)],
+      status: 'incomplete',
+      body: '⚠️ \\*\\*Review incomplete\\*\\*',
     },
     {
       name: 'timeout with unknown chunks',
       exitCode: '124',
       verboseLog: 'no review',
       chunkCount: '',
-      reads: 0,
+      status: 'timed-out',
       body: '⏱️',
     },
     {
@@ -1177,7 +1420,7 @@ describe('fork workflow security regressions', () => {
       exitCode: '124',
       verboseLog: 'no review',
       chunkCount: '1',
-      reads: 0,
+      status: 'timed-out',
       body: '⏱️',
     },
     {
@@ -1185,37 +1428,364 @@ describe('fork workflow security regressions', () => {
       exitCode: '124',
       verboseLog: 'no review',
       chunkCount: '2',
-      reads: 0,
+      status: 'timed-out',
       body: '⏱️',
     },
-    { name: 'non-124 failure', exitCode: '1', verboseLog: 'no review', reads: 0, body: '❌' },
     {
-      name: 'failure with prior review',
-      exitCode: '1',
-      verboseLog: 'pullrequestreview-1',
-      reads: 0,
+      name: 'timeout after this run posted its review (no redundant fallback)',
+      exitCode: '124',
+      verboseLog: 'no review',
+      reviews: [postedReview()],
+      status: 'completed-with-warnings',
       body: undefined,
     },
     {
-      name: 'fallback LGTM',
-      exitCode: '0',
+      // Exit 124 after an agent-posted incomplete review keeps the semantic
+      // status — no duplicate timeout fallback next to the posted review.
+      name: 'timeout after an agent-posted incomplete review',
+      exitCode: '124',
       verboseLog: 'no review',
-      dedupCounts: [0, 0],
-      reads: 2,
-      body: '🟢',
+      chunkCount: '1',
+      reviews: [agentStatusReview('### ⚠️ Review incomplete')],
+      status: 'incomplete',
+      body: undefined,
     },
-    { name: 'success without log', exitCode: '0', reads: 0, body: undefined },
+    {
+      name: 'timeout after an agent-posted inconclusive review',
+      exitCode: '124',
+      verboseLog: 'no review',
+      chunkCount: '1',
+      reviews: [agentStatusReview('### ⚠️ Verification inconclusive')],
+      status: 'inconclusive',
+      body: undefined,
+    },
+    {
+      name: 'timeout with only a fresh same-SHA human review still posts the fallback',
+      exitCode: '124',
+      verboseLog: 'no review',
+      chunkCount: '1',
+      reviews: [unmarkedReview(101, summarySha, 'human-reviewer')],
+      status: 'timed-out',
+      body: '⏱️',
+    },
+    {
+      name: 'non-124 failure without a posted review despite a log marker',
+      exitCode: '1',
+      verboseLog: 'pullrequestreview-1',
+      reviews: [],
+      status: 'failed',
+      body: '❌',
+    },
+    {
+      name: 'non-124 failure with only a fresh same-SHA human review',
+      exitCode: '1',
+      verboseLog: 'no review',
+      reviews: [unmarkedReview(101, summarySha, 'human-reviewer')],
+      status: 'failed',
+      body: '❌',
+    },
+    {
+      name: 'non-124 failure with an API-verified posted review',
+      exitCode: '1',
+      verboseLog: 'no review',
+      reviews: [postedReview()],
+      status: 'completed-with-warnings',
+      body: undefined,
+    },
+    {
+      // Nonzero exit after an agent-posted incomplete review keeps the
+      // semantic status — no duplicate failure fallback.
+      name: 'non-124 failure after an agent-posted incomplete review',
+      exitCode: '1',
+      verboseLog: 'no review',
+      reviews: [agentStatusReview('### ⚠️ Review incomplete')],
+      status: 'incomplete',
+      body: undefined,
+    },
+    {
+      name: 'non-124 failure after an agent-posted inconclusive review',
+      exitCode: '1',
+      verboseLog: 'no review',
+      reviews: [agentStatusReview('### ⚠️ Verification inconclusive')],
+      status: 'inconclusive',
+      body: undefined,
+    },
   ])('executes the summary $name vector with exact review payload behavior', (vector) => {
-    const sha = 'a'.repeat(40);
     const run = runSummary(vector);
     try {
       expect(run.result.status, run.result.stderr).toBe(0);
+      expect(run.outputs).toContain(`review-status=${vector.status}`);
+      // Exactly one authoritative API state lookup; the old per-branch --jq
+      // queries are gone.
+      expect(run.records.filter((record) => record.args === summaryReviewsRoute)).toHaveLength(1);
+      expect(run.records.filter((record) => record.args.includes(' --jq '))).toHaveLength(0);
       const creations = reviewCreations(run.records);
-      expect(run.records.filter((record) => record.args.includes(' --jq '))).toHaveLength(
-        vector.reads,
-      );
       expect(creations).toHaveLength(vector.body ? 1 : 0);
-      if (vector.body) expectReviewPayload(creations[0], sha, vector.body);
+      if (vector.body) expectReviewPayload(creations[0], summarySha, vector.body);
+      // Fail-closed: no summary-step fallback may ever synthesize an approval
+      // or advance the incremental checkpoint (the false-LGTM regression:
+      // docker/gordon PRs #1798/#1803/#1808/#1809).
+      for (const creation of creations) {
+        const body = (JSON.parse(creation.input) as { body: string }).body;
+        expect(body).not.toContain('### Assessment:');
+        expect(body).not.toMatch(/LGTM|No issues found/);
+        // The trusted step mechanically embeds this run's attribution marker
+        // in every fallback notice — rate counting stays login-independent.
+        expect(body).toContain(TEST_MARKER);
+        // Never a checkpoint, whichever identity posted the fallback.
+        for (const login of ['docker-agent', 'github-actions[bot]']) {
+          expect(
+            findLastReviewedSha([
+              {
+                user: { login },
+                body,
+                commit_id: summarySha,
+                submitted_at: '2026-01-01T00:00:00Z',
+              },
+            ]),
+          ).toBeNull();
+        }
+      }
+    } finally {
+      rmSync(run.directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: 'missing pre-run baseline',
+      invocation: { exitCode: '0', verboseLog: 'no review', baseline: '' },
+      diagnostic: 'Pre-run review baseline is missing or unreadable',
+      apiCalls: 0,
+    },
+    {
+      name: 'garbled pre-run baseline',
+      invocation: { exitCode: '0', verboseLog: 'no review', baseline: '12x' },
+      diagnostic: 'Pre-run review baseline is missing or unreadable',
+      apiCalls: 0,
+    },
+    {
+      name: 'missing run attribution nonce',
+      invocation: { exitCode: '0', verboseLog: 'no review', nonce: '' },
+      diagnostic: 'Run attribution nonce is missing or malformed',
+      apiCalls: 0,
+    },
+    {
+      name: 'malformed run attribution nonce',
+      invocation: { exitCode: '0', verboseLog: 'no review', nonce: 'abc123' },
+      diagnostic: 'Run attribution nonce is missing or malformed',
+      apiCalls: 0,
+    },
+    {
+      name: 'post-run review lookup failure on exit 0',
+      invocation: { exitCode: '0', verboseLog: 'no review', reviewsFetchFails: true },
+      diagnostic: 'Post-run review lookup failed',
+      apiCalls: 1,
+    },
+    {
+      name: 'post-run review lookup failure on a nonzero exit',
+      invocation: { exitCode: '1', verboseLog: 'pullrequestreview-1', reviewsFetchFails: true },
+      diagnostic: 'Post-run review lookup failed',
+      apiCalls: 1,
+    },
+    {
+      // A stale/copied marker off this run's SHA or baseline is exactly the
+      // ambiguity the classifier refuses to interpret.
+      name: 'marker-bearing review on a different SHA',
+      invocation: {
+        exitCode: '0',
+        verboseLog: 'no review',
+        reviews: [postedReview(101, summaryOtherSha)],
+      },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      name: 'marker-bearing review at the pre-run baseline',
+      invocation: { exitCode: '0', verboseLog: 'no review', reviews: [postedReview(100)] },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      name: 'duplicate exact-marker reviews',
+      invocation: {
+        exitCode: '0',
+        verboseLog: 'no review',
+        reviews: [postedReview(101), postedReview(102)],
+      },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      name: 'marker-bearing review in a non-COMMENTED state',
+      invocation: {
+        exitCode: '0',
+        verboseLog: 'no review',
+        reviews: [{ ...postedReview(), state: 'PENDING' }],
+      },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      name: 'marker-bearing review in an APPROVED state',
+      invocation: {
+        exitCode: '0',
+        verboseLog: 'no review',
+        reviews: [{ ...postedReview(), state: 'APPROVED' }],
+      },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      name: 'marker-bearing review without a status line (malformed body)',
+      invocation: {
+        exitCode: '0',
+        verboseLog: 'no review',
+        reviews: [{ ...postedReview(), body: `some prose\n\n${TEST_MARKER}\n` }],
+      },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      name: 'marker-bearing review with conflicting status markers',
+      invocation: {
+        exitCode: '0',
+        verboseLog: 'no review',
+        reviews: [
+          {
+            ...postedReview(),
+            body: `### ⚠️ Review incomplete\n### Assessment: 🟢 NO FINDINGS\n\n${TEST_MARKER}\n`,
+          },
+        ],
+      },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      name: 'marker-bearing review with active LGTM wording',
+      invocation: {
+        exitCode: '0',
+        verboseLog: 'no review',
+        reviews: [
+          {
+            ...postedReview(),
+            body: `### Assessment: 🟢 NO FINDINGS\n\nLGTM!\n\n${TEST_MARKER}\n`,
+          },
+        ],
+      },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      name: 'marker-bearing review with active APPROVE wording',
+      invocation: {
+        exitCode: '124',
+        verboseLog: 'no review',
+        reviews: [
+          {
+            ...postedReview(),
+            body: `### Assessment: 🟢 APPROVE\n\n${TEST_MARKER}\n`,
+          },
+        ],
+      },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+    {
+      // A fresh same-SHA bot review without the marker means the template was
+      // bypassed or another integration posted mid-run — unattributable.
+      name: 'fresh same-SHA docker-agent review without a marker',
+      invocation: { exitCode: '0', verboseLog: 'no review', reviews: [unmarkedReview(101)] },
+      diagnostic: 'Posted-review state is ambiguous',
+      apiCalls: 1,
+    },
+  ])('fails closed on $name instead of trusting the exit code', ({
+    invocation,
+    diagnostic,
+    apiCalls,
+  }) => {
+    const run = runSummary(invocation);
+    try {
+      expect(run.result.status).not.toBe(0);
+      expect(run.result.stderr).toContain(diagnostic);
+      expect(run.outputs).toContain('review-status=unverified');
+      expect(run.records).toHaveLength(apiCalls);
+      expect(reviewCreations(run.records)).toEqual([]);
+      expect(run.summary).toContain('Review outcome unverified');
+      expect(run.summary).not.toContain('Review completed');
+    } finally {
+      rmSync(run.directory, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the step when the incomplete-review notice cannot be posted', () => {
+    // A silent no-post run whose notice also fails must surface as a failing
+    // step — never a warning-only false success — with an honest summary.
+    const run = runSummary({ exitCode: '0', verboseLog: 'no review', postFails: true });
+    try {
+      expect(run.result.status).not.toBe(0);
+      expect(run.result.stdout).toContain('Failed to post the incomplete-review notice');
+      const creations = reviewCreations(run.records);
+      expect(creations).toHaveLength(1);
+      expectReviewPayload(creations[0], summarySha, '⚠️ \\*\\*Review incomplete\\*\\*');
+      expect(run.outputs).toContain('review-status=incomplete');
+      expect(run.summary).toContain('Review incomplete');
+      expect(run.summary).not.toContain('✅');
+    } finally {
+      rmSync(run.directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: 'timeout notice',
+      invocation: { exitCode: '124', verboseLog: 'no review', postFails: true },
+      status: 'timed-out',
+      bodyPrefix: '⏱️',
+      diagnostic: 'Failed to post the timeout notice',
+      summaryStatus: '⏱️ **Review timed out**',
+    },
+    {
+      name: 'failure notice',
+      invocation: { exitCode: '1', verboseLog: 'no review', postFails: true },
+      status: 'failed',
+      bodyPrefix: '❌',
+      diagnostic: 'Failed to post the failure notice',
+      summaryStatus: '❌ **Review failed**',
+    },
+  ])('fails the step when the $name cannot be posted', ({
+    invocation,
+    status,
+    bodyPrefix,
+    diagnostic,
+    summaryStatus,
+  }) => {
+    // A no-post run whose fallback notice also fails must hard-fail like the
+    // incomplete-notice path, while keeping the honest status and summary so
+    // the completion reaction stays confused.
+    const run = runSummary(invocation);
+    try {
+      expect(run.result.status).not.toBe(0);
+      expect(run.result.stdout).toContain(diagnostic);
+      const creations = reviewCreations(run.records);
+      expect(creations).toHaveLength(1);
+      expectReviewPayload(creations[0], summarySha, bodyPrefix);
+      expect(run.outputs).toContain(`review-status=${status}`);
+      expect(run.summary).toContain(summaryStatus);
+      expect(run.summary).not.toContain('✅');
+    } finally {
+      rmSync(run.directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a coherent partial success when the timeout hit after this run posted', () => {
+    const run = runSummary({ exitCode: '124', verboseLog: 'no review', reviews: [postedReview()] });
+    try {
+      expect(run.result.status, run.result.stderr).toBe(0);
+      expect(run.outputs).toContain('review-status=completed-with-warnings');
+      expect(reviewCreations(run.records)).toEqual([]);
+      expect(run.summary).toContain('Review completed with warnings');
+      expect(run.summary).not.toContain('**Review timed out**');
     } finally {
       rmSync(run.directory, { recursive: true, force: true });
     }
@@ -1259,19 +1829,79 @@ describe('fork workflow security regressions', () => {
   });
 
   it.each([
-    ['missing reference', undefined],
-    ['retained template marker', 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['retained shell marker', 'jq -n --arg commit_id "$PR_HEAD_SHA"'],
-    ['zero commit argument', 'jq -n'],
+    ['missing reference', undefined, 'does not contain exactly one'],
+    [
+      'retained template marker',
+      'jq -n --arg commit_id "__PR_HEAD_SHA__"',
+      'does not contain exactly one',
+    ],
+    [
+      'retained shell marker',
+      'jq -n --arg commit_id "$PR_HEAD_SHA"',
+      'does not contain exactly one',
+    ],
+    ['zero commit argument', 'jq -n', 'does not contain exactly one'],
     [
       'multiple commit arguments',
       'jq -n --arg commit_id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" --arg commit_id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"',
+      'does not contain exactly one',
     ],
     [
       'selected/rendered SHA mismatch',
       'jq -n --arg commit_id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"',
+      'does not contain exactly one',
     ],
-  ])('executes malformed posting reference %s without API access', (_name, content) => {
+    [
+      'missing posting route',
+      `jq -n --arg commit_id "${'a'.repeat(40)}"`,
+      'does not route to exactly the trusted repository/PR',
+    ],
+    [
+      'literal route placeholders',
+      `jq -n --arg commit_id "${'a'.repeat(40)}" | gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input -`,
+      'does not route to exactly the trusted repository/PR',
+    ],
+    [
+      'retained repository marker',
+      `jq -n --arg commit_id "${'a'.repeat(40)}" | gh api "repos/__REPOSITORY__/pulls/88/reviews" --input -`,
+      'does not route to exactly the trusted repository/PR',
+    ],
+    [
+      'untrusted hardcoded route',
+      `jq -n --arg commit_id "${'a'.repeat(40)}" | gh api "repos/evil/elsewhere/pulls/1/reviews" --input -`,
+      'does not route to exactly the trusted repository/PR',
+    ],
+    [
+      'duplicate posting routes',
+      `jq -n --arg commit_id "${'a'.repeat(40)}"\ngh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -\ngh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -`,
+      'does not route to exactly the trusted repository/PR',
+    ],
+    [
+      'missing finalize-body invocation',
+      `jq -n --arg commit_id "${'a'.repeat(40)}"\ngh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -`,
+      "does not carry exactly this run's finalize-body invocation",
+    ],
+    [
+      'retained nonce placeholder',
+      `node /tmp/review-assessment.js finalize-body /tmp/review_body.md __REVIEW_RUN_NONCE__ /tmp/review_comments.json\njq -n --arg commit_id "${'a'.repeat(40)}"\ngh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -`,
+      "does not carry exactly this run's finalize-body invocation",
+    ],
+    [
+      'stale nonce in the finalize invocation',
+      `node /tmp/review-assessment.js finalize-body /tmp/review_body.md ${'f'.repeat(32)} /tmp/review_comments.json\njq -n --arg commit_id "${'a'.repeat(40)}"\ngh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -`,
+      "does not carry exactly this run's finalize-body invocation",
+    ],
+    [
+      'finalize invocation without the staged comments file',
+      `node /tmp/review-assessment.js finalize-body /tmp/review_body.md ${TEST_NONCE}\njq -n --arg commit_id "${'a'.repeat(40)}"\ngh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -`,
+      "does not carry exactly this run's finalize-body invocation",
+    ],
+    [
+      'duplicate finalize invocations',
+      `node /tmp/review-assessment.js finalize-body /tmp/review_body.md ${TEST_NONCE} /tmp/review_comments.json\nnode /tmp/review-assessment.js finalize-body /tmp/review_body.md ${TEST_NONCE} /tmp/review_comments.json\njq -n --arg commit_id "${'a'.repeat(40)}"\ngh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -`,
+      "does not carry exactly this run's finalize-body invocation",
+    ],
+  ])('executes malformed posting reference %s without API access', (_name, content, diagnostic) => {
     const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-reference-'));
     const reference = resolve(directory, 'posting-format.md');
     if (content) writeFileSync(reference, content);
@@ -1282,9 +1912,7 @@ describe('fork workflow security regressions', () => {
     });
     try {
       expect(run.result.status).not.toBe(0);
-      expect(run.result.stderr).toContain(
-        'Rendered posting reference does not contain exactly one',
-      );
+      expect(run.result.stderr).toContain(diagnostic);
       expect(run.records).toEqual([]);
     } finally {
       rmSync(run.directory, { recursive: true, force: true });
@@ -1292,19 +1920,18 @@ describe('fork workflow security regressions', () => {
     }
   });
 
-  it.each([
-    { skipReason: 'concurrent' },
-    { exitCode: '' },
-  ])('executes benign skip states without requiring preflight inputs', (vector) => {
+  it('executes the concurrent-lock skip without requiring preflight inputs', () => {
     const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-skip-'));
     const run = runSummary({
-      ...vector,
+      skipReason: 'concurrent',
+      exitCode: '',
       headSha: '',
       postingReference: resolve(directory, 'missing'),
     });
     try {
       expect(run.result.status, run.result.stderr).toBe(0);
       expect(run.summary).toContain('Review skipped');
+      expect(run.outputs).toContain('review-status=skipped');
       expect(run.records).toEqual([]);
     } finally {
       rmSync(run.directory, { recursive: true, force: true });
@@ -1312,24 +1939,715 @@ describe('fork workflow security regressions', () => {
     }
   });
 
+  it('fails the composite no-exit path as setup-failed instead of labeling it skipped', () => {
+    // A setup step crashing before Run PR Review leaves EXIT_CODE empty with
+    // no intentional skip recorded. That must surface as a failing step with
+    // an honest non-skip status — never the neutral "skipped" (the mislabeled
+    // setup-failure regression). Only the concurrent lock may report skipped.
+    const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-setup-failed-'));
+    const run = runSummary({
+      exitCode: '',
+      headSha: '',
+      postingReference: resolve(directory, 'missing'),
+    });
+    try {
+      expect(run.result.status).not.toBe(0);
+      expect(run.result.stderr).toContain('a setup step failed before the review');
+      expect(run.outputs).toContain('review-status=setup-failed');
+      expect(run.outputs).not.toContain('review-status=skipped');
+      expect(run.summary).toContain('Review setup failed');
+      expect(run.summary).not.toContain('Review skipped');
+      expect(run.records).toEqual([]);
+    } finally {
+      rmSync(run.directory, { recursive: true, force: true });
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  const stagingTemplate = [
+    'jq -n --arg commit_id "__PR_HEAD_SHA__"',
+    'node /tmp/review-assessment.js finalize-body /tmp/review_body.md __REVIEW_RUN_NONCE__ /tmp/review_comments.json',
+    'gh api "repos/__REPOSITORY__/pulls/__PR_NUMBER__/reviews" --input -',
+  ].join('\n');
+
   it.each([
-    ['valid immutable SHA', 'a'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['empty SHA', '', 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['non-hex SHA', 'g'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['short SHA', 'a'.repeat(39), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['long SHA', 'a'.repeat(41), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['unresolved template', 'a'.repeat(40), 'jq -n --arg commit_id "$PR_HEAD_SHA"'],
-    ['zero commit arguments', 'a'.repeat(40), 'jq -n --arg body "review"'],
-    [
-      'multiple commit arguments',
-      'a'.repeat(40),
-      'jq -n --arg commit_id "__PR_HEAD_SHA__" --arg commit_id "x"',
-    ],
-  ])('executes Copy reference files staging preflight for %s', (_name, sha, template) => {
-    const result = runCopyReference(sha, template);
-    expect(result.status, result.stderr).toBe(
-      template === 'jq -n --arg commit_id "__PR_HEAD_SHA__"' && /^[a-f0-9]{40}$/i.test(sha) ? 0 : 1,
+    { name: 'valid immutable SHA and trusted route', ok: true },
+    { name: 'empty SHA', sha: '', ok: false },
+    { name: 'non-hex SHA', sha: 'g'.repeat(40), ok: false },
+    { name: 'short SHA', sha: 'a'.repeat(39), ok: false },
+    { name: 'long SHA', sha: 'a'.repeat(41), ok: false },
+    {
+      name: 'unresolved template',
+      template: stagingTemplate.replace('__PR_HEAD_SHA__', '$PR_HEAD_SHA'),
+      ok: false,
+    },
+    {
+      name: 'zero commit arguments',
+      template: `jq -n --arg body "review"\ngh api "repos/__REPOSITORY__/pulls/__PR_NUMBER__/reviews" --input -`,
+      ok: false,
+    },
+    {
+      name: 'multiple commit arguments',
+      template: `${stagingTemplate} --arg commit_id "x"`,
+      ok: false,
+    },
+    {
+      name: 'missing posting route',
+      template: 'jq -n --arg commit_id "__PR_HEAD_SHA__"',
+      ok: false,
+    },
+    {
+      name: 'literal route placeholders',
+      template:
+        'jq -n --arg commit_id "__PR_HEAD_SHA__"\ngh api repos/{owner}/{repo}/pulls/{pr}/reviews --input -',
+      ok: false,
+    },
+    {
+      name: 'untrusted hardcoded route',
+      template:
+        'jq -n --arg commit_id "__PR_HEAD_SHA__"\ngh api "repos/evil/elsewhere/pulls/1/reviews" --input -',
+      ok: false,
+    },
+    {
+      name: 'duplicate posting routes',
+      template: `${stagingTemplate}\ngh api "repos/__REPOSITORY__/pulls/__PR_NUMBER__/reviews" --input -`,
+      ok: false,
+    },
+    {
+      name: 'missing finalize-body invocation',
+      template:
+        'jq -n --arg commit_id "__PR_HEAD_SHA__"\ngh api "repos/__REPOSITORY__/pulls/__PR_NUMBER__/reviews" --input -',
+      ok: false,
+    },
+    {
+      name: 'finalize-body without the staged comments file',
+      template:
+        'jq -n --arg commit_id "__PR_HEAD_SHA__"\nnode /tmp/review-assessment.js finalize-body /tmp/review_body.md __REVIEW_RUN_NONCE__\ngh api "repos/__REPOSITORY__/pulls/__PR_NUMBER__/reviews" --input -',
+      ok: false,
+    },
+    {
+      name: 'duplicate finalize-body invocations',
+      template: `node /tmp/review-assessment.js finalize-body /tmp/review_body.md __REVIEW_RUN_NONCE__ /tmp/review_comments.json\n${stagingTemplate}`,
+      ok: false,
+    },
+    {
+      name: 'hardcoded foreign nonce in the template',
+      template: stagingTemplate.replace('__REVIEW_RUN_NONCE__', 'f'.repeat(32)),
+      ok: false,
+    },
+    { name: 'repository without owner', repository: 'no-slash-repo', ok: false },
+    { name: 'repository with sed metacharacters', repository: 'docker/repo|x', ok: false },
+    { name: 'repository with replacement metacharacter', repository: 'docker/re&po', ok: false },
+    { name: 'non-numeric PR number', prNumber: '88x', ok: false },
+    { name: 'empty PR number', prNumber: '', ok: false },
+    { name: 'empty run nonce', nonce: '', ok: false },
+    { name: 'malformed run nonce', nonce: 'abc-123', ok: false },
+    { name: 'uppercase run nonce', nonce: TEST_NONCE.toUpperCase(), ok: false },
+  ])('executes Copy reference files staging preflight for $name', ({
+    sha,
+    template,
+    repository,
+    prNumber,
+    nonce,
+    ok,
+  }) => {
+    const headSha = sha ?? 'a'.repeat(40);
+    const { result, rendered } = runCopyReference(
+      headSha,
+      template ?? stagingTemplate,
+      repository,
+      prNumber,
+      nonce,
     );
+    expect(result.status, result.stderr).toBe(ok ? 0 : 1);
+    if (ok) {
+      expect(rendered).toContain(`--arg commit_id "${headSha}"`);
+      expect(rendered).toContain(
+        'gh api "repos/docker/docker-agent-action/pulls/88/reviews" --input -',
+      );
+      expect(rendered).toContain(
+        `finalize-body /tmp/review_body.md ${TEST_NONCE} /tmp/review_comments.json`,
+      );
+      expect(rendered).not.toMatch(
+        /__PR_HEAD_SHA__|__REPOSITORY__|__PR_NUMBER__|__REVIEW_RUN_NONCE__|\{owner\}/,
+      );
+    }
+  });
+
+  it('renders the repository posting template with the trusted SHA, route, and nonce staged in', () => {
+    const sha = 'a'.repeat(40);
+    const { result, rendered } = runCopyReference(
+      sha,
+      readFileSync(resolve(root, 'review-pr/agents/refs/posting-format.md'), 'utf8'),
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(rendered).toContain(`--arg commit_id "${sha}"`);
+    expect(rendered).toContain(
+      '&& gh api "repos/docker/docker-agent-action/pulls/88/reviews" --input - < /tmp/review_payload.json',
+    );
+    // No trusted routing data is left for the model to substitute.
+    expect(rendered).not.toMatch(
+      /__PR_HEAD_SHA__|__REPOSITORY__|__PR_NUMBER__|__REVIEW_RUN_NONCE__|\{owner\}|\{repo\}|\{pr\}/,
+    );
+    // The review body is a heredoc-written file, validated and marker-stamped
+    // by the trusted CLI — no REVIEW_BODY shell variable exists to bleed a
+    // default assessment through, and the marker append is mechanical.
+    expect(rendered).not.toMatch(/^REVIEW_BODY=/m);
+    expect(rendered).not.toMatch(/\$REVIEW_BODY|\$\{REVIEW_BODY/);
+    expect(rendered).toContain('test -s /tmp/review_body.md \\');
+    expect(rendered).toContain(
+      `&& node /tmp/review-assessment.js finalize-body /tmp/review_body.md ${TEST_NONCE} /tmp/review_comments.json \\`,
+    );
+    expect(rendered).toContain('--rawfile body /tmp/review_body.md');
+    // The payload is staged to a trusted temp file and validated before gh
+    // ever runs — a failed jq must not start the API call (the old `jq | gh`
+    // pipe launched gh regardless of jq's fate).
+    expect(rendered).toContain('> /tmp/review_payload.json \\');
+    expect(rendered).toContain(
+      `&& jq -e 'type == "object"' /tmp/review_payload.json > /dev/null \\`,
+    );
+    expect(rendered).not.toMatch(/\|\s*gh api/);
+  });
+
+  function extractPostingCommand(rendered: string): string {
+    const lines = rendered.split('\n');
+    const start = lines.findIndex((line) => line.startsWith('test -s /tmp/review_body.md'));
+    const end = lines.findIndex(
+      (line, index) => index > start && line.trimStart().startsWith('&& gh api '),
+    );
+    if (start === -1 || end === -1)
+      throw new Error('chained posting command not found in rendered template');
+    return lines.slice(start, end + 1).join('\n');
+  }
+
+  it('executes the rendered posting command: invalid bodies refuse, computed outcome posts with the marker', () => {
+    const sha = 'a'.repeat(40);
+    const { result, rendered } = runCopyReference(
+      sha,
+      readFileSync(resolve(root, 'review-pr/agents/refs/posting-format.md'), 'utf8'),
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const command = extractPostingCommand(rendered);
+    const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-posting-guard-'));
+    try {
+      const recordsPath = resolve(directory, 'gh-records.jsonl');
+      const comments = resolve(directory, 'review_comments.json');
+      const body = resolve(directory, 'review_body.md');
+      const payload = resolve(directory, 'review_payload.json');
+      writeFileSync(resolve(directory, 'gh'), ghMock());
+      chmodSync(resolve(directory, 'gh'), 0o755);
+      const spawnPosting = (
+        bodyContent: string | undefined,
+        options: { comments?: string | null; env?: Record<string, string> } = {},
+      ) => {
+        writeFileSync(recordsPath, '');
+        rmSync(body, { force: true });
+        rmSync(comments, { force: true });
+        rmSync(payload, { force: true });
+        const commentsContent = options.comments === undefined ? '[]\n' : options.comments;
+        if (commentsContent !== null) writeFileSync(comments, commentsContent);
+        if (bodyContent !== undefined) writeFileSync(body, bodyContent);
+        writeFileSync(
+          resolve(directory, 'post.sh'),
+          command
+            .replaceAll('/tmp/review_comments.json', comments)
+            .replaceAll('/tmp/review_body.md', body)
+            .replaceAll('/tmp/review_payload.json', payload)
+            .replaceAll('/tmp/review-assessment.js', reviewAssessmentCli),
+        );
+        return spawnSync('/bin/bash', ['--noprofile', '--norc', resolve(directory, 'post.sh')], {
+          cwd: directory,
+          env: testEnvironment({
+            PATH: `${directory}${delimiter}${safePath}`,
+            GH_RECORDS: recordsPath,
+            ...options.env,
+          }),
+          encoding: 'utf8',
+        });
+      };
+      const ghRecords = () =>
+        readFileSync(recordsPath, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as GhRecord);
+
+      // Missing and empty body files: `test -s` refuses before any gh call.
+      for (const content of [undefined, '']) {
+        const refused = spawnPosting(content);
+        expect(refused.status, String(content)).not.toBe(0);
+        expect(ghRecords()).toEqual([]);
+      }
+
+      // Forbidden approval wording, missing status line, and 🟢 NO FINDINGS
+      // over findings sections: the trusted validator refuses posting.
+      for (const [content, reason] of [
+        ['### Assessment: 🟢 NO FINDINGS\n\nLGTM!\n', 'forbidden approval wording'],
+        ['🟢 **No issues found** — all good.\n', 'forbidden approval wording'],
+        ['looks good to me\n', 'no recognized status line'],
+        ['### ⚠️ Review incomplete\n### Assessment: 🟢 NO FINDINGS\n', 'mixes an assessment line'],
+        [
+          '### Assessment: 🟢 NO FINDINGS\n\n#### Low-severity findings (not verified, not posted inline)\n- [low] a.go:1 — x\n',
+          'cannot be combined with findings sections',
+        ],
+      ] as const) {
+        const refused = spawnPosting(content);
+        expect(refused.status, content).not.toBe(0);
+        expect(refused.stderr, content).toContain(reason);
+        expect(ghRecords()).toEqual([]);
+      }
+
+      // Missing, malformed, and non-array staged comments files: the trusted
+      // validator refuses before jq or gh ever run.
+      for (const [staged, reason] of [
+        [null, 'missing or unreadable'],
+        ['not json', 'not valid JSON'],
+        ['{"body": "x"}', 'must be a JSON array'],
+      ] as const) {
+        const refused = spawnPosting('### Assessment: 🟡 NEEDS ATTENTION\n', { comments: staged });
+        expect(refused.status, String(staged)).not.toBe(0);
+        expect(refused.stderr, String(staged)).toContain(reason);
+        expect(ghRecords()).toEqual([]);
+      }
+
+      // 🟢 NO FINDINGS over staged inline comments contradicts the label —
+      // refused at runtime, zero gh calls.
+      const contradicted = spawnPosting('### Assessment: 🟢 NO FINDINGS\n', {
+        comments: '[{"path": "a.go", "line": 1, "body": "**[low] issue**"}]\n',
+      });
+      expect(contradicted.status).not.toBe(0);
+      expect(contradicted.stderr).toContain('🟢 NO FINDINGS cannot be posted with 1 staged');
+      expect(ghRecords()).toEqual([]);
+
+      // Forced jq failure: payload staging fails, so gh is NEVER invoked —
+      // the old `jq | gh` pipe started gh regardless of jq's fate and relied
+      // on pipefail/API rejection to surface the error.
+      const brokenTools = resolve(directory, 'broken-tools');
+      mkdirSync(brokenTools, { recursive: true });
+      writeFileSync(resolve(brokenTools, 'jq'), '#!/bin/sh\nexit 7\n');
+      chmodSync(resolve(brokenTools, 'jq'), 0o755);
+      const jqFailed = spawnPosting('### Assessment: 🟡 NEEDS ATTENTION\n', {
+        env: { PATH: `${brokenTools}${delimiter}${directory}${delimiter}${safePath}` },
+      });
+      expect(jqFailed.status).not.toBe(0);
+      expect(ghRecords()).toEqual([]);
+
+      // gh itself failing propagates a nonzero chain exit.
+      const ghFailed = spawnPosting('### Assessment: 🟡 NEEDS ATTENTION\n', {
+        env: { GH_POST_FAILS: '1' },
+      });
+      expect(ghFailed.status).not.toBe(0);
+      expect(ghRecords()).toHaveLength(1);
+
+      // With the computed outcome written, the chain validates, appends the
+      // run marker mechanically, and posts the exact hardcoded payload.
+      const posted = spawnPosting('### Assessment: 🟡 NEEDS ATTENTION\n');
+      expect(posted.status, posted.stderr).toBe(0);
+      const records = ghRecords();
+      expect(records).toHaveLength(1);
+      expect(records[0].args).toBe(
+        'api repos/docker/docker-agent-action/pulls/88/reviews --input -',
+      );
+      expect(JSON.parse(records[0].input)).toEqual({
+        body: `### Assessment: 🟡 NEEDS ATTENTION\n\n${TEST_MARKER}\n`,
+        event: 'COMMENT',
+        commit_id: sha,
+        comments: [],
+      });
+
+      // Staged inline comments ride along for non-NO-FINDINGS outcomes.
+      const withComments = spawnPosting('### Assessment: 🟡 NEEDS ATTENTION\n', {
+        comments: '[{"path": "a.go", "line": 1, "body": "**[low] issue**"}]\n',
+      });
+      expect(withComments.status, withComments.stderr).toBe(0);
+      const commentRecords = ghRecords();
+      expect(commentRecords).toHaveLength(1);
+      expect(JSON.parse(commentRecords[0].input).comments).toEqual([
+        { path: 'a.go', line: 1, body: '**[low] issue**' },
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  function runBaseline(options: { reviews?: string; fetchFails?: boolean }): {
+    result: ReturnType<typeof spawnSync>;
+    outputs: string;
+  } {
+    const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-baseline-'));
+    try {
+      const output = resolve(directory, 'output');
+      writeFileSync(output, '');
+      writeFileSync(resolve(directory, 'gh-records.jsonl'), '');
+      writeFileSync(resolve(directory, 'reviews.json'), options.reviews ?? '[]');
+      writeFileSync(resolve(directory, 'baseline.sh'), actionStepRun('Capture review baseline'));
+      writeFileSync(resolve(directory, 'gh'), ghMock());
+      chmodSync(resolve(directory, 'gh'), 0o755);
+      const result = spawnSync(
+        '/bin/bash',
+        ['--noprofile', '--norc', '-e', '-o', 'pipefail', resolve(directory, 'baseline.sh')],
+        {
+          cwd: directory,
+          env: testEnvironment({
+            PATH: `${directory}${delimiter}${safePath}`,
+            GH_RECORDS: resolve(directory, 'gh-records.jsonl'),
+            GH_REVIEWS_FILE: resolve(directory, 'reviews.json'),
+            GH_REVIEWS_FETCH_FAILS: options.fetchFails ? '1' : '',
+            GITHUB_OUTPUT: output,
+            REPOSITORY: 'docker/docker-agent-action',
+            PR_NUMBER: '88',
+          }),
+          encoding: 'utf8',
+        },
+      );
+      return { result, outputs: readFileSync(output, 'utf8') };
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it.each([
+    { name: 'existing reviews', reviews: '[{"id": 7}, {"id": 12}]', max: '12' },
+    { name: 'no reviews', reviews: '[]', max: '0' },
+    { name: 'null review IDs', reviews: '[{"id": null}]', max: '0' },
+  ])('executes the review baseline capture for $name', ({ reviews, max }) => {
+    const { result, outputs } = runBaseline({ reviews });
+    expect(result.status, result.stderr).toBe(0);
+    expect(outputs).toContain(`max-review-id=${max}\n`);
+  });
+
+  it.each([
+    { name: 'lookup failure', options: { fetchFails: true } },
+    { name: 'non-JSON payload', options: { reviews: 'not json' } },
+  ])('refuses to start an unverifiable review on baseline $name', ({ options }) => {
+    const { result, outputs } = runBaseline(options);
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain('refusing to start an unverifiable review');
+    expect(outputs).not.toContain('max-review-id=');
+  });
+
+  function runNonceGeneration(cliSource?: string): {
+    result: ReturnType<typeof spawnSync>;
+    outputs: string;
+  } {
+    const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-nonce-'));
+    try {
+      const actionPath = resolve(directory, 'action');
+      mkdirSync(actionPath, { recursive: true });
+      mkdirSync(resolve(directory, 'dist'), { recursive: true });
+      if (cliSource === undefined) {
+        cpSync(reviewAssessmentCli, resolve(directory, 'dist/review-assessment.js'));
+      } else {
+        writeFileSync(resolve(directory, 'dist/review-assessment.js'), cliSource);
+      }
+      const output = resolve(directory, 'output');
+      writeFileSync(output, '');
+      writeFileSync(
+        resolve(directory, 'nonce.sh'),
+        actionStepRun('Generate run attribution nonce'),
+      );
+      const result = spawnSync(
+        '/bin/bash',
+        ['--noprofile', '--norc', '-e', '-o', 'pipefail', resolve(directory, 'nonce.sh')],
+        {
+          env: testEnvironment({ ACTION_PATH: actionPath, GITHUB_OUTPUT: output }),
+          encoding: 'utf8',
+        },
+      );
+      return { result, outputs: readFileSync(output, 'utf8') };
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it('executes the nonce generation step masking the nonce before any other output', () => {
+    const { result, outputs } = runNonceGeneration();
+    expect(result.status, result.stderr).toBe(0);
+    const nonce = outputs.match(/^nonce=([0-9a-f]{32})$/m)?.[1];
+    expect(nonce).toBeDefined();
+    if (!nonce) throw new Error('nonce output missing');
+    // The FIRST line the step prints is the ::add-mask:: workflow command, so
+    // the runner masks the nonce before any later step (or this one) can echo
+    // it into the public run log.
+    const stdout = String(result.stdout);
+    expect(stdout.split('\n')[0]).toBe(`::add-mask::${nonce}`);
+    // Outside the masking command the nonce never appears in normal output.
+    expect(stdout.replace(`::add-mask::${nonce}`, '')).not.toContain(nonce);
+    expect(String(result.stderr)).not.toContain(nonce);
+    // Static ordering: the run body masks immediately after generation, before
+    // the validation guard and before the value reaches GITHUB_OUTPUT.
+    const run = actionStepRun('Generate run attribution nonce');
+    const mask = run.indexOf('echo "::add-mask::$RUN_NONCE"');
+    expect(mask).toBeGreaterThan(run.indexOf('new-run-nonce'));
+    expect(mask).toBeLessThan(run.indexOf('[[ "$RUN_NONCE" =~'));
+    expect(mask).toBeLessThan(run.indexOf('GITHUB_OUTPUT'));
+  });
+
+  it('still masks and refuses staging when the generated nonce is malformed', () => {
+    const { result, outputs } = runNonceGeneration('process.stdout.write("not-a-nonce\\n");\n');
+    expect(result.status).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain('nonce is malformed');
+    expect(outputs).not.toContain('nonce=');
+    expect(String(result.stdout).split('\n')[0]).toBe('::add-mask::not-a-nonce');
+  });
+
+  function runReaction(reviewStatus: string): {
+    result: ReturnType<typeof spawnSync>;
+    records: GhRecord[];
+  } {
+    const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-reaction-'));
+    try {
+      const recordsPath = resolve(directory, 'gh-records.jsonl');
+      writeFileSync(recordsPath, '');
+      writeFileSync(resolve(directory, 'reaction.sh'), actionStepRun('Add completion reaction'));
+      writeFileSync(resolve(directory, 'gh'), ghMock());
+      chmodSync(resolve(directory, 'gh'), 0o755);
+      const result = spawnSync(
+        '/bin/bash',
+        ['--noprofile', '--norc', '-e', '-o', 'pipefail', resolve(directory, 'reaction.sh')],
+        {
+          cwd: directory,
+          env: testEnvironment({
+            PATH: `${directory}${delimiter}${safePath}`,
+            GH_RECORDS: recordsPath,
+            REVIEW_STATUS: reviewStatus,
+            REPO: 'docker/docker-agent-action',
+            COMMENT_ID: '55',
+          }),
+          encoding: 'utf8',
+        },
+      );
+      const records = readFileSync(recordsPath, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as GhRecord);
+      return { result, records };
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it.each([
+    ['completed', '+1'],
+    ['completed-with-warnings', '+1'],
+    ['incomplete', 'confused'],
+    ['inconclusive', 'confused'],
+    ['failed', 'confused'],
+    ['timed-out', 'confused'],
+    ['skipped', 'confused'],
+    ['setup-failed', 'confused'],
+    ['unverified', 'confused'],
+    ['', 'confused'],
+  ])('executes the completion reaction for review-status %j as %s', (status, reaction) => {
+    // An exit-0 run that posted nothing carries review-status=incomplete and
+    // must react confused — never 👍 (the false-success reaction regression).
+    const run = runReaction(status);
+    expect(run.result.status, run.result.stderr).toBe(0);
+    expect(run.records).toHaveLength(1);
+    expect(run.records[0].args).toBe(
+      `api repos/docker/docker-agent-action/issues/comments/55/reactions -X POST -f content=${reaction}`,
+    );
+  });
+
+  function runEnforceOutcome(
+    reviewStatus: string,
+    stepOutcome: string,
+  ): ReturnType<typeof spawnSync> {
+    const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-enforce-'));
+    try {
+      const body = step('review', 'Enforce review outcome').run;
+      if (!body) throw new Error('Expected an Enforce review outcome run body');
+      writeFileSync(resolve(directory, 'enforce.sh'), body);
+      return spawnSync(
+        '/bin/bash',
+        ['--noprofile', '--norc', '-e', '-o', 'pipefail', resolve(directory, 'enforce.sh')],
+        {
+          env: testEnvironment({ REVIEW_STATUS: reviewStatus, RUN_REVIEW_OUTCOME: stepOutcome }),
+          encoding: 'utf8',
+        },
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it.each([
+    // Only a verified completion or an intentional skip leaves the job green.
+    ['completed', 'success', 0],
+    ['completed-with-warnings', 'success', 0],
+    ['skipped', 'success', 0],
+    // The review step never ran: a pre-review guard (draft, auth, rate
+    // anomaly, non-/review comment) filtered the event — an expected skip.
+    ['', 'skipped', 0],
+    // A missing status from a step that ran means the composite crashed
+    // before the summary — never a green outcome.
+    ['', 'success', 1],
+    ['', 'failure', 1],
+    // A skipped status from a FAILED composite is a contradiction — the
+    // failure wins (a mislabeled setup failure must never look intentional).
+    ['skipped', 'failure', 1],
+    // continue-on-error masks these from job.status; the gate restores them.
+    ['incomplete', 'success', 1],
+    ['inconclusive', 'success', 1],
+    ['failed', 'success', 1],
+    ['timed-out', 'success', 1],
+    ['setup-failed', 'failure', 1],
+    ['unverified', 'failure', 1],
+  ] as [
+    string,
+    string,
+    number,
+  ][])('executes the review outcome enforcement for status %j (step outcome %j) with exit %i', (status, outcome, exit) => {
+    const result = runEnforceOutcome(status, outcome);
+    expect(result.status, result.stdout + result.stderr).toBe(exit);
+    if (exit !== 0) {
+      expect(result.stdout + result.stderr).toContain('failing the review job');
+    }
+  });
+
+  it('runs the outcome enforcement gate last, on every path, off the review-status output', () => {
+    const enforce = step('review', 'Enforce review outcome');
+    expect(enforce.if).toBe('always()');
+    expect(enforce.env?.REVIEW_STATUS).toBe('${' + '{ steps.run-review.outputs.review-status }}');
+    expect(enforce.env?.RUN_REVIEW_OUTCOME).toBe('${' + '{ steps.run-review.outcome }}');
+    // Last step of the job: the cleanup/check-update steps run before the
+    // gate can fail the job.
+    const steps = job('review').steps ?? [];
+    expect(steps[steps.length - 1]?.name).toBe('Enforce review outcome');
+    expect(stepIndex('review', 'Enforce review outcome')).toBeGreaterThan(
+      stepIndex('review', 'Update check run'),
+    );
+    // The reusable workflow re-exposes the API-verified status to callers.
+    expect(job('review').outputs?.['review-status']).toBe(
+      '${' + '{ steps.run-review.outputs.review-status }}',
+    );
+    const workflowCall = workflow.on?.workflow_call as {
+      outputs?: Record<string, { value?: string }>;
+    };
+    expect(workflowCall.outputs?.['review-status']?.value).toBe(
+      '${' + '{ jobs.review.outputs.review-status }}',
+    );
+  });
+
+  it('executes the check-run conclusion script keyed on the API-verified review-status', async () => {
+    const check = step('review', 'Update check run');
+    expect(check.if).toBe("always() && steps.create-check.outputs.check-id != ''");
+    expect(check.env?.REVIEW_STATUS).toBe('${' + '{ steps.run-review.outputs.review-status }}');
+    expect(check.env?.RUN_REVIEW_OUTCOME).toBe('${' + '{ steps.run-review.outcome }}');
+    const script = check.with?.script;
+    if (!script) throw new Error('Expected an Update check run script');
+    const AsyncFunction = (async () => {}).constructor as new (
+      ...args: string[]
+    ) => (github: unknown, context: unknown, core: unknown) => Promise<void>;
+    const runScript = new AsyncFunction('github', 'context', 'core', script);
+    const envKeys = ['CHECK_ID', 'JOB_STATUS', 'REVIEW_STATUS', 'RUN_REVIEW_OUTCOME'] as const;
+
+    const conclusionFor = async (env: Record<string, string>): Promise<unknown> => {
+      const updates: Array<Record<string, unknown>> = [];
+      const github = {
+        rest: {
+          checks: {
+            update: async (args: Record<string, unknown>) => {
+              updates.push(args);
+            },
+          },
+        },
+      };
+      const saved = envKeys.map((key) => [key, process.env[key]] as const);
+      Object.assign(process.env, {
+        CHECK_ID: '7',
+        JOB_STATUS: 'success',
+        REVIEW_STATUS: '',
+        RUN_REVIEW_OUTCOME: '',
+        ...env,
+      });
+      try {
+        await runScript(
+          github,
+          { repo: { owner: 'docker', repo: 'docker-agent-action' } },
+          { warning: () => {} },
+        );
+      } finally {
+        for (const [key, value] of saved) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+      expect(updates).toHaveLength(1);
+      expect(updates[0].check_run_id).toBe(7);
+      expect(updates[0].status).toBe('completed');
+      return updates[0].conclusion;
+    };
+
+    expect(await conclusionFor({ JOB_STATUS: 'cancelled' })).toBe('cancelled');
+    expect(await conclusionFor({ REVIEW_STATUS: 'completed' })).toBe('success');
+    expect(await conclusionFor({ REVIEW_STATUS: 'completed-with-warnings' })).toBe('success');
+    // Intentional skips stay neutral — including the guard-skipped step — but
+    // ONLY when the composite itself did not fail: a failed step claiming
+    // skipped must never yield a neutral check.
+    expect(await conclusionFor({ REVIEW_STATUS: 'skipped' })).toBe('neutral');
+    expect(await conclusionFor({ REVIEW_STATUS: 'skipped', RUN_REVIEW_OUTCOME: 'success' })).toBe(
+      'neutral',
+    );
+    expect(await conclusionFor({ REVIEW_STATUS: 'skipped', RUN_REVIEW_OUTCOME: 'failure' })).toBe(
+      'failure',
+    );
+    expect(await conclusionFor({ RUN_REVIEW_OUTCOME: 'skipped' })).toBe('neutral');
+    // Everything else — non-success statuses and a missing status from a
+    // crashed composite — is red, even though continue-on-error keeps
+    // job.status green (the misleading-green regression).
+    for (const status of [
+      'incomplete',
+      'inconclusive',
+      'failed',
+      'timed-out',
+      'setup-failed',
+      'unverified',
+    ]) {
+      expect(await conclusionFor({ REVIEW_STATUS: status }), status).toBe('failure');
+    }
+    expect(await conclusionFor({ RUN_REVIEW_OUTCOME: 'success' })).toBe('failure');
+  });
+
+  it('captures the API review baseline before the agent runs and keys the reaction on review-status', () => {
+    const names = reviewActionSteps().map((candidate) => candidate.name);
+    const baseline = names.indexOf('Capture review baseline');
+    expect(baseline).toBeGreaterThan(names.indexOf('Fetch existing review comments'));
+    expect(baseline).toBeLessThan(names.indexOf('Run PR Review'));
+    expect(reviewActionStep('Capture review baseline').if).toBe(
+      "steps.lock-check.outputs.skip != 'true'",
+    );
+    // The attribution nonce is generated in a trusted step before the posting
+    // template is staged, and both the staging step and the summary consume
+    // exactly that output — never a user-controllable value.
+    const nonce = names.indexOf('Generate run attribution nonce');
+    expect(nonce).toBeGreaterThan(-1);
+    expect(nonce).toBeLessThan(names.indexOf('Copy reference files'));
+    expect(reviewActionStep('Generate run attribution nonce').if).toBe(
+      "steps.lock-check.outputs.skip != 'true'",
+    );
+    expect(reviewActionStep('Copy reference files').env?.RUN_NONCE).toBe(
+      '${' + '{ steps.run-nonce.outputs.nonce }}',
+    );
+    const summary = reviewActionStep('Post clean summary');
+    expect(summary.env?.BASELINE_MAX_REVIEW_ID).toBe(
+      '${' + '{ steps.review-baseline.outputs.max-review-id }}',
+    );
+    expect(summary.env?.RUN_NONCE).toBe('${' + '{ steps.run-nonce.outputs.nonce }}');
+    // Post-run attribution runs through the bundled review-assessment CLI
+    // (exact marker + selected SHA + baseline), not inline jq identity
+    // filters — the same logic the unit tests pin.
+    expect(summary.run).toContain('dist/review-assessment.js" classify-run');
+    expect(summary.run).toContain('"$PR_HEAD_SHA" "$BASELINE_MAX_REVIEW_ID" "$RUN_NONCE"');
+    expect(summary.run).not.toContain('AGENT_REVIEWS_ON_SHA');
+    const reaction = reviewActionStep('Add completion reaction');
+    expect(reaction.env?.REVIEW_STATUS).toBe(
+      '${' + '{ steps.post-summary.outputs.review-status }}',
+    );
+    // The reaction must key on the API-verified status, never the exit code.
+    expect(reaction.env?.EXIT_CODE).toBeUndefined();
+    expect(reaction.run).not.toContain('EXIT_CODE');
   });
 
   it('binds immutable review inputs before the snapshot and derives posting from its output', () => {
@@ -1344,6 +2662,27 @@ describe('fork workflow security regressions', () => {
     expect(snapshot).not.toContain('steps.pr-info.outputs.head-sha');
     expect(snapshot).not.toContain('POSTING_REFERENCE');
     expect(summary).toContain(`PR_HEAD_SHA: ${'${'}{ steps.pr-info.outputs.head-sha }}`);
+  });
+
+  it('keeps the review action free of synthesized approvals and low-finding suppression', () => {
+    const action = readFileSync(resolve(root, 'review-pr/action.yml'), 'utf8');
+    // The prompt must not tell the agent to report only verified findings —
+    // that wording suppressed unverified low findings (docker/gordon #1814).
+    expect(action).not.toContain(
+      'Only report CONFIRMED and LIKELY findings. Always post as COMMENT',
+    );
+    expect(action).toContain(
+      'Surviving low-severity findings skip verification but MUST still be surfaced',
+    );
+    // The prompt pins the COMMENT event and the neutral zero-findings label;
+    // no fallback may pass an approving event to the Reviews API.
+    expect(action).toContain('Always post as COMMENT (never APPROVE or REQUEST_CHANGES)');
+    expect(action).toContain('--arg event "COMMENT"');
+    expect(action).not.toMatch(/--arg event "(?:APPROVE|REQUEST_CHANGES)"/);
+    expect(action).not.toContain('🟢 APPROVE');
+    // No code path may synthesize an LGTM/no-issues review body.
+    expect(action).not.toContain('LGTM!');
+    expect(action).not.toContain('🟢 **No issues found**');
   });
 
   it('keeps resolver output names body-free and shell expressions out of run bodies', () => {

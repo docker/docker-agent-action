@@ -2,7 +2,7 @@
   "id": "046121d9-ac09-4f96-9796-cb853564572e",
   "title": "Marlin SDK Go producer setting ingestor-owned fields, identity mismatch, and UGC truncation (run 1)",
   "evals": {
-    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
+    "setup": "apk add --no-cache github-cli && mkdir -p /tmp/refs && sed -e 's/__PR_HEAD_SHA__/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/g' -e 's|__REPOSITORY__|example/repo|g' -e 's/__PR_NUMBER__/1/g' -e 's/__REVIEW_RUN_NONCE__/0123456789abcdef0123456789abcdef/g' /configs/refs/posting-format.md > /tmp/refs/posting-format.md && cp /configs/refs/marlin_v2_producer_code_review.md /tmp/refs/",
     "relevance": [
       "The agent detects the Marlin SDK import pattern (github.com/docker/data-contracts/gen/go/docker/marlin/) and recognizes this as a Marlin producer PR",
       "At least one finding identifies that IpAddress is set by the producer (from r.RemoteAddr) — this is an ingestor-owned field that must never be set by the producer",

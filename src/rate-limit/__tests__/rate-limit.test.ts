@@ -56,7 +56,7 @@ function reply(secAgo: number, marker = REPLY_MARKER, login = BOT) {
 
 // A full review posted via the Reviews API: one per review LLM run, identified by
 // bot author plus a non-empty assessment/status body (no inline marker).
-function review(secAgo: number, body = '### Assessment: 🟢 APPROVE', login = BOT) {
+function review(secAgo: number, body = '### Assessment: 🟢 NO FINDINGS', login = BOT) {
   return { user: { login }, body, submitted_at: within(secAgo) };
 }
 
@@ -100,28 +100,75 @@ describe('detectRateAnomaly', () => {
     expect(r.threshold).toBe(3);
   });
 
-  it('counts a zero-finding APPROVE review (no marker, non-empty body)', async () => {
+  it('counts zero-finding completion reviews (no marker, non-empty body)', async () => {
     // Regression: review bodies have no inline marker and zero-finding reviews
-    // post no inline comments, so this is invisible to the comment endpoints.
-    routePaginate([], [], [review(30, '### Assessment: 🟢 APPROVE')]);
-    const r = await detectRateAnomaly('tok', { ...base, threshold: 1 });
-    expect(r.count).toBe(1);
+    // post no inline comments, so these are invisible to the comment endpoints.
+    routePaginate(
+      [],
+      [],
+      [
+        review(30, '### Assessment: 🟢 NO FINDINGS'),
+        // Legacy label posted before the zero-findings label was neutralized —
+        // still one review run.
+        review(60, '### Assessment: 🟢 APPROVE'),
+      ],
+    );
+    const r = await detectRateAnomaly('tok', { ...base, threshold: 2 });
+    expect(r.count).toBe(2);
     expect(r.anomalous).toBe(true);
   });
 
-  it('counts timeout / error / LGTM fallback reviews (no marker)', async () => {
+  it('counts timeout / error / incomplete fallback reviews (no marker)', async () => {
     routePaginate(
       [],
       [],
       [
         review(30, '⏱️ **PR Review Timed Out** — …'),
         review(60, '❌ **PR Review Failed** — …'),
-        review(90, '🟢 **No issues found** — LGTM!'),
+        review(90, '⚠️ **Review incomplete** — The review agent finished without posting a review.'),
+        // Legacy no-post fallback bodies still exist on old PRs and still count.
+        review(120, '🟢 **No issues found** — LGTM!'),
       ],
     );
     const r = await detectRateAnomaly('tok', base);
-    expect(r.count).toBe(3);
+    expect(r.count).toBe(4);
     expect(r.anomalous).toBe(true);
+  });
+
+  it('counts run-marker-bearing reviews posted through other [bot] identities', async () => {
+    // The action's github-token input defaults to github.token, which posts
+    // as github-actions[bot] — those runs are recognized by the per-run
+    // attribution marker their review bodies (fallback notices included) carry.
+    const marker = `<!-- docker-agent-review-run:${'0'.repeat(32)} -->`;
+    routePaginate(
+      [],
+      [],
+      [
+        review(30, `### Assessment: 🟡 NEEDS ATTENTION\n\n${marker}`, 'github-actions[bot]'),
+        review(60, `⏱️ **PR Review Timed Out** — …\n\n${marker}`, 'github-actions[bot]'),
+      ],
+    );
+    const r = await detectRateAnomaly('tok', { ...base, threshold: 2 });
+    expect(r.count).toBe(2);
+    expect(r.anomalous).toBe(true);
+  });
+
+  it('never counts marker-bearing reviews from non-[bot] logins or unmarked bot reviews', async () => {
+    // The marker format is public: a human pasting it into a review must not
+    // inflate the count (griefing the throttle), and an unmarked review from
+    // an unrelated [bot] integration is not an action output.
+    const marker = `<!-- docker-agent-review-run:${'0'.repeat(32)} -->`;
+    routePaginate(
+      [],
+      [],
+      [
+        review(30, `### Assessment: 🟢 NO FINDINGS\n\n${marker}`, 'mallory'),
+        review(60, '### Assessment: 🟢 NO FINDINGS', 'github-actions[bot]'),
+      ],
+    );
+    const r = await detectRateAnomaly('tok', { ...base, threshold: 1 });
+    expect(r.count).toBe(0);
+    expect(r.anomalous).toBe(false);
   });
 
   it('is not anomalous below the threshold', async () => {
@@ -162,7 +209,7 @@ describe('detectRateAnomaly', () => {
     routePaginate(
       [{ user: { login: 'mallory' }, body: `spam ${REPLY_MARKER}`, created_at: within(10) }],
       [],
-      [review(20, '### Assessment: 🟢 APPROVE', 'mallory')],
+      [review(20, '### Assessment: 🟢 NO FINDINGS', 'mallory')],
     );
     const r = await detectRateAnomaly('tok', base);
     expect(r.count).toBe(0);
@@ -173,7 +220,7 @@ describe('detectRateAnomaly', () => {
     routePaginate(
       [reply(60, REPLY_MARKER, 'docker-agent[bot]')],
       [],
-      [review(30, '### Assessment: 🟢 APPROVE', 'docker-agent[bot]')],
+      [review(30, '### Assessment: 🟢 NO FINDINGS', 'docker-agent[bot]')],
     );
     const r = await detectRateAnomaly('tok', { ...base, threshold: 2 });
     expect(r.count).toBe(2);

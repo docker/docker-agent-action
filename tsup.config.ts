@@ -37,6 +37,7 @@ const entry = {
   'prepare-review': src('prepare-review'),
   'rate-limit': src('rate-limit'),
   'resolve-trigger-context': src('resolve-trigger-context'),
+  'review-assessment': src('review-assessment'),
   'score-confidence': src('score-confidence'),
   'score-risk': src('score-risk'),
   security: src('security'),
