@@ -8,6 +8,7 @@ models:
     provider: anthropic
     model: claude-sonnet-4-6
     max_tokens: 64000
+    parallel_tool_calls: false
 
 agents:
   root:
