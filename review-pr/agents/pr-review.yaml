@@ -148,8 +148,8 @@ agents:
          b. **Sequential delegation (REQUIRED)**: Process chunks ONE AT A TIME. Call
             `transfer_task` for chunk 1, wait for its complete result, then call
             `transfer_task` for chunk 2, and so on. NEVER emit more than one
-            `transfer_task` call in a single response — always include exactly one
-            `transfer_task` call per tool-call batch. Each delegation result is
+            `transfer_task` call in a single response — one call per response, no more.
+            Each delegation result is
             collected before issuing the next; responses are combined in step d below.
 
          **Console output mode** (GITHUB_ACTIONS empty/unset):
@@ -193,7 +193,7 @@ agents:
          asks for `title`/`body`, the schema validator rejects every emit attempt and the
          drafter enters an infinite file-read retry loop. Always use `issue` and `details`.
       5. Parse each drafter delegation's JSON response separately (console mode has one
-         delegation; CI batched mode has one per chunk). If a response is empty, not
+         delegation; CI mode has one per chunk). If a response is empty, not
          valid JSON, or an error message, treat it as
          `{"findings": [], "summary": "Drafter did not complete", "review_complete": false}`.
          A `transfer_task` tool error counts as exactly this same case: if a drafter
