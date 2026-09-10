@@ -591,7 +591,11 @@ function summaryRun(): string {
   return actionStepRun('Post clean summary');
 }
 
-function runCopyReference(headSha: string, template: string): ReturnType<typeof spawnSync> {
+function runCopyReference(
+  headSha: string,
+  template: string,
+  prNumber = '5929',
+): ReturnType<typeof spawnSync> {
   const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-copy-reference-'));
   const actionPath = resolve(directory, 'action');
   const refs = resolve(actionPath, 'agents/refs');
@@ -613,6 +617,7 @@ function runCopyReference(headSha: string, template: string): ReturnType<typeof 
         env: testEnvironment({
           ACTION_PATH: actionPath,
           PR_HEAD_SHA: headSha,
+          PR_NUMBER: prNumber,
           GITHUB_OUTPUT: output,
         }),
         encoding: 'utf8',
@@ -1313,23 +1318,33 @@ describe('fork workflow security regressions', () => {
   });
 
   it.each([
-    ['valid immutable SHA', 'a'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['empty SHA', '', 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['non-hex SHA', 'g'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['short SHA', 'a'.repeat(39), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['long SHA', 'a'.repeat(41), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['unresolved template', 'a'.repeat(40), 'jq -n --arg commit_id "$PR_HEAD_SHA"'],
-    ['zero commit arguments', 'a'.repeat(40), 'jq -n --arg body "review"'],
+    ['valid immutable SHA', 'a'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"', '5929'],
+    ['empty SHA', '', 'jq -n --arg commit_id "__PR_HEAD_SHA__"', '5929'],
+    ['non-hex SHA', 'g'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"', '5929'],
+    ['short SHA', 'a'.repeat(39), 'jq -n --arg commit_id "__PR_HEAD_SHA__"', '5929'],
+    ['long SHA', 'a'.repeat(41), 'jq -n --arg commit_id "__PR_HEAD_SHA__"', '5929'],
+    ['unresolved template', 'a'.repeat(40), 'jq -n --arg commit_id "$PR_HEAD_SHA"', '5929'],
+    ['zero commit arguments', 'a'.repeat(40), 'jq -n --arg body "review"', '5929'],
     [
       'multiple commit arguments',
       'a'.repeat(40),
       'jq -n --arg commit_id "__PR_HEAD_SHA__" --arg commit_id "x"',
+      '5929',
     ],
-  ])('executes Copy reference files staging preflight for %s', (_name, sha, template) => {
-    const result = runCopyReference(sha, template);
-    expect(result.status, result.stderr).toBe(
-      template === 'jq -n --arg commit_id "__PR_HEAD_SHA__"' && /^[a-f0-9]{40}$/i.test(sha) ? 0 : 1,
-    );
+    ['empty PR number', 'a'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"', ''],
+    ['non-numeric PR number', 'a'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"', 'abc'],
+    [
+      'PR number with shell metacharacters',
+      'a'.repeat(40),
+      'jq -n --arg commit_id "__PR_HEAD_SHA__"',
+      '111; echo INJECTED',
+    ],
+  ])('executes Copy reference files staging preflight for %s', (_name, sha, template, prNumber) => {
+    const result = runCopyReference(sha, template, prNumber);
+    const validSha = /^[a-f0-9]{40}$/i.test(sha);
+    const validPr = /^[0-9]+$/.test(prNumber);
+    const validTemplate = template === 'jq -n --arg commit_id "__PR_HEAD_SHA__"';
+    expect(result.status, result.stderr).toBe(validSha && validPr && validTemplate ? 0 : 1);
   });
 
   it('binds immutable review inputs before the snapshot and derives posting from its output', () => {

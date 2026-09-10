@@ -881,11 +881,15 @@ runs:
           echo "::error::Selected PR head SHA is invalid; refusing to stage review posting"
           exit 1
         fi
+        if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+          echo "::error::Resolved PR number is invalid; refusing to stage review posting"
+          exit 1
+        fi
         sed -e "s/__PR_HEAD_SHA__/$PR_HEAD_SHA/g" \
             -e "s/{pr}/$PR_NUMBER/g" \
             "$ACTION_PATH/agents/refs/posting-format.md" > /tmp/refs/posting-format.md
         if grep -q '__PR_HEAD_SHA__\|\$PR_HEAD_SHA' /tmp/refs/posting-format.md || \
-          grep -q '{pr}' /tmp/refs/posting-format.md || \
+          grep -rq '{pr}' /tmp/refs/ || \
           [ "$(grep -o -- '--arg commit_id' /tmp/refs/posting-format.md | wc -l | tr -d ' ')" != 1 ] || \
           ! grep -q -- "--arg commit_id \"$PR_HEAD_SHA\"" /tmp/refs/posting-format.md; then
           echo "::error::Rendered posting template failed validation (unreplaced placeholder or missing SHA)"

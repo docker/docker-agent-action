@@ -112,6 +112,7 @@ echo "Posting review with $(jq length /tmp/review_comments.json) inline comment(
 
 # The composite action replaces __PR_HEAD_SHA__ with the validated immutable review snapshot
 # before the agent runs. This command must contain the selected literal SHA.
+set -o pipefail
 jq -n \
   --arg body "$REVIEW_BODY" \
   --arg event "COMMENT" \
