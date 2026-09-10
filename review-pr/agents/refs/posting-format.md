@@ -118,7 +118,7 @@ jq -n \
   --arg commit_id "__PR_HEAD_SHA__" \
   --slurpfile comments /tmp/review_comments.json \
   '{body: $body, event: $event, commit_id: $commit_id, comments: $comments[0]}' \
-| gh api repos/{owner}/{repo}/pulls/$PR_NUMBER/reviews --input - \
+| gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input - \
   | jq '{id, state, html_url}'
 ```
 

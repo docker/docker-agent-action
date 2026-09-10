@@ -888,7 +888,7 @@ runs:
           grep -q '{pr}' /tmp/refs/posting-format.md || \
           [ "$(grep -o -- '--arg commit_id' /tmp/refs/posting-format.md | wc -l | tr -d ' ')" != 1 ] || \
           ! grep -q -- "--arg commit_id \"$PR_HEAD_SHA\"" /tmp/refs/posting-format.md; then
-          echo "::error::Rendered posting template does not contain exactly one selected immutable SHA"
+          echo "::error::Rendered posting template failed validation (unreplaced placeholder or missing SHA)"
           exit 1
         fi
         echo "posting-reference=/tmp/refs/posting-format.md" >> "$GITHUB_OUTPUT"
