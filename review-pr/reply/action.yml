@@ -12,6 +12,10 @@ inputs:
   comment-id:
     description: "ID of the triggering comment (for failure notification reaction)"
     required: false
+  pr-number:
+    description: "Pull request number (used to render the reply agent template)"
+    required: false
+    default: ""
   anthropic-api-key:
     description: "Anthropic API key"
     required: false
@@ -73,6 +77,19 @@ runs:
           pr-review-memory-${{ github.repository }}-reply-
           pr-review-memory-${{ github.repository }}-
 
+    - name: Stage reply agent
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+      run: |
+        if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+          echo "::warning::pr-number input is missing or non-numeric — reply agent will use unrendered {pr} placeholder"
+          cp "$ACTION_PATH/../agents/pr-review-reply.yaml" /tmp/pr-review-reply.yaml
+        else
+          sed -e "s/{pr}/$PR_NUMBER/g"               "$ACTION_PATH/../agents/pr-review-reply.yaml" > /tmp/pr-review-reply.yaml
+        fi
+
     - name: Run reply agent
       id: run-reply
       continue-on-error: true
@@ -80,7 +97,7 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
-        agent: ${{ env.ACTION_PATH }}/../agents/pr-review-reply.yaml
+        agent: /tmp/pr-review-reply.yaml
         prompt: ${{ inputs.thread-context }}
         timeout: "300"
         anthropic-api-key: ${{ inputs.anthropic-api-key }}
