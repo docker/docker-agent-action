@@ -6,6 +6,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -632,6 +633,51 @@ function runCopyReference(
     rmSync(originalRefs, { recursive: true, force: true });
     if (existsSync(backupRefs))
       cpSync(backupRefs, originalRefs, { recursive: true, dereference: false });
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function replyActionStepRun(name: string): string {
+  const action = parseDocument(
+    readFileSync(resolve(root, 'review-pr/reply/action.yml'), 'utf8'),
+  ).toJS() as Action;
+  const matches = action.runs?.steps?.filter((candidate) => candidate.name === name) ?? [];
+  if (matches.length !== 1 || !matches[0].run) throw new Error(`Expected one ${name} run body`);
+  return matches[0].run;
+}
+
+function runStageReplyAgent(
+  prNumber: string,
+  template: string,
+): { result: ReturnType<typeof spawnSync>; staged: string | null } {
+  const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-stage-reply-'));
+  // ACTION_PATH is the reply action dir; the step references $ACTION_PATH/../agents/
+  const actionPath = resolve(directory, 'reply');
+  const agentsDir = resolve(directory, 'agents');
+  const stagedPath = '/tmp/pr-review-reply.yaml';
+  const backupPath = resolve(directory, 'pr-review-reply.yaml.bak');
+  try {
+    mkdirSync(actionPath, { recursive: true });
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(resolve(agentsDir, 'pr-review-reply.yaml'), template);
+    writeFileSync(resolve(directory, 'run.sh'), replyActionStepRun('Stage reply agent'));
+    if (existsSync(stagedPath)) cpSync(stagedPath, backupPath);
+    const result = spawnSync(
+      '/bin/bash',
+      ['--noprofile', '--norc', '-e', '-o', 'pipefail', resolve(directory, 'run.sh')],
+      {
+        env: testEnvironment({
+          ACTION_PATH: actionPath,
+          PR_NUMBER: prNumber,
+        }),
+        encoding: 'utf8',
+      },
+    );
+    const staged = existsSync(stagedPath) ? readFileSync(stagedPath, 'utf8') : null;
+    return { result, staged };
+  } finally {
+    if (existsSync(backupPath)) cpSync(backupPath, stagedPath);
+    else if (existsSync(stagedPath)) rmSync(stagedPath);
     rmSync(directory, { recursive: true, force: true });
   }
 }
@@ -1345,6 +1391,30 @@ describe('fork workflow security regressions', () => {
     const validPr = /^[0-9]+$/.test(prNumber);
     const validTemplate = template === 'jq -n --arg commit_id "__PR_HEAD_SHA__"';
     expect(result.status, result.stderr).toBe(validSha && validPr && validTemplate ? 0 : 1);
+  });
+
+  it.each([
+    ['valid PR number', '5929', 'gh api repos/{owner}/{repo}/pulls/{pr}/comments --input -'],
+    ['empty PR number', '', 'gh api repos/{owner}/{repo}/pulls/{pr}/comments --input -'],
+    ['non-numeric PR number', 'abc', 'gh api repos/{owner}/{repo}/pulls/{pr}/comments --input -'],
+    [
+      'PR number with shell metacharacters',
+      '111; echo INJECTED',
+      'gh api repos/{owner}/{repo}/pulls/{pr}/comments --input -',
+    ],
+  ])('stages reply agent with {pr} substitution for %s', (_name, prNumber, template) => {
+    const { result, staged } = runStageReplyAgent(prNumber, template);
+    const validPr = /^[0-9]+$/.test(prNumber);
+    if (validPr) {
+      expect(result.status, result.stderr).toBe(0);
+      expect(staged).not.toBeNull();
+      expect(staged).not.toContain('{pr}');
+      expect(staged).toContain(prNumber);
+    } else {
+      // Invalid PR number: step exits 0 with a warning, copies unrendered template
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(/warning/i);
+    }
   });
 
   it('binds immutable review inputs before the snapshot and derives posting from its output', () => {
