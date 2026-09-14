@@ -78,26 +78,30 @@ runs:
           pr-review-memory-${{ github.repository }}-
 
     - name: Stage reply agent
+      id: stage-reply
+      continue-on-error: true
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
         PR_NUMBER: ${{ inputs.pr-number }}
+        RUNNER_TEMP: ${{ runner.temp }}
       run: |
-        if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
-          echo "::warning::pr-number input is missing or non-numeric — reply agent will use unrendered {pr} placeholder"
-          cp "$ACTION_PATH/../agents/pr-review-reply.yaml" /tmp/pr-review-reply.yaml
-        else
-          sed -e "s/{pr}/$PR_NUMBER/g"               "$ACTION_PATH/../agents/pr-review-reply.yaml" > /tmp/pr-review-reply.yaml
-        fi
+        STAGE_DIR=$(mktemp -d "${RUNNER_TEMP:-/tmp}/docker-agent-reply-XXXXXX")
+        chmod 700 "$STAGE_DIR"
+        node "$ACTION_PATH/../dist/render-template.js" reply \
+          "$ACTION_PATH/../agents/pr-review-reply.yaml" "$STAGE_DIR/pr-review-reply.yaml" \
+          "$PR_NUMBER"
+        echo "template-path=$STAGE_DIR/pr-review-reply.yaml" >> "$GITHUB_OUTPUT"
 
     - name: Run reply agent
       id: run-reply
+      if: steps.stage-reply.outcome == 'success'
       continue-on-error: true
       uses: docker/docker-agent-action@06e1767af06263c93d712449cbf859778d9392ee # v2.0.5
       env:
         ACTION_PATH: ${{ github.action_path }}
       with:
-        agent: /tmp/pr-review-reply.yaml
+        agent: ${{ steps.stage-reply.outputs.template-path }}
         prompt: ${{ inputs.thread-context }}
         timeout: "300"
         anthropic-api-key: ${{ inputs.anthropic-api-key }}
