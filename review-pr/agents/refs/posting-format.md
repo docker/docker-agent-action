@@ -112,13 +112,15 @@ echo "Posting review with $(jq length /tmp/review_comments.json) inline comment(
 
 # The composite action replaces __PR_HEAD_SHA__ with the validated immutable review snapshot
 # before the agent runs. This command must contain the selected literal SHA.
+set -o pipefail
 jq -n \
   --arg body "$REVIEW_BODY" \
   --arg event "COMMENT" \
   --arg commit_id "__PR_HEAD_SHA__" \
   --slurpfile comments /tmp/review_comments.json \
   '{body: $body, event: $event, commit_id: $commit_id, comments: $comments[0]}' \
-| gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input -
+| gh api repos/{owner}/{repo}/pulls/{pr}/reviews --input - \
+  | jq '{id, state, html_url}'
 ```
 
 The `<!-- docker-agent-review -->` marker MUST be on its own line, separated by a blank line

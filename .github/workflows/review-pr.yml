@@ -976,6 +976,7 @@ jobs:
         with:
           thread-context: ${{ steps.thread.outputs.prompt }}
           comment-id: ${{ steps.feedback.outputs.comment-id }}
+          pr-number: ${{ steps.feedback.outputs.pr-number }}
           anthropic-api-key: ${{ env.ANTHROPIC_API_KEY_FROM_SSM || secrets.ANTHROPIC_API_KEY }}
           openai-api-key: ${{ env.OPENAI_API_KEY_FROM_SSM || secrets.OPENAI_API_KEY }}
           google-api-key: ${{ secrets.GOOGLE_API_KEY }}

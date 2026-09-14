@@ -591,44 +591,13 @@ function summaryRun(): string {
   return actionStepRun('Post clean summary');
 }
 
-function runCopyReference(headSha: string, template: string): ReturnType<typeof spawnSync> {
-  const directory = mkdtempSync(resolve(tmpdir(), 'docker-agent-copy-reference-'));
-  const actionPath = resolve(directory, 'action');
-  const refs = resolve(actionPath, 'agents/refs');
-  const output = resolve(directory, 'output');
-  const originalRefs = '/tmp/refs';
-  const backupRefs = resolve(directory, 'refs-backup');
-  try {
-    if (existsSync(originalRefs))
-      cpSync(originalRefs, backupRefs, { recursive: true, dereference: false });
-    rmSync(originalRefs, { recursive: true, force: true });
-    writeFileSync(resolve(directory, 'run.sh'), actionStepRun('Copy reference files'));
-    writeFileSync(resolve(directory, 'posting-format.md'), template);
-    cpSync(resolve(root, 'review-pr/agents/refs'), refs, { recursive: true });
-    writeFileSync(resolve(refs, 'posting-format.md'), template);
-    const result = spawnSync(
-      '/bin/bash',
-      ['--noprofile', '--norc', '-e', '-o', 'pipefail', resolve(directory, 'run.sh')],
-      {
-        env: testEnvironment({
-          ACTION_PATH: actionPath,
-          PR_HEAD_SHA: headSha,
-          GITHUB_OUTPUT: output,
-        }),
-        encoding: 'utf8',
-      },
-    );
-    if (result.status === 0)
-      expect(readFileSync(output, 'utf8')).toContain(
-        'posting-reference=/tmp/refs/posting-format.md',
-      );
-    return result;
-  } finally {
-    rmSync(originalRefs, { recursive: true, force: true });
-    if (existsSync(backupRefs))
-      cpSync(backupRefs, originalRefs, { recursive: true, dereference: false });
-    rmSync(directory, { recursive: true, force: true });
-  }
+function replyActionStepRun(name: string): string {
+  const action = parseDocument(
+    readFileSync(resolve(root, 'review-pr/reply/action.yml'), 'utf8'),
+  ).toJS() as Action;
+  const matches = action.runs?.steps?.filter((candidate) => candidate.name === name) ?? [];
+  if (matches.length !== 1 || !matches[0].run) throw new Error(`Expected one ${name} run body`);
+  return matches[0].run;
 }
 
 type SummaryInvocation = {
@@ -1312,24 +1281,39 @@ describe('fork workflow security regressions', () => {
     }
   });
 
-  it.each([
-    ['valid immutable SHA', 'a'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['empty SHA', '', 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['non-hex SHA', 'g'.repeat(40), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['short SHA', 'a'.repeat(39), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['long SHA', 'a'.repeat(41), 'jq -n --arg commit_id "__PR_HEAD_SHA__"'],
-    ['unresolved template', 'a'.repeat(40), 'jq -n --arg commit_id "$PR_HEAD_SHA"'],
-    ['zero commit arguments', 'a'.repeat(40), 'jq -n --arg body "review"'],
-    [
-      'multiple commit arguments',
-      'a'.repeat(40),
-      'jq -n --arg commit_id "__PR_HEAD_SHA__" --arg commit_id "x"',
-    ],
-  ])('executes Copy reference files staging preflight for %s', (_name, sha, template) => {
-    const result = runCopyReference(sha, template);
-    expect(result.status, result.stderr).toBe(
-      template === 'jq -n --arg commit_id "__PR_HEAD_SHA__"' && /^[a-f0-9]{40}$/i.test(sha) ? 0 : 1,
+  it('stages posting-format.md via render-template.js with the resolved SHA and PR number, and no inline substitution logic', () => {
+    const step = actionStepRun('Copy reference files');
+    // Substitution/validation logic lives in src/render-template (unit-tested
+    // with mutation coverage in render-template.test.ts) — the YAML step only
+    // orchestrates the CLI call, per AGENTS.md's "TypeScript / src rules".
+    expect(step).toContain('node "$ACTION_PATH/../dist/render-template.js" posting');
+    expect(step).toContain(
+      '"$ACTION_PATH/agents/refs/posting-format.md" /tmp/refs/posting-format.md',
     );
+    expect(step).toContain('"$PR_HEAD_SHA" "$PR_NUMBER"');
+    expect(step).not.toContain('sed -e');
+    expect(step).not.toContain('grep -q');
+    expect(step).not.toContain('grep -rq');
+  });
+
+  it('stages pr-review-reply.yaml via render-template.js in a private mktemp directory and fails closed', () => {
+    const step = replyActionStepRun('Stage reply agent');
+    // No fixed/predictable shared /tmp path for agent config (AGENTS.md:
+    // "Never use predictable shared /tmp paths" for anything driving agent
+    // behaviour) — a private 0700 mktemp -d directory per run instead.
+    expect(step).toContain('mktemp -d');
+    expect(step).toContain('chmod 700');
+    expect(step).toContain('node "$ACTION_PATH/../dist/render-template.js" reply');
+    expect(step).not.toContain('/tmp/pr-review-reply.yaml"');
+    // No fail-open warning path — an invalid/missing PR number must fail the
+    // staging step outright, and the agent step below is gated on its success.
+    expect(step).not.toContain('::warning::');
+    expect(step).not.toContain('sed -e');
+
+    const action = readFileSync(resolve(root, 'review-pr/reply/action.yml'), 'utf8');
+    const runReply = action.slice(action.indexOf('- name: Run reply agent'));
+    expect(runReply).toContain("if: steps.stage-reply.outcome == 'success'");
+    expect(runReply).toContain('agent: ${{ steps.stage-reply.outputs.template-path }}');
   });
 
   it('binds immutable review inputs before the snapshot and derives posting from its output', () => {

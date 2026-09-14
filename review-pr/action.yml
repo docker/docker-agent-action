@@ -873,20 +873,13 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
         PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
+        PR_NUMBER: ${{ steps.resolve-context.outputs.pr-number }}
       run: |
         mkdir -p /tmp/refs
         cp "$ACTION_PATH"/agents/refs/*.md /tmp/refs/
-        if ! [[ "$PR_HEAD_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-          echo "::error::Selected PR head SHA is invalid; refusing to stage review posting"
-          exit 1
-        fi
-        sed "s/__PR_HEAD_SHA__/$PR_HEAD_SHA/g" "$ACTION_PATH/agents/refs/posting-format.md" > /tmp/refs/posting-format.md
-        if grep -q '__PR_HEAD_SHA__\|\$PR_HEAD_SHA' /tmp/refs/posting-format.md || \
-          [ "$(grep -o -- '--arg commit_id' /tmp/refs/posting-format.md | wc -l | tr -d ' ')" != 1 ] || \
-          ! grep -q -- "--arg commit_id \"$PR_HEAD_SHA\"" /tmp/refs/posting-format.md; then
-          echo "::error::Rendered posting template does not contain exactly one selected immutable SHA"
-          exit 1
-        fi
+        node "$ACTION_PATH/../dist/render-template.js" posting \
+          "$ACTION_PATH/agents/refs/posting-format.md" /tmp/refs/posting-format.md \
+          "$PR_HEAD_SHA" "$PR_NUMBER"
         echo "posting-reference=/tmp/refs/posting-format.md" >> "$GITHUB_OUTPUT"
         # Stage the suggestion-block validator where the agent can run it before
         # posting (the agent's working dir is the consumer repo, not the action).

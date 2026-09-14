@@ -36,6 +36,7 @@ const entry = {
   'post-mention-reply': src('post-mention-reply'),
   'prepare-review': src('prepare-review'),
   'rate-limit': src('rate-limit'),
+  'render-template': src('render-template'),
   'resolve-trigger-context': src('resolve-trigger-context'),
   'score-confidence': src('score-confidence'),
   'score-risk': src('score-risk'),
