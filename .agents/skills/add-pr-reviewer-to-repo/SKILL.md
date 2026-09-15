@@ -119,9 +119,9 @@ jobs:
       contents: read # Read repository files and PR diffs
       pull-requests: write # Post review comments
       issues: write # Create security incident issues if secrets detected
-      checks: write # (Optional) Show review progress as a check run
+      checks: write # Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: write # Cache read/write for review-lock deduplication and binary cache
+      actions: write # Best-effort REST cleanup of lock caches and processed feedback artifacts
 ```
 
 All three events (`pull_request`, `issue_comment`, `pull_request_review_comment`) have full OIDC/secret access for same-repo PRs, so the reusable workflow handles everything directly.
@@ -208,9 +208,9 @@ jobs:
       contents: read # Read repository files and PR diffs
       pull-requests: write # Post review comments
       issues: write # Create security incident issues if secrets detected
-      checks: write # (Optional) Show review progress as a check run
+      checks: write # Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: write # Cache read/write for review-lock deduplication and binary cache
+      actions: write # Best-effort REST cleanup of lock caches and processed feedback artifacts
     with:
       trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
 ```
@@ -262,8 +262,7 @@ wiring.
 For repos that already have the workflows, verify each item:
 
 - [ ] **Version/tag is current** — compare the `@VERSION` in `uses:` against the latest release from `gh release list --repo docker/docker-agent-action --limit 1`. Update if behind.
-- [ ] **All required permissions are present** — `contents: read`, `pull-requests: write`, `issues: write`, `id-token: write`, `actions: write`. Missing any of these causes silent failures or OIDC/artifact errors. Note: missing `actions: write` specifically causes a 403 when the reusable workflow tries to store binary cache or upload/download artifacts (cache write operations require `write`; artifact download requires only `read`).
-- [ ] **`checks: write` is present** (optional but recommended) — without it the review won't appear as a check run on the PR.
+- [ ] **All required permissions are present** — `contents: read`, `pull-requests: write`, `issues: write`, `checks: write`, `id-token: write`, `actions: write`. Missing any of these causes workflow validation or OIDC/API failures. `actions: write` is required for best-effort REST cleanup of review-lock caches and processed feedback artifacts; `actions/cache` restore/save uses the runner cache service and does not depend on this GitHub token scope.
 - [ ] **Bot-filter `if` condition is correct** — the condition must filter out `docker-agent`, `docker-agent[bot]`, any `Bot` user type, and comments containing `<!-- docker-agent-review -->` or `<!-- docker-agent-review-reply -->`. A missing or incomplete filter causes infinite review loops.
 - [ ] **Fork repos: reviewer-target gate is present** — if `pull_request.review_requested` is enabled, `save-context` must run it only when `github.event.requested_reviewer.login == 'docker-agent'`. A request for a human, team, or other bot must leave `save-context` skipped and must not invoke the privileged `workflow_run` handler; a request for exactly `docker-agent` proceeds.
 - [ ] **Fork artifact rollout order is safe** — upgrade the reusable workflow before switching the trigger to the minimized locator artifact. New minimized artifacts with an older reusable workflow are not guaranteed to work; roll back by restoring the legacy artifact format until the consumer is upgraded.
@@ -291,9 +290,9 @@ jobs:
       ...
 ```
 
-### Artifact download fails with 403
+### Reusable workflow permission validation fails
 
-**Cause:** `actions: write` is missing from the `pr-review.yml` job permissions. This permission is required by the reusable workflow for artifact operations on all setups, not just fork repos.
+**Cause:** `actions: write` is missing from the `pr-review.yml` job permissions. The reusable workflow declares this permission for best-effort REST cleanup of review-lock caches and processed feedback artifacts; it is not needed by `actions/cache` restore/save.
 
 **Fix:** Add `actions: write` to the `permissions` block on the `review` job in `pr-review.yml`.
 
@@ -324,7 +323,7 @@ jobs:
 
 **Cause:** `checks: write` permission is absent.
 
-**Fix:** Add `checks: write` to the job `permissions` block. This is optional but strongly recommended so the review progress is visible in the PR's Checks tab.
+**Fix:** Add the required `checks: write` permission to the job `permissions` block.
 
 ---
 
@@ -403,8 +402,8 @@ Check the `permissions:` block on the `review` job in `pr-review.yml`:
 - [ ] `pull-requests: write`
 - [ ] `issues: write`
 - [ ] `id-token: write` ← OIDC; missing this breaks all credential fetching
-- [ ] `checks: write` ← optional but strongly recommended
-- [ ] `actions: write` ← required for all setups (reusable workflow uses it for artifact operations)
+- [ ] `checks: write` ← required for review progress check runs
+- [ ] `actions: write` ← required for best-effort REST cleanup of lock caches and processed feedback artifacts
 
 #### Trigger types
 

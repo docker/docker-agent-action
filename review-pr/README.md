@@ -35,9 +35,9 @@ jobs:
       contents: read # Read repository files and PR diffs
       pull-requests: write # Post review comments
       issues: write # Create security incident issues if secrets detected
-      checks: write # (Optional) Show review progress as a check run
+      checks: write # Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: write # Cache read/write for review-lock deduplication and binary cache
+      actions: write # Best-effort REST cleanup of lock caches and processed feedback artifacts
 ```
 
 That's it. All three events (`pull_request`, `issue_comment`, `pull_request_review_comment`) have full OIDC/secret access for same-repo PRs, so the reusable workflow handles everything directly.
@@ -116,9 +116,9 @@ jobs:
       contents: read # Read repository files and PR diffs
       pull-requests: write # Post review comments
       issues: write # Create security incident issues if secrets detected
-      checks: write # (Optional) Show review progress as a check run
+      checks: write # Show review progress as a check run
       id-token: write # Required for OIDC authentication to AWS Secrets Manager
-      actions: write # Required by reusable workflow for artifact operations; also needed to download trigger artifacts
+      actions: write # Best-effort REST cleanup of lock caches and processed feedback artifacts
     with:
       trigger-run-id: ${{ github.event_name == 'workflow_run' && format('{0}', github.event.workflow_run.id) || '' }}
 ```
@@ -185,7 +185,7 @@ Adds `synchronize` to also trigger on every push to the PR branch. Opt in if you
 Auto-review only runs on PRs authored by org members. A PR opened by an external or fork contributor is **not** reviewed automatically. To get one reviewed, an org member drives it through GitHub's native UI in two steps:
 
 1. **Approve the workflow run.** For PRs from first-time and external contributors, GitHub holds all Actions runs until a maintainer approves them (governed by the repository's `Settings` → `Actions` → `General` fork-PR approval policy). Click **Approve and run workflows** on the PR; until then nothing runs, including the PR review trigger.
-2. **Request a review from `docker-agent`.** In the PR sidebar, under **Reviewers**, add `docker-agent`. This fires a `review_requested` event and starts the review, shown as a check run (if `checks: write` is granted).
+2. **Request a review from `docker-agent`.** In the PR sidebar, under **Reviewers**, add `docker-agent`. This fires a `review_requested` event and starts the review, shown as a check run.
 
 That is the entire flow. **No special commands or workflow inputs are needed**: not the deprecated `/review` comment, not `workflow_dispatch`, and no caller-side configuration. The review is authorized by the requesting org member rather than the PR author, which is what lets an external contributor's PR be reviewed on demand. The request is safe by construction: GitHub only lets users with triage or write access request a reviewer, and the reusable workflow verifies org membership before any review work runs. An external contributor cannot trigger a review of their own PR.
 
@@ -204,7 +204,7 @@ with:
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | Request review from `docker-agent`   | **Primary trigger.** Add `docker-agent` as a reviewer in the PR sidebar — review starts automatically, shown as a check run. Authorized by the requesting org member, so it also works for external/fork contributors' PRs. |
 | PR opened/ready                      | Auto-reviews when a PR is opened or marked ready for review (org-member-authored PRs).                                                   |
-| ~~`/review`~~ _(deprecated)_         | Re-trigger a review, or trigger manually when auto-review hasn't run (e.g. after a force-push). Shows as a check run if `checks: write` is granted. |
+| ~~`/review`~~ _(deprecated)_         | Re-trigger a review, or trigger manually when auto-review hasn't run (e.g. after a force-push). Shows progress as a check run. |
 | Reply to review comment              | Responds in-thread and captures feedback to improve future reviews.                                                                      |
 | `@docker-agent` mention              | Answers questions and clarifies review findings. Works in both PR-level issue comments and inline file-line review comments, including on fork PRs (via the trigger workflow). |
 

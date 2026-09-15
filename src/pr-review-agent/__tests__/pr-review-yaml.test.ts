@@ -109,6 +109,54 @@ function isRefusalContent(value: string): boolean {
 const DESCRIPTION_CONTRACT =
   "the schema only rejects empty (minLength); whitespace-only or the bare literal 'placeholder' is refusal output rejected by instruction";
 
+const MISSING_DIFF_SUMMARY =
+  'ERROR: Diff file not found at the specified path. The orchestrator must write the diff to disk before delegating.';
+
+describe('drafter tool-mode structured output contract', () => {
+  const drafter = normalize(drafterAgent);
+
+  it('uses config version 16 required for tool-mode structured output', () => {
+    expect(source).toMatch(/^version: "16"$/m);
+  });
+
+  it('enables tool mode only for the drafter and leaves the verifier native', () => {
+    expect(drafterAgent).toMatch(/structured_output:\n {6}mode: tool\n {6}name: draft_findings/);
+    expect(verifierAgent).not.toMatch(/structured_output:\n {6}mode: tool/);
+    expect(source.match(/^\s+mode: tool$/gm)).toHaveLength(1);
+  });
+
+  it('requires one terminal standalone output-tool call after diff analysis', () => {
+    expect(drafter).toContain(
+      'Your final response MUST be exactly one standalone `__structured_output__` tool call.',
+    );
+    expect(drafter).toContain(
+      'Make that call only after you have read and analyzed the diff and finished any permitted source-file checks.',
+    );
+    expect(drafter).toContain(
+      'Do not emit plain-text status updates, progress narration, analysis, or JSON before the tool call, and do not call `__structured_output__` early.',
+    );
+    expect(drafter).toContain(
+      'The single tool call is terminal: after making it, emit nothing else.',
+    );
+  });
+
+  it('routes a schema-valid incomplete missing-diff fallback through the output tool', () => {
+    const match = drafterAgent.match(
+      /If the file is not found,[\s\S]*?```json\r?\n\s*(\{[^\r\n]+\})\r?\n\s*```/,
+    );
+    expect(match).not.toBeNull();
+    expect(JSON.parse(match?.[1] ?? '')).toEqual({
+      findings: [],
+      summary: MISSING_DIFF_SUMMARY,
+      review_complete: false,
+    });
+    expect(drafter).toContain(
+      'immediately make your single `__structured_output__` tool call with exactly these arguments',
+    );
+    expect(drafter).toContain('return the error above through `__structured_output__`');
+  });
+});
+
 describe('structured-output schema hardening', () => {
   // Free-text fields and their key indent within each schema block.
   const drafterTextFields: Array<[string, number]> = [
