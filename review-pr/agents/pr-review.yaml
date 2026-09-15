@@ -1,7 +1,7 @@
 # Copyright The Docker Agent Action authors
 # SPDX-License-Identifier: Apache-2.0
 
-version: "6"
+version: "16"
 
 models:
   sonnet:
@@ -749,13 +749,14 @@ agents:
       Use `read_file` to read that path — it contains the unified diff you must analyze.
 
       If the orchestrator's message contains a file path, read it FIRST before doing anything
-      else. If the file is not found, return this exact response immediately:
+      else. If the file is not found, immediately make your single `__structured_output__`
+      tool call with exactly these arguments:
       ```json
-      {"findings": [], "summary": "ERROR: Diff file not found at the specified path. The orchestrator must write the diff to disk before delegating."}
+      {"findings": [], "summary": "ERROR: Diff file not found at the specified path. The orchestrator must write the diff to disk before delegating.", "review_complete": false}
       ```
 
       Do NOT guess other file paths or search the filesystem for the diff. Read the ONE path
-      the orchestrator gave you, or return the error above.
+      the orchestrator gave you, or return the error above through `__structured_output__`.
 
       ## Domain-Specific Review Guides
 
@@ -941,7 +942,13 @@ agents:
 
       ## Output
 
-      Return structured JSON (schema-enforced). For each finding: `file` (repo-relative path),
+      Your final response MUST be exactly one standalone `__structured_output__` tool call.
+      Make that call only after you have read and analyzed the diff and finished any permitted
+      source-file checks. Do not emit plain-text status updates, progress narration, analysis,
+      or JSON before the tool call, and do not call `__structured_output__` early. The single
+      tool call is terminal: after making it, emit nothing else.
+
+      In that tool call, provide each finding's `file` (repo-relative path),
       `line` (exact, 1-indexed — see algorithm below), `severity`, `category` (one of:
       security, logic_error, resource_leak, concurrency, error_handling, data_integrity, other),
       `issue` (one-line summary), `details` (trigger + impact), `in_diff` (true if on a `+` line).
@@ -979,6 +986,7 @@ agents:
       Use exact 1-indexed line numbers. Do NOT say "around line X".
 
     structured_output:
+      mode: tool
       name: draft_findings
       description: Bug hypotheses found in the PR diff
       strict: true

@@ -19,7 +19,7 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 ```
 .
 ├── action.yml                       # ← Root action ("Docker Agent Runner"). Composite. Source of truth for inputs/outputs.
-├── DOCKER_AGENT_VERSION             # Pinned docker-agent version (currently v1.54.0). Read at runtime by action.yml.
+├── DOCKER_AGENT_VERSION             # Pinned docker-agent version (currently v1.140.0). Read at runtime by action.yml.
 ├── package.json                     # pnpm workspace root. Scripts: build, test, lint, format, actionlint.
 ├── tsup.config.ts                   # Bundles src/<name>/index.ts → dist/<name>.js (ESM, Node 24, fully bundled).
 ├── tsconfig.json                    # TS config. rootDir=src, target ES2024, strict.
@@ -186,6 +186,7 @@ The action runs untrusted input (PR titles, bodies, comments, diffs) through an 
 
 ### `review-pr` action specifics
 
+- `review-pr/agents/pr-review.yaml` uses config version 16 and sets only the drafter's `structured_output` to `mode: tool`. Tool mode prevents mid-analysis narration from being accepted as the drafter's terminal structured result; the verifier intentionally stays on native structured output. This requires docker-agent >= v1.125.0, which the current v1.140.0 `DOCKER_AGENT_VERSION` pin satisfies. Do not downgrade the config version, switch the drafter back to native mode, or enable tool mode for the verifier without revalidating this contract.
 - Uses a **best-effort cache lock** (`pr-review-lock-<repo>-<pr>-*` cache key) to avoid concurrent reviews on the same PR. Completed runs release the lock by saving a `-released` marker cache entry that shadows their lock entry (cache saves work regardless of token scopes; the REST cache DELETE is best-effort cleanup only). The 3600s TTL is a fallback for crashed holders and must stay above the review agent's 2700s wall-clock budget (45 min, enforced by the root action's `total-timeout` across all attempts) so an in-flight review is never treated as stale. Reviews are idempotent so the small race window is acceptable.
 - **Memory persistence** uses `actions/cache` keyed by `pr-review-memory-<repo>-<job>-<run_id>` with prefix-based restore. The review memory database lives at `${{ github.workspace }}/.cache/pr-review-memory.db`.
 - **Fork workflow-run private context files** are canonicalized from GitHub API data. Trigger artifacts are untrusted locators only; server-derived PR/comment data and an immutable 40-hex SHA drive authorization, prompts, posting, and checkout. Attempt-specific randomized `runner.temp` roots are `0700`; the resolver exclusively creates canonical JSON at `0600`, and a pre-upload guard verifies containment, non-symlink status, and exact modes. Isolated consumers select the same-run artifact by immutable ID, verify its digest, then restore and verify `0700/0600` because artifact modes are not preserved. Canonical-derived files are exclusively created at `0600` in the same private job root. Never use predictable shared `/tmp` paths for locator, canonical, or derived trigger context; unrelated reviewed runtime temporary files are outside this invariant. The artifact name includes the run ID and run attempt to avoid rerun collisions. If the pinned bundle has no resolver, workflow-run routes skip fail-closed while direct routes continue.
