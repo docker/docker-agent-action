@@ -166,7 +166,7 @@ export async function detectRateAnomaly(
         per_page: 100,
       })) {
         acc.push(...(page.data as ReviewLike[]));
-        const allBeforeWindow = page.data.every((r) => {
+        const allBeforeWindow = page.data.every((r: ReviewLike) => {
           const submittedAt = (r as ReviewLike).submitted_at;
           return !submittedAt || Date.parse(submittedAt) < windowStartMs;
         });
