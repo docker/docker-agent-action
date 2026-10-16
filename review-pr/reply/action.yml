@@ -88,7 +88,7 @@ runs:
       run: |
         STAGE_DIR=$(mktemp -d "${RUNNER_TEMP:-/tmp}/docker-agent-reply-XXXXXX")
         chmod 700 "$STAGE_DIR"
-        node "$ACTION_PATH/../dist/render-template.js" reply \
+        node "$ACTION_PATH/../../dist/render-template.js" reply \
           "$ACTION_PATH/../agents/pr-review-reply.yaml" "$STAGE_DIR/pr-review-reply.yaml" \
           "$PR_NUMBER"
         echo "template-path=$STAGE_DIR/pr-review-reply.yaml" >> "$GITHUB_OUTPUT"
