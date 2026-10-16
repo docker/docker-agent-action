@@ -1303,7 +1303,10 @@ describe('fork workflow security regressions', () => {
     // behaviour) — a private 0700 mktemp -d directory per run instead.
     expect(step).toContain('mktemp -d');
     expect(step).toContain('chmod 700');
-    expect(step).toContain('node "$ACTION_PATH/../dist/render-template.js" reply');
+    expect(step).toContain('node "$ACTION_PATH/../../dist/render-template.js" reply');
+    // review-pr/reply is two levels below the repo root, so "../../dist" must
+    // land on the root dist/ bundle directory ("../dist" would be review-pr/dist).
+    expect(resolve(root, 'review-pr/reply', '../../dist')).toBe(resolve(root, 'dist'));
     expect(step).not.toContain('/tmp/pr-review-reply.yaml"');
     // No fail-open warning path — an invalid/missing PR number must fail the
     // staging step outright, and the agent step below is gated on its success.
