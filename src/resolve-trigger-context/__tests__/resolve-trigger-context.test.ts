@@ -505,6 +505,83 @@ describe('resolveTriggerContext', () => {
         repo: 'docker-agent-action',
         pull_number: 42,
       });
+      expect(getPull).not.toHaveBeenCalledWith(expect.objectContaining({ pull_number: 999 }));
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it('resolves the hinted PR without searching when the run has no association', async () => {
+    getWorkflowRun.mockResolvedValue({ data: run({ pull_requests: [] }) });
+    const directory = artifacts({ 'event_name.txt': 'pull_request', 'pr_number.txt': '42' });
+    try {
+      await expect(resolve(directory)).resolves.toMatchObject({
+        pullRequest: { number: 42, state: 'open' },
+      });
+      expect(paginate).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it('resolves a hinted PR that closed before this run instead of failing', async () => {
+    getWorkflowRun.mockResolvedValue({ data: run({ pull_requests: [] }) });
+    getPull.mockResolvedValue({ data: { ...pr, state: 'closed' } });
+    const directory = artifacts({ 'event_name.txt': 'pull_request', 'pr_number.txt': '42' });
+    try {
+      await expect(resolve(directory)).resolves.toMatchObject({
+        pullRequest: { number: 42, state: 'closed' },
+      });
+      expect(paginate).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it.each([
+    ['head repository mismatch', { head: { ...pr.head, repo: { full_name: 'attacker/repo' } } }],
+    ['head ref mismatch', { head: { ...pr.head, ref: 'other-branch' } }],
+    ['base repository mismatch', { base: { ...pr.base, repo: { full_name: 'other/repo' } } }],
+    ['deleted fork head repository', { head: { ...pr.head, repo: null } }],
+  ])('rejects a hinted PR with a %s without falling back to a search', async (_description, overrides) => {
+    getWorkflowRun.mockResolvedValue({ data: run({ pull_requests: [] }) });
+    getPull.mockResolvedValue({ data: { ...pr, ...overrides } });
+    const directory = artifacts({ 'event_name.txt': 'pull_request', 'pr_number.txt': '42' });
+    try {
+      await expect(resolve(directory)).rejects.toThrow(
+        /does not match the trusted workflow run head/,
+      );
+      expect(paginate).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it.each([
+    'not-a-number',
+    '0',
+    '-1',
+    '4.5',
+    '99999999999999999999',
+  ])('rejects the malformed pr_number.txt hint %s before any PR lookup', async (hint) => {
+    getWorkflowRun.mockResolvedValue({ data: run({ pull_requests: [] }) });
+    const directory = artifacts({ 'event_name.txt': 'pull_request', 'pr_number.txt': hint });
+    try {
+      await expect(resolve(directory)).rejects.toThrow(/pr_number/);
+      expect(getPull).not.toHaveBeenCalled();
+      expect(paginate).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it('rejects a hinted PR that does not exist without falling back to a search', async () => {
+    getWorkflowRun.mockResolvedValue({ data: run({ pull_requests: [] }) });
+    getPull.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
+    const directory = artifacts({ 'event_name.txt': 'pull_request', 'pr_number.txt': '42' });
+    try {
+      await expect(resolve(directory)).rejects.toThrow(/does not exist/);
+      expect(paginate).not.toHaveBeenCalled();
     } finally {
       rmSync(directory, { recursive: true });
     }
@@ -524,12 +601,23 @@ describe('resolveTriggerContext', () => {
     }
   });
 
-  it('fails closed when the fallback has zero or multiple matching PRs', async () => {
+  it('fails closed when the fallback finds no open matching PR', async () => {
+    getWorkflowRun.mockResolvedValue({ data: run({ pull_requests: [] }) });
+    paginate.mockResolvedValue([]);
+    const directory = artifacts({ 'event_name.txt': 'pull_request' });
+    try {
+      await expect(resolve(directory)).rejects.toThrow(/No open pull request found for head/);
+    } finally {
+      rmSync(directory, { recursive: true });
+    }
+  });
+
+  it('fails closed when the fallback finds multiple matching PRs', async () => {
     getWorkflowRun.mockResolvedValue({ data: run({ pull_requests: [] }) });
     paginate.mockResolvedValue([pr, pr]);
     const directory = artifacts({ 'event_name.txt': 'pull_request' });
     try {
-      await expect(resolve(directory)).rejects.toThrow(/ambiguous or empty/);
+      await expect(resolve(directory)).rejects.toThrow(/2 open pull requests match head/);
     } finally {
       rmSync(directory, { recursive: true });
     }
