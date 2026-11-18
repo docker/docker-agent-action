@@ -22,6 +22,7 @@ export type TriggerRoute = 'review' | 'feedback' | 'mention' | 'none';
 
 export interface CanonicalPullRequest {
   number: number;
+  state: 'open' | 'closed';
   headSha: string;
   baseSha: string;
   baseRef: string;
@@ -127,6 +128,7 @@ function assertPrUrl(url: string, repository: string): [string, number] {
 function canonicalPullRequest(pr: PullRequest): CanonicalPullRequest {
   return {
     number: pr.number,
+    state: pr.state === 'open' ? 'open' : 'closed',
     headSha: requireSha(pr.head.sha, 'PR head SHA'),
     baseSha: requireSha(pr.base.sha, 'PR base SHA'),
     baseRef: pr.base.ref,

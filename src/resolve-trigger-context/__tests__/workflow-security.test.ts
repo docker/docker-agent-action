@@ -712,6 +712,11 @@ describe('fork workflow security regressions', () => {
     const resolverStep = step('resolve-context', 'Resolve trusted trigger context');
     const producers = resolverOutputNames();
     expect(resolverStep.run).toContain('canonical-context-available');
+    const resolverRun = resolverStep.run ?? '';
+    expect(resolverRun.indexOf('canonical-context-available=true')).toBeGreaterThan(-1);
+    expect(resolverRun.indexOf('canonical-context-available=true')).toBeLessThan(
+      resolverRun.indexOf('node "$HELPER"'),
+    );
     producers.add('canonical-context-available');
 
     for (const [name, expression] of Object.entries(resolveContext.outputs ?? {})) {

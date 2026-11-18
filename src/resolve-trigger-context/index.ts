@@ -65,11 +65,19 @@ export async function main(): Promise<void> {
     repoToken,
     artifactDirectory,
   });
+  if (context.event === 'pull_request' && context.pullRequest.state !== 'open') {
+    core.notice(
+      `Skipping review: PR #${context.pullRequest.number} was closed before this run resolved it — nothing to review`,
+    );
+    core.setOutput('canonical-context-available', 'false');
+    return;
+  }
   const outputPath = writeCanonicalContext(context, runnerTemp);
 
   for (const [name, value] of Object.entries({
     ...resolverOutputs(context),
     'canonical-context-path': outputPath,
+    'canonical-context-available': 'true',
   })) {
     core.setOutput(name, value);
   }

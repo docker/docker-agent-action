@@ -224,8 +224,12 @@ jobs:
             echo "::warning::Skipping workflow_run trigger: the pinned action bundle lacks the trusted trigger-context resolver. Direct event routes remain available."
             exit 0
           fi
-          node "$HELPER"
+          # Default for older pinned bundles that don't emit this output themselves.
+          # The resolver appends its own value (true, or false for a graceful
+          # closed-PR skip); the runner applies GITHUB_OUTPUT entries in file
+          # order, so the resolver's later write wins.
           echo "canonical-context-available=true" >> "$GITHUB_OUTPUT"
+          node "$HELPER"
 
       - name: Guard canonical trigger context before upload
         if: steps.read.outputs.canonical-context-available == 'true'
