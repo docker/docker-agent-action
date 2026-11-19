@@ -322,6 +322,7 @@ describe('resolveTriggerContext', () => {
       actor: 'external',
       pullRequest: {
         number: 42,
+        state: 'open',
         headSha: sha,
         baseSha: 'b'.repeat(40),
         baseRef: 'main',

@@ -96,6 +96,7 @@ function resolverOutputNames(): Set<string> {
     actor: 'actor',
     pullRequest: {
       number: 1,
+      state: 'open',
       headSha: 'a'.repeat(40),
       baseSha: 'b'.repeat(40),
       baseRef: 'main',
@@ -113,6 +114,7 @@ const canonicalContext: CanonicalTriggerContext = {
   actor: 'actor',
   pullRequest: {
     number: 1,
+    state: 'open',
     headSha: 'a'.repeat(40),
     baseSha: 'b'.repeat(40),
     baseRef: 'main',
@@ -229,6 +231,7 @@ function productionTriggerRoute(
     actor: 'actor',
     pullRequest: {
       number: 1,
+      state: 'open',
       headSha: 'a'.repeat(40),
       baseSha: 'b'.repeat(40),
       baseRef: 'main',
