@@ -96,6 +96,7 @@ function resolverOutputNames(): Set<string> {
     actor: 'actor',
     pullRequest: {
       number: 1,
+      state: 'open',
       headSha: 'a'.repeat(40),
       baseSha: 'b'.repeat(40),
       baseRef: 'main',
@@ -113,6 +114,7 @@ const canonicalContext: CanonicalTriggerContext = {
   actor: 'actor',
   pullRequest: {
     number: 1,
+    state: 'open',
     headSha: 'a'.repeat(40),
     baseSha: 'b'.repeat(40),
     baseRef: 'main',
@@ -229,6 +231,7 @@ function productionTriggerRoute(
     actor: 'actor',
     pullRequest: {
       number: 1,
+      state: 'open',
       headSha: 'a'.repeat(40),
       baseSha: 'b'.repeat(40),
       baseRef: 'main',
@@ -712,6 +715,11 @@ describe('fork workflow security regressions', () => {
     const resolverStep = step('resolve-context', 'Resolve trusted trigger context');
     const producers = resolverOutputNames();
     expect(resolverStep.run).toContain('canonical-context-available');
+    const resolverRun = resolverStep.run ?? '';
+    expect(resolverRun.indexOf('canonical-context-available=true')).toBeGreaterThan(-1);
+    expect(resolverRun.indexOf('canonical-context-available=true')).toBeLessThan(
+      resolverRun.indexOf('node "$HELPER"'),
+    );
     producers.add('canonical-context-available');
 
     for (const [name, expression] of Object.entries(resolveContext.outputs ?? {})) {

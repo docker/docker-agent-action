@@ -22,6 +22,7 @@ export type TriggerRoute = 'review' | 'feedback' | 'mention' | 'none';
 
 export interface CanonicalPullRequest {
   number: number;
+  state: 'open' | 'closed';
   headSha: string;
   baseSha: string;
   baseRef: string;
@@ -127,6 +128,7 @@ function assertPrUrl(url: string, repository: string): [string, number] {
 function canonicalPullRequest(pr: PullRequest): CanonicalPullRequest {
   return {
     number: pr.number,
+    state: pr.state === 'open' ? 'open' : 'closed',
     headSha: requireSha(pr.head.sha, 'PR head SHA'),
     baseSha: requireSha(pr.base.sha, 'PR base SHA'),
     baseRef: pr.base.ref,
@@ -194,6 +196,46 @@ export function triggerRoute(
   return 'none';
 }
 
+// The pr_number.txt hint is attacker-controlled: accept it only after the live
+// PR's head repo, head ref, and base repo match the trusted workflow run, and
+// never fall back on a mismatch. Accepted residual risk: two PRs sharing the
+// same fork head repo+branch both pass (GitHub's own run pull_requests
+// association has the same limit). Unlike findForkPr, closed PRs resolve too.
+async function findHintedPr(
+  octokit: Octokit,
+  run: WorkflowRun,
+  inputs: TriggerContextInputs,
+  owner: string,
+  repo: string,
+): Promise<number | null> {
+  const hint = readArtifactHint(inputs.artifactDirectory, 'pr_number.txt');
+  if (!hint) return null;
+  const prNumber = Number(hint);
+  if (!/^\d+$/.test(hint) || !Number.isSafeInteger(prNumber) || prNumber <= 0)
+    throw new Error('Artifact pr_number.txt must be a positive integer when present');
+  const headRepository = run.head_repository?.full_name;
+  const headBranch = run.head_branch;
+  if (!headRepository || !headBranch) throw new Error('Workflow run has no pull request locator');
+  let pr: PullRequest;
+  try {
+    ({ data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber }));
+  } catch (error: unknown) {
+    if ((error as { status?: number }).status === 404)
+      throw new Error(`Hinted pull request #${prNumber} does not exist in ${inputs.repository}`);
+    throw error;
+  }
+  if (
+    pr.head.repo?.full_name !== headRepository ||
+    pr.head.ref !== headBranch ||
+    pr.base.repo?.full_name !== inputs.repository
+  ) {
+    throw new Error(
+      `Hinted pull request #${prNumber} does not match the trusted workflow run head ${headRepository}:${headBranch}`,
+    );
+  }
+  return prNumber;
+}
+
 async function findForkPr(
   octokit: Octokit,
   run: WorkflowRun,
@@ -215,8 +257,14 @@ async function findForkPr(
   const matches = candidates.filter(
     (candidate) => candidate.head.repo?.full_name === headRepository,
   );
-  if (matches.length !== 1)
-    throw new Error('Workflow run pull request lookup was ambiguous or empty');
+  if (matches.length === 0)
+    throw new Error(
+      `No open pull request found for head ${headOwner}:${headBranch} — it may have been closed or its branch deleted before this run`,
+    );
+  if (matches.length > 1)
+    throw new Error(
+      `${matches.length} open pull requests match head ${headOwner}:${headBranch}; cannot resolve the workflow run to a single pull request`,
+    );
   return matches[0].number;
 }
 
@@ -242,7 +290,10 @@ export async function resolveTriggerContext(
 
   if (event === 'pull_request') {
     const associatedPr = findAssociatedPr(run, inputs.repository);
-    const prNumber = associatedPr ?? (await findForkPr(octokit, run, owner, repo));
+    const prNumber =
+      associatedPr ??
+      (await findHintedPr(octokit, run, inputs, owner, repo)) ??
+      (await findForkPr(octokit, run, owner, repo));
     const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
     const pullRequest = canonicalPullRequest(pr);
     return {
