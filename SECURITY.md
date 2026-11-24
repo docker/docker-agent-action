@@ -186,8 +186,8 @@ order and short-circuit on the first decision:
 | 3 | `org-membership-token` + `auth-org` set; user is an org member | Authorized via `GET /orgs/{org}/members/{user}` |
 | 4 | `author_association` ∈ `{OWNER, MEMBER, COLLABORATOR}` | Authorized — legacy fallback; unreliable for `pull_request_review_comment` events |
 
-> **Recommended configuration:** Supply `org-membership-token` (a PAT with `read:org`) and
-> `auth-org` to use tier 3. This is more reliable than `author_association` and works for
+> **Recommended configuration:** Supply `org-membership-token` (a PAT with `read:org`, or a
+> GitHub App installation token with org `Members: read`) and `auth-org` to use tier 3. This is more reliable than `author_association` and works for
 > all GitHub event types.
 
 ### Secret Patterns (`src/security/patterns.ts`)
