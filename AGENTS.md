@@ -41,7 +41,7 @@ Anything else here (workflows under `.github/workflows/`, scripts, tests) exists
 │   │   ├── index.ts                 # Entry → bundled to dist/credentials.js
 │   │   ├── ai-keys.ts
 │   │   ├── aws-credentials.ts
-│   │   ├── github-app.ts            # Reads docker-agent-action/github-app from Secrets Manager; exports GITHUB_APP_TOKEN (a PAT) + ORG_MEMBERSHIP_TOKEN.
+│   │   ├── github-app.ts            # Reads docker-agent-action/github-app from Secrets Manager; exports GITHUB_APP_TOKEN (a PAT) + ORG_MEMBERSHIP_TOKEN (a GitHub App installation token, or the stored org_membership_token fallback).
 │   │   └── __tests__/
 │   ├── dedupe-findings/             # Drops review comments duplicating findings from previous review cycles.
 │   │   ├── index.ts                 # CLI entry → bundled to dist/dedupe-findings.js (staged at /tmp/dedupe-findings.js for the agent).
