@@ -86,6 +86,7 @@ test-private-key-line-two
     expect(core.setSecret).toHaveBeenCalledWith(privateKey);
     expect(core.setSecret).toHaveBeenCalledWith('test-installation-token');
     expect(core.setSecret).toHaveBeenCalledWith('test-pat-token');
+    expect(core.setSecret).toHaveBeenCalledWith('test-app-jwt');
     expect(core.exportVariable).toHaveBeenCalledWith(
       'ORG_MEMBERSHIP_TOKEN',
       'test-installation-token',
@@ -93,6 +94,17 @@ test-private-key-line-two
     expect(core.exportVariable).toHaveBeenCalledWith('GITHUB_APP_TOKEN', 'test-pat-token');
     expect(core.exportVariable).toHaveBeenCalledTimes(2);
     const maskCalls = vi.mocked(core.setSecret).mock;
+    const patMaskIndex = maskCalls.calls.findIndex(([value]) => value === 'test-pat-token');
+    expect(maskCalls.invocationCallOrder[patMaskIndex]).toBeLessThan(
+      vi.mocked(createAppAuth).mock.invocationCallOrder[0],
+    );
+    expect(maskCalls.invocationCallOrder[patMaskIndex]).toBeLessThan(
+      mockAuth.mock.invocationCallOrder[0],
+    );
+    const jwtMaskIndex = maskCalls.calls.findIndex(([value]) => value === 'test-app-jwt');
+    expect(maskCalls.invocationCallOrder[jwtMaskIndex]).toBeLessThan(
+      mockGetOrgInstallation.mock.invocationCallOrder[0],
+    );
     const privateKeyMaskIndex = maskCalls.calls.findIndex(([value]) => value === privateKey);
     expect(maskCalls.invocationCallOrder[privateKeyMaskIndex]).toBeLessThan(
       vi.mocked(createAppAuth).mock.invocationCallOrder[0],

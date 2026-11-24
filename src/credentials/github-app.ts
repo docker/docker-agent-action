@@ -32,6 +32,7 @@ async function mintInstallationToken(
   let installationId: number;
   try {
     const { token: appJwt } = await auth({ type: 'app' });
+    core.setSecret(appJwt);
     const octokit = new Octokit({ auth: appJwt });
     const { data } = await octokit.rest.apps.getOrgInstallation({ org: MEMBERSHIP_ORG });
     installationId = data.id;
@@ -102,10 +103,11 @@ export async function fetchGitHubAppCredentials(
     return;
   }
 
+  core.setSecret(pat);
+
   const orgMembershipToken = await resolveOrgMembershipToken(secret);
   if (!orgMembershipToken) return;
 
-  core.setSecret(pat);
   core.setSecret(orgMembershipToken);
 
   core.exportVariable('GITHUB_APP_TOKEN', pat);
